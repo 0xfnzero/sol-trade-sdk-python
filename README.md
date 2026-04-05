@@ -45,6 +45,39 @@ A comprehensive, high-performance Python SDK for Solana DEX trading with support
 
 ## Installation
 
+### Direct Clone (Recommended)
+
+Clone this project to your project directory:
+
+```bash
+cd your_project_root_directory
+git clone https://github.com/0xfnzero/sol-trade-sdk-python
+```
+
+Install dependencies:
+
+```bash
+cd sol-trade-sdk-python
+pip install -e .
+```
+
+Or add to your `requirements.txt`:
+
+```
+sol-trade-sdk @ ./sol-trade-sdk-python
+```
+
+Or add to your `pyproject.toml`:
+
+```toml
+[project]
+dependencies = [
+    "sol-trade-sdk @ ./sol-trade-sdk-python",
+]
+```
+
+### Use PyPI
+
 ```bash
 pip install sol-trade-sdk
 ```
