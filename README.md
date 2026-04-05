@@ -36,10 +36,11 @@ A comprehensive, high-performance Python SDK for Solana DEX trading with support
 ## Features
 
 - **Multiple DEX Support**: PumpFun, PumpSwap, Bonk, Raydium AMM V4, Raydium CPMM, Meteora DAMM V2
-- **SWQoS Integration**: Jito, Bloxroute, ZeroSlot, Temporal, FlashBlock, Helius, and more
+- **19 SWQoS Providers**: Jito, Bloxroute, ZeroSlot, NextBlock, Temporal, Node1, FlashBlock, BlockRazor, Astralane, Stellium, Lightspeed, Soyas, Speedlanding, Helius, Triton, QuickNode, Syndica, Figment, Alchemy
 - **High Performance**: LRU/TTL/Sharded caching, connection pooling, parallel execution
 - **Low Latency**: Optimized for sub-second trade execution
 - **Security First**: Integer overflow protection, secure key storage, input validation
+- **Zero-RPC Hot Path**: All RPC calls happen BEFORE trading execution
 - **Modular Design**: Use only what you need
 
 ## Installation
@@ -49,6 +50,8 @@ pip install sol-trade-sdk
 ```
 
 ## Quick Start
+
+### Basic Trading
 
 ```python
 import asyncio
@@ -83,18 +86,72 @@ async def main():
 asyncio.run(main())
 ```
 
+### PumpFun Trading
+
+```python
+from sol_trade_sdk.instruction.pumpfun import PumpFunInstructionBuilder
+from sol_trade_sdk.calc.pumpfun import getBuyTokenAmountFromSolAmount
+
+# Calculate tokens received for SOL input
+tokens = getBuyTokenAmountFromSolAmount(
+    virtual_token_reserves=1_073_000_000_000_000,
+    virtual_sol_reserves=30_000_000_000,
+    real_token_reserves=793_000_000_000_000,
+    has_creator=True,
+    amount=1_000_000_000,  # 1 SOL
+)
+
+# Build buy instructions
+instructions = PumpFunInstructionBuilder.build_buy_instructions(
+    payer=payer_pubkey,
+    output_mint=token_mint,
+    input_amount=1_000_000_000,
+    slippage_basis_points=500,  # 5%
+    bonding_curve=bonding_curve_pubkey,
+    creator_vault=creator_vault_pubkey,
+    associated_bonding_curve=abc_pubkey,
+)
+```
+
+### Hot Path Execution (Zero-RPC Trading)
+
+```python
+from sol_trade_sdk.hotpath.executor import HotPathExecutor
+from sol_trade_sdk.hotpath.state import HotPathState
+
+# Initialize hot path state with pre-fetched data
+state = HotPathState()
+await state.prefetch_blockhash(rpc_client)
+await state.cache_account(token_account_pubkey)
+
+# Execute without any RPC calls during trading
+executor = HotPathExecutor(state)
+result = await executor.execute_trade(transaction)
+```
+
 ## Security Features
 
 ```python
-from sol_trade_sdk.security import SecureKeyStorage, validate_rpc_url
+from sol_trade_sdk.security import SecureKeyStorage, validate_rpc_url, validate_amount
 
 # Secure key storage with memory encryption
-storage = SecureKeyStorage.from_keypair(keypair)
+storage = SecureKeyStorage.from_keypair(keypair, password="optional_password")
 with storage.unlock() as kp:
     signature = kp.sign(message)
 
 # Input validation
 validate_rpc_url("https://api.mainnet-beta.solana.com")
+validate_amount(1_000_000_000, "amount", allow_zero=False)
+```
+
+## Address Lookup Tables
+
+```python
+from sol_trade_sdk.address_lookup import fetch_address_lookup_table_account
+
+# Fetch ALT from chain
+alt = await fetch_address_lookup_table_account(rpc, alt_address)
+print(f"ALT contains {len(alt.addresses)} addresses")
 ```
 
 ## Architecture
@@ -103,50 +160,109 @@ validate_rpc_url("https://api.mainnet-beta.solana.com")
 |--------|-------------|
 | `cache` | LRU, TTL, and sharded caches |
 | `calc` | AMM calculations for all DEXes |
+| `common` | Core types, gas strategies, bonding curves |
+| `execution` | Branch optimization, prefetching |
 | `hotpath` | Zero-RPC hot path execution |
-| `instruction` | Instruction builders |
+| `instruction` | Instruction builders for all DEXes |
+| `middleware` | Instruction middleware system |
+| `perf` | Performance optimizations (SIMD, kernel bypass, etc.) |
 | `pool` | Connection and worker pools |
 | `rpc` | High-performance RPC clients |
 | `security` | Secure key storage, validators |
+| `seed` | PDA derivation for all protocols |
 | `swqos` | MEV provider clients |
+| `trading` | High-performance trade executor |
+
+## Performance Optimizations
+
+### SIMD Vectorization
+```python
+from sol_trade_sdk.perf.simd import vectorized_hash
+hashes = vectorized_hash(data_list)
+```
+
+### Kernel Bypass (Linux io_uring)
+```python
+from sol_trade_sdk.perf.kernel_bypass import AsyncIOUring
+uring = AsyncIOUring(queue_depth=256)
+```
+
+### Zero-Copy I/O
+```python
+from sol_trade_sdk.perf.zero_copy_io import ZeroCopyBuffer
+buffer = ZeroCopyBuffer.allocate(1024)
+```
 
 ## Supported Protocols
 
 ### PumpFun
-- Bonding curve calculations
+- Bonding curve calculations with creator fee support
 - Buy/Sell instruction building
-- PDA derivation
+- PDA derivation for bonding curve and associated accounts
 
 ### PumpSwap
-- Pool calculations
-- Fee breakdown (LP, protocol, curve)
-- Instruction building
+- Pool calculations with LP/protocol/creator fees
+- Buy/Sell instruction building
+- Mayhem mode support
+
+### Bonk
+- Virtual/real reserve calculations
+- Protocol fee handling
 
 ### Raydium
-- AMM V4 calculations
+- AMM V4 calculations with constant product
 - CPMM calculations
 - Authority PDA derivation
 
 ### Meteora
-- DAMM V2 support
+- DAMM V2 swap calculations
 - Pool PDA derivation
 
-## SWQoS Providers
+## SWQoS Providers (19 Total)
 
 | Provider | Min Tip | Features |
 |----------|---------|----------|
-| Jito | 0.001 SOL | Bundle support, gRPC |
-| Bloxroute | 0.0003 SOL | High reliability |
-| ZeroSlot | 0.0001 SOL | Low latency |
+| Jito | 0.001 SOL | Bundle support, gRPC, multi-region |
+| Bloxroute | 0.0003 SOL | High reliability, global distribution |
+| ZeroSlot | 0.0001 SOL | Zero-slot landing |
+| NextBlock | 0.0001 SOL | Next block priority |
 | Temporal | 0.0001 SOL | Fast confirmation |
+| Node1 | 0.0001 SOL | Direct validator access |
 | FlashBlock | 0.0001 SOL | Competitive pricing |
-| Helius | 0.000005 SOL | SWQoS-only mode |
+| BlockRazor | 0.0001 SOL | MEV protection |
+| Astralane | 0.0001 SOL | Fast submission |
+| Stellium | 0.0001 SOL | Global infrastructure |
+| Lightspeed | 0.0001 SOL | Low latency |
+| Soyas | 0.0001 SOL | MEV protection |
+| Speedlanding | 0.0001 SOL | Fast landing |
+| Helius | 0.000005 SOL | SWQoS-only mode, enhanced APIs |
+| Triton | Variable | Enterprise RPC |
+| QuickNode | Variable | Enterprise RPC |
+| Syndica | Variable | Enterprise RPC |
+| Figment | Variable | Enterprise RPC |
+| Alchemy | Variable | Enterprise RPC |
+
+## Middleware System
+
+```python
+from sol_trade_sdk.middleware import MiddlewareManager, LoggingMiddleware, ValidationMiddleware
+
+manager = MiddlewareManager()
+manager.add_middleware(ValidationMiddleware(max_instructions=100))
+manager.add_middleware(LoggingMiddleware())
+
+# Apply middlewares to instructions
+processed = manager.apply_middlewares_process_protocol_instructions(
+    instructions, "PumpFun", is_buy=True
+)
+```
 
 ## Requirements
 
 - Python >= 3.9
 - solders >= 0.18.0
 - solana >= 0.30.0
+- aiohttp >= 3.8.0
 
 ## License
 

@@ -31,7 +31,43 @@ from .advanced_clients import (
     QUIC_AVAILABLE,
 )
 
+from .providers import (
+    # Enums
+    SwqosType,
+    SwqosRegion,
+    MevProtectionLevel,
+    # Data classes
+    TransactionResult,
+    SwqosConfig as ProviderSwqosConfig,
+    # Base client
+    SwqosClient as ProviderSwqosClient,
+    # All provider clients
+    JitoClient as ProviderJitoClient,
+    BloxrouteClient as ProviderBloxrouteClient,
+    ZeroSlotClient as ProviderZeroSlotClient,
+    NextBlockClient,
+    TemporalClient as ProviderTemporalClient,
+    Node1Client,
+    FlashBlockClient as ProviderFlashBlockClient,
+    BlockRazorClient,
+    AstralaneClient,
+    StelliumClient,
+    LightspeedClient,
+    SoyasClient,
+    SpeedlandingClient,
+    HeliusClient as ProviderHeliusClient,
+    TritonClient,
+    QuickNodeClient,
+    SyndicaClient,
+    FigmentClient,
+    AlchemyClient,
+    # Factory and Manager
+    SwqosClientFactory,
+    SwqosManager,
+)
+
 __all__ = [
+    # Legacy clients
     "SwqosClient",
     "JitoClient",
     "BloxrouteClient",
@@ -44,6 +80,7 @@ __all__ = [
     "SwqosConfig",
     "TradeError",
     "create_swqos_client",
+    # Advanced clients
     "AdvancedJitoClient",
     "AdvancedBloxrouteClient",
     "AdvancedZeroSlotClient",
@@ -55,4 +92,32 @@ __all__ = [
     "HTTPClientMixin",
     "GRPC_AVAILABLE",
     "QUIC_AVAILABLE",
+    # Providers
+    "SwqosType",
+    "SwqosRegion",
+    "MevProtectionLevel",
+    "TransactionResult",
+    "ProviderSwqosConfig",
+    "ProviderSwqosClient",
+    "ProviderJitoClient",
+    "ProviderBloxrouteClient",
+    "ProviderZeroSlotClient",
+    "NextBlockClient",
+    "ProviderTemporalClient",
+    "Node1Client",
+    "ProviderFlashBlockClient",
+    "BlockRazorClient",
+    "AstralaneClient",
+    "StelliumClient",
+    "LightspeedClient",
+    "SoyasClient",
+    "SpeedlandingClient",
+    "ProviderHeliusClient",
+    "TritonClient",
+    "QuickNodeClient",
+    "SyndicaClient",
+    "FigmentClient",
+    "AlchemyClient",
+    "SwqosClientFactory",
+    "SwqosManager",
 ]
