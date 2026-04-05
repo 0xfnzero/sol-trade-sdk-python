@@ -11,9 +11,9 @@ Security fixes applied:
 from typing import Tuple
 import sys
 
-# Constants from Rust
-FEE_BASIS_POINTS = 100  # 1%
-CREATOR_FEE = 50  # 0.5%
+# Constants from Rust (src/instruction/utils/pumpfun.rs global_constants)
+FEE_BASIS_POINTS = 95  # Protocol fee (NOT 100!)
+CREATOR_FEE = 30  # Creator fee (NOT 50!)
 INITIAL_VIRTUAL_TOKEN_RESERVES = 1_073_000_000_000_000
 INITIAL_VIRTUAL_SOL_RESERVES = 30_000_000_000  # 30 SOL
 INITIAL_REAL_TOKEN_RESERVES = 793_100_000_000_000

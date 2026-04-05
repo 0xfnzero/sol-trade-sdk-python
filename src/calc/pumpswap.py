@@ -1,19 +1,24 @@
 """
 PumpSwap calculation utilities.
-Based on sol-trade-sdk Rust implementation.
+Based on sol-trade-sdk Rust implementation (src/utils/calc/pumpswap.rs).
 """
 
 from typing import Dict
 
-# Fee basis points
+# Fee basis points (from Rust: src/instruction/utils/pumpswap.rs accounts)
 LP_FEE_BASIS_POINTS = 25
 PROTOCOL_FEE_BASIS_POINTS = 5
 COIN_CREATOR_FEE_BASIS_POINTS = 5
 
 
+def ceil_div(a: int, b: int) -> int:
+    """Ceiling division: (a + b - 1) // b"""
+    return (a + b - 1) // b
+
+
 def compute_fee(amount: int, fee_basis_points: int) -> int:
-    """Compute fee for a given amount"""
-    return (amount * fee_basis_points) // 10_000
+    """Compute fee for a given amount using ceiling division"""
+    return ceil_div(amount * fee_basis_points, 10_000)
 
 
 def buy_quote_input_internal(
@@ -25,35 +30,43 @@ def buy_quote_input_internal(
 ) -> Dict[str, int]:
     """
     Calculate base amount out for given quote amount in.
-    Returns dict with 'base' (base_amount_out) and 'max_quote' (max_quote_amount_in with slippage).
+    
+    Matches Rust implementation in src/utils/calc/pumpswap.rs buy_quote_input_internal()
+    
+    Returns dict with:
+        - 'base': base_amount_out
+        - 'internal_quote_without_fees': effective_quote  
+        - 'max_quote': max_quote_amount_in with slippage
     """
     if quote_amount_in == 0 or pool_base_reserves == 0 or pool_quote_reserves == 0:
-        return {"base": 0, "max_quote": 0}
+        return {"base": 0, "internal_quote_without_fees": 0, "max_quote": 0}
 
-    # Calculate fees
-    total_fee_basis_points = LP_FEE_BASIS_POINTS + PROTOCOL_FEE_BASIS_POINTS
+    # Calculate total fee basis points (Rust: LP_FEE + PROTOCOL_FEE + COIN_CREATOR_FEE)
+    total_fee_bps = LP_FEE_BASIS_POINTS + PROTOCOL_FEE_BASIS_POINTS
     has_creator = creator != bytes(32)
     if has_creator:
-        total_fee_basis_points += COIN_CREATOR_FEE_BASIS_POINTS
+        total_fee_bps += COIN_CREATOR_FEE_BASIS_POINTS
+    
+    # Calculate effective quote after fees (Rust formula)
+    # effective_quote = quote * 10000 / (10000 + total_fee_bps)
+    denominator = 10_000 + total_fee_bps
+    effective_quote = (quote_amount_in * 10_000) // denominator
 
-    # Calculate input after fees
-    fee = compute_fee(quote_amount_in, total_fee_basis_points)
-    quote_amount_in_after_fee = quote_amount_in - fee
+    # Constant product formula: base_out = (base_reserves * effective_quote) / (quote_reserves + effective_quote)
+    numerator = pool_base_reserves * effective_quote
+    denominator_effective = pool_quote_reserves + effective_quote
 
-    # Constant product formula: base_out = (base_reserves * quote_in) / (quote_reserves + quote_in)
-    numerator = pool_base_reserves * quote_amount_in_after_fee
-    denominator = pool_quote_reserves + quote_amount_in_after_fee
+    if denominator_effective == 0:
+        return {"base": 0, "internal_quote_without_fees": effective_quote, "max_quote": 0}
 
-    if denominator == 0:
-        return {"base": 0, "max_quote": 0}
+    base_amount_out = numerator // denominator_effective
 
-    base_amount_out = numerator // denominator
-
-    # Apply slippage to get max_quote
+    # Calculate max_quote with slippage
     max_quote_amount_in = quote_amount_in + (quote_amount_in * slippage_basis_points // 10_000)
 
     return {
         "base": base_amount_out,
+        "internal_quote_without_fees": effective_quote,
         "max_quote": max_quote_amount_in,
     }
 
@@ -67,34 +80,48 @@ def sell_base_input_internal(
 ) -> Dict[str, int]:
     """
     Calculate quote amount out for given base amount in.
-    Returns dict with 'min_quote' (min_quote_amount_out with slippage).
+    
+    Matches Rust implementation in src/utils/calc/pumpswap.rs sell_base_input_internal()
+    
+    Returns dict with:
+        - 'ui_quote': final quote after fees
+        - 'min_quote': min_quote_amount_out with slippage
+        - 'internal_quote_amount_out': raw quote before fees
     """
     if base_amount_in == 0 or pool_base_reserves == 0 or pool_quote_reserves == 0:
-        return {"min_quote": 0}
+        return {"ui_quote": 0, "min_quote": 0, "internal_quote_amount_out": 0}
 
     # Constant product formula: quote_out = (quote_reserves * base_in) / (base_reserves + base_in)
     numerator = pool_quote_reserves * base_amount_in
     denominator = pool_base_reserves + base_amount_in
 
     if denominator == 0:
-        return {"min_quote": 0}
+        return {"ui_quote": 0, "min_quote": 0, "internal_quote_amount_out": 0}
 
     quote_amount_out = numerator // denominator
 
-    # Calculate fees
-    total_fee_basis_points = LP_FEE_BASIS_POINTS + PROTOCOL_FEE_BASIS_POINTS
+    # Calculate fees (Rust computes each fee separately)
+    lp_fee = compute_fee(quote_amount_out, LP_FEE_BASIS_POINTS)
+    protocol_fee = compute_fee(quote_amount_out, PROTOCOL_FEE_BASIS_POINTS)
+    
     has_creator = creator != bytes(32)
+    coin_creator_fee = 0
     if has_creator:
-        total_fee_basis_points += COIN_CREATOR_FEE_BASIS_POINTS
+        coin_creator_fee = compute_fee(quote_amount_out, COIN_CREATOR_FEE_BASIS_POINTS)
 
-    fee = compute_fee(quote_amount_out, total_fee_basis_points)
-    quote_amount_out_after_fee = quote_amount_out - fee
+    total_fees = lp_fee + protocol_fee + coin_creator_fee
+    if total_fees > quote_amount_out:
+        return {"ui_quote": 0, "min_quote": 0, "internal_quote_amount_out": quote_amount_out}
+    
+    final_quote = quote_amount_out - total_fees
 
     # Apply slippage
-    min_quote_amount_out = quote_amount_out_after_fee - (quote_amount_out_after_fee * slippage_basis_points // 10_000)
+    min_quote_amount_out = final_quote - (final_quote * slippage_basis_points // 10_000)
 
     return {
+        "ui_quote": final_quote,
         "min_quote": min_quote_amount_out,
+        "internal_quote_amount_out": quote_amount_out,
     }
 
 
