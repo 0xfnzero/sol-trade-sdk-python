@@ -33,6 +33,8 @@ MIN_TIP_HELIUS_NORMAL = 0.0002  # normal mode
 MIN_TIP_STELLIUM = 0.0001
 MIN_TIP_LIGHTSPEED = 0.0001
 MIN_TIP_NEXT_BLOCK = 0.001
+MIN_TIP_SOYAS = 0.001
+MIN_TIP_SPEEDLANDING = 0.001
 MIN_TIP_DEFAULT = 0.0
 
 
@@ -180,6 +182,30 @@ NEXT_BLOCK_TIP_ACCOUNTS = [
     "nextBLoCkPMgmG8ZgJtABeScP35qLa2AMCNKntAP7Xc",
 ]
 
+SOYAS_TIP_ACCOUNTS = [
+    "soyas4s6L8KWZ8rsSk1mF3d1mQScoTGGAgjk98bF8nP",
+    "soyascXFW5wEEYiwfEmHy2pNwomqzvggJosGVD6TJdY",
+    "soyasDBdKjADwPz3xk82U3TNPRDKEWJj7wWLajNHZ1L",
+    "soyasE2abjBAynmHbGWgEwk4ctBy7JMTUCNrMbjcnyH",
+    "soyasi59njacMUPvo3TM5paHjeK8pYSdovXgFi32gRt",
+    "soyasQYhJxv8uZgWDxhg72td6piAf7XTkoyWHtSATEz",
+    "soyastP66xyYC8XADXZjdMM5BAVGD2YRvz8dwtLsqb8",
+    "soyasvdgUJWYcUCzDxpmjUnNjH7KamXLXTzLwFvdVPE",
+    "soyasvxAunisNxaoRxkKGjNir7KmbwYnr37JmefkX9G",
+    "soyas5doVFUwH8s5zK8gEvCL5KR5ogDmf52LsrJEZ9h",
+]
+
+SPEEDLANDING_TIP_ACCOUNTS = [
+    "SpEEdz8S1KorkMZqjMUxfxrmWwofmp6ReNP2Nx6CUmq",
+    "SpeeDy3GJM4wcrQmk1itRFWgidvxX4rwjTLMv78wwjE",
+    "SPeEdva37vW8vRtqgYjprQs1g3965icfVN5Rt7SMAyh",
+    "speEdrSEpox5GUfHWcBc7tQjRuSfUin2yvB7qoYvvJh",
+    "SPeEDmkHkN3A2roSZf6aZyEMsmrGqTHKqwP51y2Y4rV",
+    "SpeedLdTJXh2RKpXEaP8JCxkWoUVXhtdPQ1EnxBJMxc",
+    "SpEediGKLbbXndSYTzwmz6Z3NDgHQLDcTDEvGFkSMH9",
+    "speede8xCcUq2Tiv1efXeTuE3k9TDNq8TnGKaKSc6J4",
+]
+
 
 def _random_tip_account(accounts: List[str]) -> str:
     """Randomly select a tip account from the list"""
@@ -307,6 +333,28 @@ NEXT_BLOCK_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.LONDON:      "http://london.nextblock.io",
     SwqosRegion.LOS_ANGELES: "http://singapore.nextblock.io",
     SwqosRegion.DEFAULT:     "http://frankfurt.nextblock.io",
+}
+
+SOYAS_ENDPOINTS: Dict[SwqosRegion, str] = {
+    SwqosRegion.NEW_YORK:    "nyc.landing.soyas.xyz:9000",
+    SwqosRegion.FRANKFURT:   "fra.landing.soyas.xyz:9000",
+    SwqosRegion.AMSTERDAM:   "ams.landing.soyas.xyz:9000",
+    SwqosRegion.SLC:         "nyc.landing.soyas.xyz:9000",
+    SwqosRegion.TOKYO:       "tyo.landing.soyas.xyz:9000",
+    SwqosRegion.LONDON:      "lon.landing.soyas.xyz:9000",
+    SwqosRegion.LOS_ANGELES: "nyc.landing.soyas.xyz:9000",
+    SwqosRegion.DEFAULT:     "fra.landing.soyas.xyz:9000",
+}
+
+SPEEDLANDING_ENDPOINTS: Dict[SwqosRegion, str] = {
+    SwqosRegion.NEW_YORK:    "nyc.speedlanding.trade:17778",
+    SwqosRegion.FRANKFURT:   "fra.speedlanding.trade:17778",
+    SwqosRegion.AMSTERDAM:   "ams.speedlanding.trade:17778",
+    SwqosRegion.SLC:         "nyc.speedlanding.trade:17778",
+    SwqosRegion.TOKYO:       "tyo.speedlanding.trade:17778",
+    SwqosRegion.LONDON:      "fra.speedlanding.trade:17778",
+    SwqosRegion.LOS_ANGELES: "nyc.speedlanding.trade:17778",
+    SwqosRegion.DEFAULT:     "fra.speedlanding.trade:17778",
 }
 
 
@@ -1504,6 +1552,108 @@ class NextBlockClient(SwqosClient, HTTPClientMixin):
         return MIN_TIP_NEXT_BLOCK
 
 
+# ===== Soyas Client =====
+
+class SoyasClient(SwqosClient):
+    """
+    Soyas SWQOS client.
+
+    Transport: QUIC with mTLS (Keypair-based certificate).
+    Endpoint:  host:port (e.g. nyc.landing.soyas.xyz:9000)
+    Auth:      Solana Keypair (base58) used as mTLS client certificate.
+    Note:      QUIC is not natively supported in Python. Use the Rust SDK for
+               full QUIC support. This client holds config for future integration.
+    """
+
+    def __init__(self, rpc_url: str, endpoint: str, api_key: Optional[str] = None):
+        self.rpc_url = rpc_url
+        self.endpoint = endpoint
+        self.api_key = api_key
+        self._tip_account = _random_tip_account(SOYAS_TIP_ACCOUNTS)
+
+    async def send_transaction(
+        self,
+        trade_type: TradeType,
+        transaction: bytes,
+        wait_confirmation: bool = False,
+    ) -> str:
+        raise TradeError(
+            code=501,
+            message="Soyas requires QUIC transport with mTLS; not supported in Python SDK. Use the Rust SDK.",
+        )
+
+    async def send_transactions(
+        self,
+        trade_type: TradeType,
+        transactions: List[bytes],
+        wait_confirmation: bool = False,
+    ) -> List[str]:
+        raise TradeError(
+            code=501,
+            message="Soyas requires QUIC transport with mTLS; not supported in Python SDK. Use the Rust SDK.",
+        )
+
+    def get_tip_account(self) -> str:
+        return self._tip_account
+
+    def get_swqos_type(self) -> SwqosType:
+        return SwqosType.SOYAS
+
+    def min_tip_sol(self) -> float:
+        return MIN_TIP_SOYAS
+
+
+# ===== Speedlanding Client =====
+
+class SpeedlandingClient(SwqosClient):
+    """
+    Speedlanding SWQOS client.
+
+    Transport: QUIC with mTLS (Keypair-based certificate).
+    Endpoint:  host:port (e.g. nyc.speedlanding.trade:17778)
+    Auth:      Solana Keypair (base58) used as mTLS client certificate.
+    Note:      QUIC is not natively supported in Python. Use the Rust SDK for
+               full QUIC support. This client holds config for future integration.
+    """
+
+    def __init__(self, rpc_url: str, endpoint: str, api_key: Optional[str] = None):
+        self.rpc_url = rpc_url
+        self.endpoint = endpoint
+        self.api_key = api_key
+        self._tip_account = _random_tip_account(SPEEDLANDING_TIP_ACCOUNTS)
+
+    async def send_transaction(
+        self,
+        trade_type: TradeType,
+        transaction: bytes,
+        wait_confirmation: bool = False,
+    ) -> str:
+        raise TradeError(
+            code=501,
+            message="Speedlanding requires QUIC transport with mTLS; not supported in Python SDK. Use the Rust SDK.",
+        )
+
+    async def send_transactions(
+        self,
+        trade_type: TradeType,
+        transactions: List[bytes],
+        wait_confirmation: bool = False,
+    ) -> List[str]:
+        raise TradeError(
+            code=501,
+            message="Speedlanding requires QUIC transport with mTLS; not supported in Python SDK. Use the Rust SDK.",
+        )
+
+    def get_tip_account(self) -> str:
+        return self._tip_account
+
+    def get_swqos_type(self) -> SwqosType:
+        return SwqosType.SPEEDLANDING
+
+    def min_tip_sol(self) -> float:
+        return MIN_TIP_SPEEDLANDING
+
+
 # ===== Client Factory =====
 
 @dataclass
@@ -1597,12 +1747,16 @@ class ClientFactory:
             return NextBlockClient(rpc_url, endpoint, config.api_key)
 
         elif config.type == SwqosType.SOYAS:
-            # Soyas: fallback to default RPC
-            return DefaultClient(rpc_url)
+            endpoint = config.custom_url or SOYAS_ENDPOINTS.get(
+                config.region, SOYAS_ENDPOINTS[SwqosRegion.DEFAULT]
+            )
+            return SoyasClient(rpc_url, endpoint, config.api_key)
 
         elif config.type == SwqosType.SPEEDLANDING:
-            # Speedlanding: fallback to default RPC
-            return DefaultClient(rpc_url)
+            endpoint = config.custom_url or SPEEDLANDING_ENDPOINTS.get(
+                config.region, SPEEDLANDING_ENDPOINTS[SwqosRegion.DEFAULT]
+            )
+            return SpeedlandingClient(rpc_url, endpoint, config.api_key)
 
         elif config.type == SwqosType.DEFAULT:
             return DefaultClient(rpc_url)
