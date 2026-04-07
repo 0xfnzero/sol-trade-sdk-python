@@ -7,12 +7,30 @@ import asyncio
 import base64
 import json
 import random
+import ssl
+import struct
+import datetime
+import ipaddress
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from enum import Enum
 
 import aiohttp
+
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives import serialization, hashes
+    from cryptography.hazmat.backends import default_backend
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    import aioquic  # noqa: F401 - just check availability
+    from aioquic.asyncio import connect as quic_connect
+    from aioquic.quic.configuration import QuicConfiguration
+    from aioquic.asyncio.protocol import QuicConnectionProtocol
+    _QUIC_AVAILABLE = True
+except ImportError:
+    _QUIC_AVAILABLE = False
 
 from ..common.types import SwqosType, SwqosRegion, TradeType
 
@@ -1552,24 +1570,116 @@ class NextBlockClient(SwqosClient, HTTPClientMixin):
         return MIN_TIP_NEXT_BLOCK
 
 
+# ===== QUIC helper =====
+
+def _make_solana_tpu_quic_config(server_name: str) -> "QuicConfiguration":
+    """
+    Build a QuicConfiguration with a self-signed Ed25519 cert and ALPN "solana-tpu",
+    matching the pattern used by solana-tls-utils / go-solana-tpu.
+    """
+    from aioquic.quic.configuration import QuicConfiguration
+
+    # Generate ephemeral Ed25519 keypair
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key()
+
+    # Self-signed cert: NotBefore 1975, NotAfter 4096 (same as Rust solana-tls-utils)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Solana node")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(public_key)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime(1975, 1, 1))
+        .not_valid_after(datetime.datetime(4096, 1, 1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.IPv4Address("0.0.0.0"))]),
+            critical=False,
+        )
+        .sign(private_key, None)  # Ed25519 doesn't use a hash algorithm
+    )
+
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    key_pem = private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+
+    cfg = QuicConfiguration(
+        alpn_protocols=["solana-tpu"],
+        is_client=True,
+        verify_mode=ssl.CERT_NONE,
+        server_name=server_name,
+    )
+    cfg.load_cert_chain(certfile=None, keyfile=None)  # will be overridden below
+    # Load the generated cert/key directly into the SSL context
+    cfg.certificate = cert
+    cfg.private_key = private_key
+    return cfg
+
+
+class _SolanaTPUProtocol(QuicConnectionProtocol):
+    """Minimal QUIC protocol: opens a unidirectional stream, writes bytes, closes."""
+
+    def __init__(self, *args, tx_bytes: bytes, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._tx_bytes = tx_bytes
+        self._done = asyncio.Event()
+
+    def quic_event_received(self, event) -> None:
+        pass  # we only send, no responses expected
+
+    async def send_tx(self) -> None:
+        stream_id = self._quic.get_next_available_stream_id(is_unidirectional=True)
+        self._quic.send_stream_data(stream_id, self._tx_bytes, end_stream=True)
+        self.transmit()
+        # Give the stack a moment to flush before closing
+        await asyncio.sleep(0.05)
+
+
+async def _send_via_quic(host: str, port: int, server_name: str, tx_bytes: bytes) -> None:
+    """Connect via QUIC ALPN=solana-tpu and send raw transaction bytes."""
+    if not _QUIC_AVAILABLE:
+        raise TradeError(
+            code=501,
+            message="QUIC not available: install 'aioquic' and 'cryptography' packages.",
+        )
+    cfg = _make_solana_tpu_quic_config(server_name)
+
+    async with quic_connect(
+        host,
+        port,
+        configuration=cfg,
+        create_protocol=lambda *a, **kw: _SolanaTPUProtocol(*a, tx_bytes=tx_bytes, **kw),
+    ) as protocol:
+        await protocol.send_tx()
+
+
 # ===== Soyas Client =====
 
 class SoyasClient(SwqosClient):
     """
     Soyas SWQOS client.
 
-    Transport: QUIC with mTLS (Keypair-based certificate).
+    Transport: QUIC with self-signed Ed25519 cert, ALPN "solana-tpu".
     Endpoint:  host:port (e.g. nyc.landing.soyas.xyz:9000)
-    Auth:      Solana Keypair (base58) used as mTLS client certificate.
-    Note:      QUIC is not natively supported in Python. Use the Rust SDK for
-               full QUIC support. This client holds config for future integration.
+    SNI:       "soyas-landing" (matches Rust SDK SOYAS_SERVER constant)
+    Requires:  pip install aioquic cryptography
     """
+
+    _SERVER_NAME = "soyas-landing"
 
     def __init__(self, rpc_url: str, endpoint: str, api_key: Optional[str] = None):
         self.rpc_url = rpc_url
-        self.endpoint = endpoint
+        self.endpoint = endpoint  # host:port
         self.api_key = api_key
         self._tip_account = _random_tip_account(SOYAS_TIP_ACCOUNTS)
+        # Parse host:port
+        parts = endpoint.rsplit(":", 1)
+        self._host = parts[0]
+        self._port = int(parts[1]) if len(parts) == 2 else 9000
 
     async def send_transaction(
         self,
@@ -1577,10 +1687,8 @@ class SoyasClient(SwqosClient):
         transaction: bytes,
         wait_confirmation: bool = False,
     ) -> str:
-        raise TradeError(
-            code=501,
-            message="Soyas requires QUIC transport with mTLS; not supported in Python SDK. Use the Rust SDK.",
-        )
+        await _send_via_quic(self._host, self._port, self._SERVER_NAME, transaction)
+        return ""
 
     async def send_transactions(
         self,
@@ -1588,10 +1696,9 @@ class SoyasClient(SwqosClient):
         transactions: List[bytes],
         wait_confirmation: bool = False,
     ) -> List[str]:
-        raise TradeError(
-            code=501,
-            message="Soyas requires QUIC transport with mTLS; not supported in Python SDK. Use the Rust SDK.",
-        )
+        for tx in transactions:
+            await self.send_transaction(trade_type, tx, wait_confirmation)
+        return [""] * len(transactions)
 
     def get_tip_account(self) -> str:
         return self._tip_account
@@ -1609,18 +1716,28 @@ class SpeedlandingClient(SwqosClient):
     """
     Speedlanding SWQOS client.
 
-    Transport: QUIC with mTLS (Keypair-based certificate).
+    Transport: QUIC with self-signed Ed25519 cert, ALPN "solana-tpu".
     Endpoint:  host:port (e.g. nyc.speedlanding.trade:17778)
-    Auth:      Solana Keypair (base58) used as mTLS client certificate.
-    Note:      QUIC is not natively supported in Python. Use the Rust SDK for
-               full QUIC support. This client holds config for future integration.
+    SNI:       derived from hostname (e.g. "nyc.speedlanding.trade"),
+               falls back to "speed-landing" for bare IPs (matches Rust SDK).
+    Requires:  pip install aioquic cryptography
     """
 
     def __init__(self, rpc_url: str, endpoint: str, api_key: Optional[str] = None):
         self.rpc_url = rpc_url
-        self.endpoint = endpoint
+        self.endpoint = endpoint  # host:port
         self.api_key = api_key
         self._tip_account = _random_tip_account(SPEEDLANDING_TIP_ACCOUNTS)
+        # Parse host:port
+        parts = endpoint.rsplit(":", 1)
+        self._host = parts[0]
+        self._port = int(parts[1]) if len(parts) == 2 else 17778
+        # Derive SNI: use hostname unless it's a bare IP
+        try:
+            ipaddress.ip_address(self._host)
+            self._server_name = "speed-landing"
+        except ValueError:
+            self._server_name = self._host
 
     async def send_transaction(
         self,
@@ -1628,10 +1745,8 @@ class SpeedlandingClient(SwqosClient):
         transaction: bytes,
         wait_confirmation: bool = False,
     ) -> str:
-        raise TradeError(
-            code=501,
-            message="Speedlanding requires QUIC transport with mTLS; not supported in Python SDK. Use the Rust SDK.",
-        )
+        await _send_via_quic(self._host, self._port, self._server_name, transaction)
+        return ""
 
     async def send_transactions(
         self,
@@ -1639,10 +1754,9 @@ class SpeedlandingClient(SwqosClient):
         transactions: List[bytes],
         wait_confirmation: bool = False,
     ) -> List[str]:
-        raise TradeError(
-            code=501,
-            message="Speedlanding requires QUIC transport with mTLS; not supported in Python SDK. Use the Rust SDK.",
-        )
+        for tx in transactions:
+            await self.send_transaction(trade_type, tx, wait_confirmation)
+        return [""] * len(transactions)
 
     def get_tip_account(self) -> str:
         return self._tip_account
