@@ -32,10 +32,12 @@ async def create_client():
         SwqosConfig(type=SwqosType.DEFAULT, url=rpc_url),
     ]
 
-    trade_config = TradeConfig(
-        rpc_url=rpc_url,
-        swqos_configs=swqos_configs,
-        use_seed_optimize=True,  # Enable seed optimization
+    trade_config = (
+        TradeConfig.builder(rpc_url)
+        .swqos_configs(swqos_configs)
+        .use_seed_optimize(True)  # Enable seed optimization
+        # .mev_protection(True)   # Enable MEV protection (BlockRazor: sandwichMitigation, Astralane: port 9000)
+        .build()
     )
 
     return await TradingClient.new(payer, trade_config)

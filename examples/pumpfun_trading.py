@@ -11,9 +11,11 @@ from sol_trade_sdk.common.bonding_curve import BondingCurveAccount
 
 async def main():
     # Initialize trading client
-    config = TradeConfig(
-        rpc_url="https://api.mainnet-beta.solana.com",
-        swqos_configs=[],
+    config = (
+        TradeConfig.builder("https://api.mainnet-beta.solana.com")
+        .swqos_configs([])
+        # .mev_protection(True)   # Enable MEV protection (BlockRazor: sandwichMitigation, Astralane: port 9000)
+        .build()
     )
 
     # Create client (simplified - would need actual keypair)

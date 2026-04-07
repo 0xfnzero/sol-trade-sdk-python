@@ -397,6 +397,87 @@ class TradeConfig:
     commitment: Commitment = Confirmed
     log_enabled: bool = True
     check_min_tip: bool = False
+    # MEV protection: when enabled, BlockRazor uses sandwichMitigation mode,
+    # Astralane uses port 9000 (MEV-protected QUIC endpoint)
+    mev_protection: bool = False
+
+    @classmethod
+    def builder(cls, rpc_url: str) -> "TradeConfigBuilder":
+        """Create a TradeConfigBuilder for fluent configuration."""
+        return TradeConfigBuilder(rpc_url)
+
+
+class TradeConfigBuilder:
+    """
+    Builder for TradeConfig - makes all options discoverable via IDE autocomplete.
+
+    Example::
+
+        config = (
+            TradeConfig.builder("https://api.mainnet-beta.solana.com")
+            .swqos_configs([
+                SwqosConfig(type=SwqosType.JITO, uuid="your_uuid", region=SwqosRegion.FRANKFURT),
+                SwqosConfig(type=SwqosType.BLOCKRAZOR, api_token="your_token"),
+            ])
+            # .log_enabled(False)       # disable logging
+            # .check_min_tip(True)      # enforce minimum tip check
+            # .mev_protection(True)     # enable MEV protection (sandwichMitigation / port 9000)
+            .build()
+        )
+    """
+
+    def __init__(self, rpc_url: str):
+        self._rpc_url = rpc_url
+        self._swqos_configs: List[SwqosConfig] = []
+        self._commitment: Commitment = Confirmed
+        self._log_enabled: bool = True
+        self._check_min_tip: bool = False
+        self._mev_protection: bool = False
+
+    def swqos_configs(self, configs: List[SwqosConfig]) -> "TradeConfigBuilder":
+        """Set SWQOS provider configurations."""
+        self._swqos_configs = configs
+        return self
+
+    def commitment(self, commitment: Commitment) -> "TradeConfigBuilder":
+        """Set RPC commitment level (default: Confirmed)."""
+        self._commitment = commitment
+        return self
+
+    def log_enabled(self, enabled: bool) -> "TradeConfigBuilder":
+        """Enable or disable SDK logging (default: True)."""
+        self._log_enabled = enabled
+        return self
+
+    def check_min_tip(self, enabled: bool) -> "TradeConfigBuilder":
+        """Enable minimum tip enforcement (default: False)."""
+        self._check_min_tip = enabled
+        return self
+
+    def mev_protection(self, enabled: bool) -> "TradeConfigBuilder":
+        """
+        Enable MEV protection (default: False).
+
+        When enabled:
+        - BlockRazor uses ``mode=sandwichMitigation`` (skips sandwich-attack Leaders)
+        - Astralane uses port 9000 MEV-protected QUIC endpoint
+
+        Note: Do NOT use durable nonce together with sandwichMitigation mode,
+        as it would break the sandwich protection logic.
+        """
+        self._mev_protection = enabled
+        return self
+
+    def build(self) -> "TradeConfig":
+        """Build and return the TradeConfig."""
+        return TradeConfig(
+            rpc_url=self._rpc_url,
+            swqos_configs=self._swqos_configs,
+            commitment=self._commitment,
+            log_enabled=self._log_enabled,
+            check_min_tip=self._check_min_tip,
+            mev_protection=self._mev_protection,
+        )
 
 
 class TradingClient:

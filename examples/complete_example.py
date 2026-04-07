@@ -218,14 +218,16 @@ async def main():
     
     print("\n8. Creating trade executor...")
     
-    trade_config = TradeConfig(
-        rpc_url=RPC_URL,
-        swqos_configs=[
+    trade_config = (
+        TradeConfig.builder(RPC_URL)
+        .swqos_configs([
             SwqosConfig(type=SwqosType.JITO, api_key=JITO_AUTH_TOKEN),
-        ],
-        gas_fee_strategy=gas_strategy,
-        max_workers=10,
-        rate_limit_per_second=100.0,
+        ])
+        .gas_fee_strategy(gas_strategy)
+        .max_workers(10)
+        .rate_limit_per_second(100.0)
+        # .mev_protection(True)   # Enable MEV protection (BlockRazor: sandwichMitigation, Astralane: port 9000)
+        .build()
     )
     
     executor = TradeExecutor(trade_config)

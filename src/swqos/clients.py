@@ -678,10 +678,12 @@ class BlockRazorClient(SwqosClient, HTTPClientMixin):
         rpc_url: str,
         endpoint: str,
         auth_token: Optional[str] = None,
+        mev_protection: bool = False,
     ):
         self.rpc_url = rpc_url
         self.endpoint = endpoint
         self.auth_token = auth_token
+        self.mev_protection = mev_protection
         self._tip_account = "blockrazorH4gNdW3DyUr3QYjE3QiPYq78mi4jh7U3YyHY"
 
     async def send_transaction(
@@ -695,7 +697,9 @@ class BlockRazorClient(SwqosClient, HTTPClientMixin):
         payload = {"transaction": encoded}
 
         session = await self.get_session()
-        url = f"https://{self.endpoint}/api/v1/submit"
+        # Use sandwichMitigation mode for MEV protection
+        mode = "sandwichMitigation" if self.mev_protection else "fast"
+        url = f"https://{self.endpoint}/api/v1/submit?mode={mode}"
 
         headers = {
             "Content-Type": "application/json",
@@ -803,6 +807,7 @@ class SwqosConfig:
     region: SwqosRegion = SwqosRegion.DEFAULT
     custom_url: Optional[str] = None
     api_key: Optional[str] = None
+    mev_protection: bool = False
 
 
 class ClientFactory:
@@ -865,12 +870,18 @@ class ClientFactory:
                 rpc_url,
                 config.custom_url or "api.blockrazor.com",
                 config.api_key,
+                mev_protection=config.mev_protection,
             )
 
         elif config.type == SwqosType.ASTRALANE:
+            # MEV protection for Astralane: use port 9000 endpoint
+            if config.mev_protection and config.custom_url is None:
+                endpoint = "api-mev.astralane.com"  # port 9000 MEV endpoint
+            else:
+                endpoint = config.custom_url or "api.astralane.com"
             return AstralaneClient(
                 rpc_url,
-                config.custom_url or "api.astralane.com",
+                endpoint,
                 config.api_key,
             )
 
@@ -889,6 +900,7 @@ def create_swqos_client(
     auth_token: Optional[str] = None,
     region: SwqosRegion = SwqosRegion.DEFAULT,
     custom_url: Optional[str] = None,
+    mev_protection: bool = False,
 ) -> SwqosClient:
     """Convenience function to create a SWQOS client"""
     config = SwqosConfig(
@@ -896,5 +908,6 @@ def create_swqos_client(
         region=region,
         custom_url=custom_url,
         api_key=auth_token,
+        mev_protection=mev_protection,
     )
     return ClientFactory.create_client(config, rpc_url)

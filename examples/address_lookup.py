@@ -25,9 +25,13 @@ async def main():
         SwqosConfig(type=SwqosType.DEFAULT, url=rpc_url),
     ]
 
-    trade_config = TradeConfig(
-        rpc_url=rpc_url,
-        swqos_configs=swqos_configs,
+    trade_config = (
+        TradeConfig.builder(rpc_url)
+        .swqos_configs(swqos_configs)
+        # .log_enabled(False)       # disable logging
+        # .check_min_tip(True)      # enforce minimum tip check
+        # .mev_protection(True)     # enable MEV protection (sandwichMitigation / port 9000)
+        .build()
     )
 
     client = await TradingClient.new(payer, trade_config)
