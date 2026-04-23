@@ -17,13 +17,19 @@ from ..common.types import (
     TradeType,
     SwqosType,
 )
+from solders.hash import Hash
+from solders.instruction import Instruction
+from solders.keypair import Keypair
+from solders.message import Message
+from solders.pubkey import Pubkey
+from solders.transaction import Transaction
+
 from ..swqos.clients import (
     SwqosClient,
     ClientFactory,
     SwqosConfig,
     TradeError,
 )
-from ..instruction.builder import Instruction, AccountMeta
 
 
 # ===== Types =====
@@ -81,27 +87,42 @@ class TransactionBuilder:
 
     def build(self) -> bytes:
         """
-        Build the transaction.
-        
-        Returns serialized transaction bytes.
-        Note: This is a simplified implementation.
-        In production, use a proper Solana transaction library.
-        """
-        # Simplified transaction structure
-        # In production, this would use proper serialization
-        
-        # Count all unique accounts
-        all_accounts: List[bytes] = [self.payer]
-        for ix in self.instructions:
-            for acc in ix.accounts:
-                if acc.pubkey not in all_accounts:
-                    all_accounts.append(acc.pubkey)
-            if ix.program_id not in all_accounts:
-                all_accounts.append(ix.program_id)
+        序列化为链上 wire 格式（legacy `Transaction`，与 `TradingClient` / `trading_utils` 一致）。
 
-        # Build transaction message
-        # This is a placeholder - real implementation would serialize properly
-        return b""  # Placeholder
+        - `payer`：32 字节 fee payer 公钥。
+        - `recent_blockhash`：Base58 区块哈希字符串。
+        - `signers`：每项为 64 字节 `Keypair.to_bytes()`；若为空则返回**未签名**交易（需自行签名后再发）。
+        - 含签名时，`signers` 中必须至少包含与 `payer` 公钥匹配的 fee payer 密钥对。
+        """
+        if len(self.payer) != 32:
+            raise ValueError("payer 必须为 32 字节公钥（Pubkey）")
+        if not self.instructions:
+            raise ValueError("至少需要一条 instruction")
+
+        payer_pk = Pubkey.from_bytes(bytes(self.payer))
+        bh = Hash.from_string(self.recent_blockhash.strip())
+
+        if self.signers:
+            keypairs: List[Keypair] = []
+            for i, s in enumerate(self.signers):
+                if len(s) != 64:
+                    raise ValueError(
+                        f"signer[{i}] 须为 64 字节（Keypair.to_bytes()），当前长度 {len(s)}"
+                    )
+                keypairs.append(Keypair.from_bytes(bytes(s)))
+            if not any(k.pubkey() == payer_pk for k in keypairs):
+                raise ValueError("signers 中须包含与 payer 公钥一致的 fee payer Keypair")
+            tx = Transaction.new_signed_with_payer(
+                self.instructions,
+                payer_pk,
+                keypairs,
+                bh,
+            )
+        else:
+            msg = Message.new_with_blockhash(self.instructions, payer_pk, bh)
+            tx = Transaction.new_unsigned(msg)
+
+        return bytes(tx)
 
 
 # ===== Trade Executor =====

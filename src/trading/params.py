@@ -75,9 +75,9 @@ class PumpFunParams:
     ) -> "PumpFunParams":
         """Create from dev trade data"""
         from ..common.bonding_curve import BondingCurveAccount
-        from ..instruction.pumpfun import MAYHEM_FEE_RECIPIENT
+        from ..instruction.pumpfun_builder import MAYHEM_FEE_RECIPIENTS
 
-        is_mayhem_mode = fee_recipient == MAYHEM_FEE_RECIPIENT
+        is_mayhem_mode = bytes(fee_recipient) in {bytes(p) for p in MAYHEM_FEE_RECIPIENTS}
         bonding_curve_account = BondingCurveAccount.from_dev_trade(
             bonding_curve,
             mint,
@@ -114,9 +114,9 @@ class PumpFunParams:
     ) -> "PumpFunParams":
         """Create from trade data"""
         from ..common.bonding_curve import BondingCurveAccount
-        from ..instruction.pumpfun import MAYHEM_FEE_RECIPIENT
+        from ..instruction.pumpfun_builder import MAYHEM_FEE_RECIPIENTS
 
-        is_mayhem_mode = fee_recipient == MAYHEM_FEE_RECIPIENT
+        is_mayhem_mode = bytes(fee_recipient) in {bytes(p) for p in MAYHEM_FEE_RECIPIENTS}
         bonding_curve_account = BondingCurveAccount.from_trade(
             bonding_curve,
             mint,
@@ -177,8 +177,9 @@ class PumpSwapParams:
         is_cashback_coin: bool = False,
     ) -> "PumpSwapParams":
         """Create new PumpSwapParams"""
-        from ..instruction.pumpswap import MAYHEM_FEE_RECIPIENT
-        is_mayhem_mode = fee_recipient == MAYHEM_FEE_RECIPIENT
+        from ..instruction.pumpswap_builder import MAYHEM_FEE_RECIPIENTS
+
+        is_mayhem_mode = bytes(fee_recipient) in {bytes(p) for p in MAYHEM_FEE_RECIPIENTS}
         return cls(
             pool=pool,
             base_mint=base_mint,

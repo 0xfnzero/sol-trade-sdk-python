@@ -68,6 +68,18 @@ MAYHEM_FEE_RECIPIENTS: List[Pubkey] = [
     Pubkey.from_string("6AUH3WEHucYZyC61hqpqYUWVto5qA5hjHuNQ32GNnNxA"),
 ]
 
+# Apr 2026 program upgrade: one recipient after bonding-curve-v2 (writable)
+PROTOCOL_EXTRA_FEE_RECIPIENTS: List[Pubkey] = [
+    Pubkey.from_string("5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD"),
+    Pubkey.from_string("9M4giFFMxmFGXtc3feFzRai56WbBqehoSeRE5GK7gf7"),
+    Pubkey.from_string("GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL"),
+    Pubkey.from_string("3BpXnfJaUTiwXnJNe7Ej1rcbzqTTQUvLShZaWazebsVR"),
+    Pubkey.from_string("5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6"),
+    Pubkey.from_string("EHAAiTxcdDwQ3U4bU6YcMsQGaekdzLS3B5SmYo46kJtL"),
+    Pubkey.from_string("5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD"),
+    Pubkey.from_string("A7hAgCzFw14fejgCp387JUJRMNyz4j89JKnhtKU8piqW"),
+]
+
 # ============================================
 # Instruction Discriminators
 # ============================================
@@ -148,6 +160,11 @@ def get_mayhem_fee_recipient_random() -> Pubkey:
     Get a random Mayhem fee recipient.
     """
     return random.choice(MAYHEM_FEE_RECIPIENTS)
+
+
+def get_protocol_extra_fee_recipient_random() -> Pubkey:
+    """Random protocol extra fee recipient (after bonding-curve-v2, writable)."""
+    return random.choice(PROTOCOL_EXTRA_FEE_RECIPIENTS)
 
 
 # ============================================
@@ -357,6 +374,7 @@ def build_buy_instructions(
         AccountMeta(FEE_CONFIG, False, False),  # fee_config
         AccountMeta(FEE_PROGRAM, False, False),  # fee_program
         AccountMeta(bonding_curve_v2, False, False),  # bonding_curve_v2 (readonly, remaining account)
+        AccountMeta(get_protocol_extra_fee_recipient_random(), False, True),
     ]
 
     instructions.append(Instruction(PUMPFUN_PROGRAM_ID, data, accounts))
@@ -478,6 +496,7 @@ def build_sell_instructions(
     # Add bonding_curve_v2 at the end (remaining account)
     bonding_curve_v2 = get_bonding_curve_v2_pda(input_mint)
     accounts.append(AccountMeta(bonding_curve_v2, False, False))
+    accounts.append(AccountMeta(get_protocol_extra_fee_recipient_random(), False, True))
 
     instructions.append(Instruction(PUMPFUN_PROGRAM_ID, data, accounts))
 
@@ -657,6 +676,7 @@ __all__ = [
     "GLOBAL_VOLUME_ACCUMULATOR",
     "FEE_CONFIG",
     "MAYHEM_FEE_RECIPIENTS",
+    "PROTOCOL_EXTRA_FEE_RECIPIENTS",
     # Discriminators
     "BUY_DISCRIMINATOR",
     "BUY_EXACT_SOL_IN_DISCRIMINATOR",
@@ -669,6 +689,7 @@ __all__ = [
     "get_user_volume_accumulator_pda",
     "get_creator",
     "get_mayhem_fee_recipient_random",
+    "get_protocol_extra_fee_recipient_random",
     # Params
     "PumpFunParams",
     # Calculation Functions

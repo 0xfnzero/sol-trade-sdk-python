@@ -44,6 +44,17 @@ MAYHEM_FEE_RECIPIENTS = [
     Pubkey.from_string("6AUH3WEHucYZyC61hqpqYUWVto5qA5hjHuNQ32GNnNxA"),
 ]
 
+PROTOCOL_EXTRA_FEE_RECIPIENTS = [
+    Pubkey.from_string("5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD"),
+    Pubkey.from_string("9M4giFFMxmFGXtc3feFzRai56WbBqehoSeRE5GK7gf7"),
+    Pubkey.from_string("GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL"),
+    Pubkey.from_string("3BpXnfJaUTiwXnJNe7Ej1rcbzqTTQUvLShZaWazebsVR"),
+    Pubkey.from_string("5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6"),
+    Pubkey.from_string("EHAAiTxcdDwQ3U4bU6YcMsQGaekdzLS3B5SmYo46kJtL"),
+    Pubkey.from_string("5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD"),
+    Pubkey.from_string("A7hAgCzFw14fejgCp387JUJRMNyz4j89JKnhtKU8piqW"),
+]
+
 # Discriminators - 100% from Rust
 BUY_DISCRIMINATOR = bytes([102, 6, 61, 18, 1, 218, 235, 234])
 BUY_EXACT_QUOTE_IN_DISCRIMINATOR = bytes([198, 46, 21, 82, 180, 217, 232, 112])
@@ -70,6 +81,11 @@ COIN_CREATOR_FEE_BASIS_POINTS = 5
 def get_mayhem_fee_recipient_random() -> Pubkey:
     """Get cryptographically secure random Mayhem fee recipient."""
     return secrets.choice(MAYHEM_FEE_RECIPIENTS)
+
+
+def get_protocol_extra_fee_recipient_random() -> Pubkey:
+    """Random protocol extra fee recipient (after pool-v2; paired with quote ATA)."""
+    return secrets.choice(PROTOCOL_EXTRA_FEE_RECIPIENTS)
 
 
 def get_pool_v2_pda(base_mint: Pubkey) -> Pubkey:
@@ -373,7 +389,12 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
     # Add pool v2 PDA
     pool_v2 = get_pool_v2_pda(pp.base_mint)
     accounts.append(AccountMeta(pool_v2, False, False))
-    
+    protocol_extra = get_protocol_extra_fee_recipient_random()
+    accounts.append(AccountMeta(protocol_extra, False, False))
+    accounts.append(
+        AccountMeta(get_associated_token_address(protocol_extra, pp.quote_mint, TOKEN_PROGRAM), False, True)
+    )
+
     # Build instruction data
     if params.use_exact_quote_amount:
         # buy_exact_quote_in(spendable_quote_in, min_base_amount_out, track_volume)
@@ -502,7 +523,12 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
     # Add pool v2 PDA
     pool_v2 = get_pool_v2_pda(pp.base_mint)
     accounts.append(AccountMeta(pool_v2, False, False))
-    
+    protocol_extra = get_protocol_extra_fee_recipient_random()
+    accounts.append(AccountMeta(protocol_extra, False, False))
+    accounts.append(
+        AccountMeta(get_associated_token_address(protocol_extra, pp.quote_mint, TOKEN_PROGRAM), False, True)
+    )
+
     # Build instruction data
     if quote_is_wsol_or_usdc:
         data = SELL_DISCRIMINATOR + struct.pack("<Q", token_amount) + struct.pack("<Q", sol_amount)

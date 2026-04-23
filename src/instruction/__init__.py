@@ -69,9 +69,9 @@ def get_bonding_curve_v2_pda(mint: Pubkey) -> Pubkey:
 
 
 def get_user_volume_accumulator_pda(user: Pubkey) -> Pubkey:
-    """Get user volume accumulator PDA"""
+    """Get user volume accumulator PDA (seed must match on-chain Pump program)."""
     pda, _ = find_program_address(
-        [b"user-volume-accumulator", bytes(user)], PUMPFUN_PROGRAM
+        [b"user_volume_accumulator", bytes(user)], PUMPFUN_PROGRAM
     )
     return pda
 
@@ -192,12 +192,31 @@ class InstructionBuilderFactory:
 
 
 class PumpFunInstructionBuilder(InstructionBuilder):
-    """Instruction builder for PumpFun protocol"""
+    """PumpFun：委托 `pumpfun_builder`（含 2026-04 官方 fee recipient 账户升级）。"""
 
-    # Instruction discriminators
-    BUY_DISCRIMINATOR = bytes([102, 6, 141, 196, 242, 95, 28, 167])
-    SELL_DISCRIMINATOR = bytes([187, 75, 56, 100, 133, 176, 22, 141])
-    BUY_EXACT_SOL_IN_DISCRIMINATOR = bytes([133, 104, 247, 38, 153, 106, 73, 253])
+    @staticmethod
+    def _protocol_params_to_pfb(protocol_params: PumpFunParams):
+        """根包 `PumpFunParams` / `BondingCurveAccount` → `pumpfun_builder.PumpFunParams`。"""
+        from .pumpfun_builder import PumpFunParams as PfbParams
+
+        bc = protocol_params.bonding_curve
+        assoc = protocol_params.associated_bonding_curve
+        return PfbParams(
+            bonding_curve_account=bc.account if bc.account != Pubkey.default() else None,
+            virtual_token_reserves=bc.virtual_token_reserves,
+            virtual_sol_reserves=bc.virtual_sol_reserves,
+            real_token_reserves=bc.real_token_reserves,
+            real_sol_reserves=bc.real_sol_reserves,
+            token_total_supply=bc.token_total_supply,
+            complete=bc.complete,
+            creator=bc.creator,
+            is_mayhem_mode=bc.is_mayhem_mode,
+            is_cashback_coin=bc.is_cashback_coin,
+            associated_bonding_curve=assoc if assoc != Pubkey.default() else None,
+            creator_vault=protocol_params.creator_vault,
+            token_program=protocol_params.token_program,
+            close_token_account_when_sell=bool(protocol_params.close_token_account_when_sell),
+        )
 
     async def build_buy_instructions(
         self,
@@ -210,57 +229,25 @@ class PumpFunInstructionBuilder(InstructionBuilder):
         create_output_ata: bool = True,
         close_input_ata: bool = False,
     ) -> List[Instruction]:
-        """Build buy instructions for PumpFun"""
+        """Build buy instructions for PumpFun（与 Rust / pumpfun_builder 一致）。"""
+        from .pumpfun_builder import build_buy_instructions as pfb_buy
+
         if input_amount == 0:
             raise ValueError("Amount cannot be zero")
-
         if not isinstance(protocol_params, PumpFunParams):
             raise TypeError("Invalid protocol params for PumpFun")
 
-        instructions: List[Instruction] = []
-
-        # Get bonding curve address
-        bonding_curve_addr = protocol_params.bonding_curve.account
-        if bonding_curve_addr == Pubkey.default():
-            bonding_curve_addr = get_bonding_curve_pda(output_mint)
-
-        # Get associated bonding curve
-        associated_bonding_curve = protocol_params.associated_bonding_curve
-        if associated_bonding_curve == Pubkey.default():
-            associated_bonding_curve = get_associated_token_address(
-                bonding_curve_addr, output_mint, protocol_params.token_program
-            )
-
-        # Get user token account
-        user_token_account = get_associated_token_address(
-            payer, output_mint, protocol_params.token_program
+        pfb_params = self._protocol_params_to_pfb(protocol_params)
+        return pfb_buy(
+            payer,
+            output_mint,
+            input_amount,
+            pfb_params,
+            slippage_basis_points,
+            create_output_ata=create_output_ata,
+            close_input_ata=close_input_ata,
+            use_exact_sol_amount=True,
         )
-
-        # Create ATA if needed
-        if create_output_ata:
-            create_ata_ix = self._create_ata_instruction(
-                payer, output_mint, protocol_params.token_program
-            )
-            instructions.append(create_ata_ix)
-
-        # Build buy instruction
-        buy_ix = self._build_buy_instruction(
-            payer=payer,
-            mint=output_mint,
-            bonding_curve=bonding_curve_addr,
-            associated_bonding_curve=associated_bonding_curve,
-            user_token_account=user_token_account,
-            creator_vault=protocol_params.creator_vault,
-            token_program=protocol_params.token_program,
-            amount_in=input_amount,
-            slippage=slippage_basis_points,
-            is_mayhem_mode=protocol_params.bonding_curve.is_mayhem_mode,
-            is_cashback_coin=protocol_params.bonding_curve.is_cashback_coin,
-            use_exact_sol_in=True,
-        )
-        instructions.append(buy_ix)
-
-        return instructions
 
     async def build_sell_instructions(
         self,
@@ -273,216 +260,32 @@ class PumpFunInstructionBuilder(InstructionBuilder):
         create_output_ata: bool = False,
         close_input_ata: bool = False,
     ) -> List[Instruction]:
-        """Build sell instructions for PumpFun"""
+        """Build sell instructions for PumpFun（与 Rust / pumpfun_builder 一致）。"""
+        from .pumpfun_builder import build_sell_instructions as pfb_sell
+
         if input_amount == 0:
             raise ValueError("Amount cannot be zero")
-
         if not isinstance(protocol_params, PumpFunParams):
             raise TypeError("Invalid protocol params for PumpFun")
 
-        instructions: List[Instruction] = []
-
-        # Get bonding curve address
-        bonding_curve_addr = protocol_params.bonding_curve.account
-        if bonding_curve_addr == Pubkey.default():
-            bonding_curve_addr = get_bonding_curve_pda(input_mint)
-
-        # Get associated bonding curve
-        associated_bonding_curve = protocol_params.associated_bonding_curve
-        if associated_bonding_curve == Pubkey.default():
-            associated_bonding_curve = get_associated_token_address(
-                bonding_curve_addr, input_mint, protocol_params.token_program
+        pfb_params = self._protocol_params_to_pfb(protocol_params)
+        close_token = bool(
+            close_input_ata
+            or (
+                protocol_params.close_token_account_when_sell is not None
+                and protocol_params.close_token_account_when_sell
             )
-
-        # Get user token account
-        user_token_account = get_associated_token_address(
-            payer, input_mint, protocol_params.token_program
         )
-
-        # Build sell instruction
-        sell_ix = self._build_sell_instruction(
-            payer=payer,
-            mint=input_mint,
-            bonding_curve=bonding_curve_addr,
-            associated_bonding_curve=associated_bonding_curve,
-            user_token_account=user_token_account,
-            creator_vault=protocol_params.creator_vault,
-            token_program=protocol_params.token_program,
-            token_amount=input_amount,
-            slippage=slippage_basis_points,
-            is_mayhem_mode=protocol_params.bonding_curve.is_mayhem_mode,
-            is_cashback_coin=protocol_params.bonding_curve.is_cashback_coin,
+        return pfb_sell(
+            payer,
+            input_mint,
+            input_amount,
+            pfb_params,
+            slippage_basis_points,
+            create_output_ata=create_output_ata,
+            close_output_ata=False,
+            close_input_ata=close_token,
         )
-        instructions.append(sell_ix)
-
-        # Close token account if requested
-        if close_input_ata or (
-            protocol_params.close_token_account_when_sell is not None
-            and protocol_params.close_token_account_when_sell
-        ):
-            close_ix = self._build_close_account_instruction(
-                protocol_params.token_program,
-                user_token_account,
-                payer,
-                payer,
-            )
-            instructions.append(close_ix)
-
-        return instructions
-
-    def _create_ata_instruction(
-        self, payer: Pubkey, mint: Pubkey, token_program: Pubkey
-    ) -> Instruction:
-        """Create associated token account instruction"""
-        ata = get_associated_token_address(payer, mint, token_program)
-
-        keys = [
-            AccountMeta(payer, True, True),
-            AccountMeta(ata, False, True),
-            AccountMeta(payer, False, False),
-            AccountMeta(mint, False, False),
-            AccountMeta(SYSTEM_PROGRAM, False, False),
-            AccountMeta(token_program, False, False),
-            AccountMeta(ASSOCIATED_TOKEN_PROGRAM, False, False),
-            AccountMeta(RENT, False, False),
-        ]
-
-        return Instruction(ASSOCIATED_TOKEN_PROGRAM, bytes(), keys)
-
-    def _build_buy_instruction(
-        self,
-        payer: Pubkey,
-        mint: Pubkey,
-        bonding_curve: Pubkey,
-        associated_bonding_curve: Pubkey,
-        user_token_account: Pubkey,
-        creator_vault: Pubkey,
-        token_program: Pubkey,
-        amount_in: int,
-        slippage: int,
-        is_mayhem_mode: bool,
-        is_cashback_coin: bool,
-        use_exact_sol_in: bool,
-    ) -> Instruction:
-        """Build buy instruction"""
-        global_account = get_global_account_pda()
-        event_authority = get_event_authority_pda()
-        bonding_curve_v2 = get_bonding_curve_v2_pda(mint)
-        user_volume_accumulator = get_user_volume_accumulator_pda(payer)
-        fee_recipient = self._get_fee_recipient(is_mayhem_mode)
-
-        # Build data
-        if use_exact_sol_in:
-            min_tokens_out = amount_in  # Simplified
-            data = bytearray(26)
-            data[0:8] = self.BUY_EXACT_SOL_IN_DISCRIMINATOR
-            data[8:16] = amount_in.to_bytes(8, "little")
-            data[16:24] = min_tokens_out.to_bytes(8, "little")
-            data[24] = 1  # Some
-            data[25] = 1 if is_cashback_coin else 0
-        else:
-            max_sol_cost = amount_in
-            data = bytearray(26)
-            data[0:8] = self.BUY_DISCRIMINATOR
-            data[16:24] = max_sol_cost.to_bytes(8, "little")
-            data[24] = 1
-            data[25] = 1 if is_cashback_coin else 0
-
-        keys = [
-            AccountMeta(global_account, False, False),
-            AccountMeta(fee_recipient, False, True),
-            AccountMeta(mint, False, False),
-            AccountMeta(bonding_curve, False, True),
-            AccountMeta(associated_bonding_curve, False, True),
-            AccountMeta(user_token_account, False, True),
-            AccountMeta(payer, True, True),
-            AccountMeta(SYSTEM_PROGRAM, False, False),
-            AccountMeta(token_program, False, False),
-            AccountMeta(creator_vault, False, True),
-            AccountMeta(event_authority, False, False),
-            AccountMeta(PUMPFUN_PROGRAM, False, False),
-            AccountMeta(bonding_curve_v2, False, False),
-        ]
-
-        return Instruction(PUMPFUN_PROGRAM, bytes(data), keys)
-
-    def _build_sell_instruction(
-        self,
-        payer: Pubkey,
-        mint: Pubkey,
-        bonding_curve: Pubkey,
-        associated_bonding_curve: Pubkey,
-        user_token_account: Pubkey,
-        creator_vault: Pubkey,
-        token_program: Pubkey,
-        token_amount: int,
-        slippage: int,
-        is_mayhem_mode: bool,
-        is_cashback_coin: bool,
-    ) -> Instruction:
-        """Build sell instruction"""
-        global_account = get_global_account_pda()
-        event_authority = get_event_authority_pda()
-        bonding_curve_v2 = get_bonding_curve_v2_pda(mint)
-        fee_recipient = self._get_fee_recipient(is_mayhem_mode)
-
-        min_sol_output = 0  # Simplified calculation
-
-        data = bytearray(24)
-        data[0:8] = self.SELL_DISCRIMINATOR
-        data[8:16] = token_amount.to_bytes(8, "little")
-        data[16:24] = min_sol_output.to_bytes(8, "little")
-
-        keys = [
-            AccountMeta(global_account, False, False),
-            AccountMeta(fee_recipient, False, True),
-            AccountMeta(mint, False, False),
-            AccountMeta(bonding_curve, False, True),
-            AccountMeta(associated_bonding_curve, False, True),
-            AccountMeta(user_token_account, False, True),
-            AccountMeta(payer, True, True),
-            AccountMeta(SYSTEM_PROGRAM, False, False),
-            AccountMeta(creator_vault, False, True),
-            AccountMeta(token_program, False, False),
-            AccountMeta(event_authority, False, False),
-            AccountMeta(PUMPFUN_PROGRAM, False, False),
-        ]
-
-        if is_cashback_coin:
-            user_volume_accumulator = get_user_volume_accumulator_pda(payer)
-            keys.append(AccountMeta(user_volume_accumulator, False, True))
-
-        keys.append(AccountMeta(bonding_curve_v2, False, False))
-
-        return Instruction(PUMPFUN_PROGRAM, bytes(data), keys)
-
-    def _build_close_account_instruction(
-        self,
-        token_program: Pubkey,
-        account: Pubkey,
-        owner: Pubkey,
-        destination: Pubkey,
-    ) -> Instruction:
-        """Build close account instruction"""
-        data = bytes([151, 9, 59, 186, 208, 190, 183, 75])
-        keys = [
-            AccountMeta(account, False, True),
-            AccountMeta(destination, False, True),
-            AccountMeta(owner, True, False),
-        ]
-        return Instruction(token_program, data, keys)
-
-    def _get_fee_recipient(self, is_mayhem_mode: bool) -> Pubkey:
-        """Get fee recipient based on mayhem mode"""
-        import random
-
-        if is_mayhem_mode:
-            mayhem_recipients = [
-                Pubkey.from_string("7VtWHe8WJeU9Sy5j1XF5n8qPzDtJjWxMgYVtJ89AQrVj"),
-                Pubkey.from_string("82jN8eGgPvMSW1KP9W6GdW4bQ3YbB7sGgC6BhZnLVQvR"),
-            ]
-            return random.choice(mayhem_recipients)
-        return FEE_RECIPIENT
 
 
 class PumpSwapInstructionBuilder(InstructionBuilder):
