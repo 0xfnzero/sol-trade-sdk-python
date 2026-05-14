@@ -4,7 +4,7 @@ Implements all AMM formulas for PumpFun, PumpSwap, Bonk, and Raydium protocols.
 Uses Python integers for arbitrary precision arithmetic.
 """
 
-from typing import Tuple, NamedTuple
+from typing import Tuple, NamedTuple, Optional
 from dataclasses import dataclass
 
 
@@ -45,7 +45,7 @@ MAX_SLIPPAGE_BASIS_POINTS = 9999
 
 # ===== Utility Functions =====
 
-def compute_fee(amount: int, fee_basis_points: int) -> int:
+def compute_fee(amount: int, fee_basis_points: int, denominator: int = 10_000) -> int:
     """
     Calculate fee amount from basis points using ceiling division.
     
@@ -58,7 +58,7 @@ def compute_fee(amount: int, fee_basis_points: int) -> int:
     Returns:
         Fee amount using ceiling division
     """
-    return ceil_div(amount * fee_basis_points, 10_000)
+    return ceil_div(amount * fee_basis_points, denominator)
 
 
 def ceil_div(a: int, b: int) -> int:
@@ -153,6 +153,7 @@ def get_sell_sol_amount_from_token_amount(
     virtual_sol_reserves: int,
     virtual_token_reserves: int,
     has_creator: bool = False,
+    real_sol_reserves: Optional[int] = None,
 ) -> int:
     """
     Calculate the amount of SOL received for selling tokens on PumpFun.
@@ -199,6 +200,14 @@ class BuyBaseInputResult:
     ui_quote: int
     max_quote: int
 
+    @property
+    def amount_out(self) -> int:
+        return self.ui_quote
+
+    @property
+    def fee(self) -> int:
+        return max(0, self.max_quote - self.ui_quote)
+
 
 @dataclass
 class BuyQuoteInputResult:
@@ -215,6 +224,14 @@ class SellBaseInputResult:
     min_quote: int
     internal_quote_amount_out: int
 
+    @property
+    def amount_out(self) -> int:
+        return self.ui_quote
+
+    @property
+    def fee(self) -> int:
+        return max(0, self.internal_quote_amount_out - self.ui_quote)
+
 
 @dataclass
 class SellQuoteInputResult:
@@ -228,17 +245,32 @@ class SellQuoteInputResult:
 # 100% from Rust: src/utils/calc/pumpswap.rs
 
 def buy_base_input_internal(
-    base: int,
-    slippage_basis_points: int,
-    base_reserve: int,
-    quote_reserve: int,
+    base: Optional[int] = None,
+    slippage_basis_points: Optional[int] = None,
+    base_reserve: Optional[int] = None,
+    quote_reserve: Optional[int] = None,
     has_coin_creator: bool = False,
+    **kwargs,
 ) -> BuyBaseInputResult:
     """
     Calculate quote needed to buy base tokens on PumpSwap.
     
     100% from Rust: src/utils/calc/pumpswap.rs buy_base_input_internal
     """
+    if "amount_in" in kwargs:
+        base = kwargs.pop("amount_in")
+    if "reserve_in" in kwargs:
+        base_reserve = kwargs.pop("reserve_in")
+    if "reserve_out" in kwargs:
+        quote_reserve = kwargs.pop("reserve_out")
+    if "slippage_bps" in kwargs:
+        slippage_basis_points = kwargs.pop("slippage_bps")
+    if kwargs:
+        unexpected = ", ".join(kwargs.keys())
+        raise TypeError(f"unexpected keyword argument(s): {unexpected}")
+    if base is None or slippage_basis_points is None or base_reserve is None or quote_reserve is None:
+        raise TypeError("base, slippage_basis_points, base_reserve and quote_reserve are required")
+
     if base_reserve == 0 or quote_reserve == 0:
         return BuyBaseInputResult(0, 0, 0)
     if base > base_reserve:
@@ -310,17 +342,32 @@ def buy_quote_input_internal(
 
 
 def sell_base_input_internal(
-    base: int,
-    slippage_basis_points: int,
-    base_reserve: int,
-    quote_reserve: int,
+    base: Optional[int] = None,
+    slippage_basis_points: Optional[int] = None,
+    base_reserve: Optional[int] = None,
+    quote_reserve: Optional[int] = None,
     has_coin_creator: bool = False,
+    **kwargs,
 ) -> SellBaseInputResult:
     """
     Calculate quote received for selling base tokens on PumpSwap.
     
     100% from Rust: src/utils/calc/pumpswap.rs sell_base_input_internal
     """
+    if "amount_in" in kwargs:
+        base = kwargs.pop("amount_in")
+    if "reserve_in" in kwargs:
+        base_reserve = kwargs.pop("reserve_in")
+    if "reserve_out" in kwargs:
+        quote_reserve = kwargs.pop("reserve_out")
+    if "slippage_bps" in kwargs:
+        slippage_basis_points = kwargs.pop("slippage_bps")
+    if kwargs:
+        unexpected = ", ".join(kwargs.keys())
+        raise TypeError(f"unexpected keyword argument(s): {unexpected}")
+    if base is None or slippage_basis_points is None or base_reserve is None or quote_reserve is None:
+        raise TypeError("base, slippage_basis_points, base_reserve and quote_reserve are required")
+
     if base_reserve == 0 or quote_reserve == 0:
         return SellBaseInputResult(0, 0, 0)
 

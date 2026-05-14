@@ -21,12 +21,15 @@ from .transaction_pool import (
     PoolConfig,
     PendingTransaction,
     TransactionStatus,
+    PriorityCalculator,
 )
 
 from .confirmation_monitor import (
     ConfirmationMonitor,
     ConfirmationConfig,
     ConfirmationStatus,
+    ConfirmationResult,
+    MultiConfirmationMonitor,
 )
 
 from .retry_handler import (
@@ -34,6 +37,10 @@ from .retry_handler import (
     RetryConfig,
     RetryStrategy,
     ExponentialBackoff,
+    CircuitBreaker,
+    CircuitBreakerOpen,
+    RetryExhausted,
+    AdaptiveRetryHandler,
 )
 
 __all__ = [
@@ -48,13 +55,20 @@ __all__ = [
     "PoolConfig",
     "PendingTransaction",
     "TransactionStatus",
+    "PriorityCalculator",
     # Confirmation monitor
     "ConfirmationMonitor",
     "ConfirmationConfig",
     "ConfirmationStatus",
+    "ConfirmationResult",
+    "MultiConfirmationMonitor",
     # Retry handler
     "RetryHandler",
     "RetryConfig",
     "RetryStrategy",
     "ExponentialBackoff",
+    "CircuitBreaker",
+    "CircuitBreakerOpen",
+    "RetryExhausted",
+    "AdaptiveRetryHandler",
 ]

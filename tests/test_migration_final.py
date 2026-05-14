@@ -26,7 +26,7 @@ def test_calc_pumpfun():
     )
 
     # Verify constants
-    assert FEE_BASIS_POINTS == 100
+    assert FEE_BASIS_POINTS == 95
     assert INITIAL_VIRTUAL_TOKEN_RESERVES == 1_073_000_000_000_000
     assert INITIAL_VIRTUAL_SOL_RESERVES == 30_000_000_000
 
@@ -61,7 +61,6 @@ def test_calc_pumpfun():
     assert min_out < tokens
 
     print("✓ PumpFun calculations test passed")
-    return True
 
 
 def test_trading_params():
@@ -116,7 +115,6 @@ def test_trading_params():
     print("  Enums: OK")
 
     print("✓ Trading parameters test passed")
-    return True
 
 
 def test_serialization():
@@ -149,7 +147,6 @@ def test_serialization():
     print(f"  Serialized: {len(serialized)} bytes")
 
     print("✓ Serialization test passed")
-    return True
 
 
 def test_compute_budget():
@@ -179,7 +176,6 @@ def test_compute_budget():
     print(f"  With tip: {len(ixs_with_tip)} instructions")
 
     print("✓ Compute budget test passed")
-    return True
 
 
 def test_execution():
@@ -213,7 +209,6 @@ def test_execution():
     print("  InstructionProcessor: OK")
 
     print("✓ Execution test passed")
-    return True
 
 
 def test_middleware_traits():
@@ -229,7 +224,6 @@ def test_middleware_traits():
     print("  MiddlewareManager created: OK")
 
     print("✓ Middleware traits test passed")
-    return True
 
 
 def main():

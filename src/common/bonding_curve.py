@@ -5,14 +5,24 @@ Based on sol-trade-sdk Rust implementation.
 
 from dataclasses import dataclass
 from typing import Optional
-from ..calc.pumpfun import (
-    get_buy_token_amount_from_sol_amount,
-    get_sell_sol_amount_from_token_amount,
-    INITIAL_VIRTUAL_TOKEN_RESERVES,
-    INITIAL_VIRTUAL_SOL_RESERVES,
-    INITIAL_REAL_TOKEN_RESERVES,
-    TOKEN_TOTAL_SUPPLY,
-)
+try:
+    from ..calc.pumpfun import (
+        get_buy_token_amount_from_sol_amount,
+        get_sell_sol_amount_from_token_amount,
+        INITIAL_VIRTUAL_TOKEN_RESERVES,
+        INITIAL_VIRTUAL_SOL_RESERVES,
+        INITIAL_REAL_TOKEN_RESERVES,
+        TOKEN_TOTAL_SUPPLY,
+    )
+except ImportError:
+    from pumpfun import (
+        get_buy_token_amount_from_sol_amount,
+        get_sell_sol_amount_from_token_amount,
+        INITIAL_VIRTUAL_TOKEN_RESERVES,
+        INITIAL_VIRTUAL_SOL_RESERVES,
+        INITIAL_REAL_TOKEN_RESERVES,
+        TOKEN_TOTAL_SUPPLY,
+    )
 
 
 @dataclass
@@ -21,9 +31,9 @@ class BondingCurveAccount:
     
     discriminator: int = 0
     account: bytes = b'\x00' * 32
-    virtual_token_reserves: int = 0
-    virtual_sol_reserves: int = 0
-    real_token_reserves: int = 0
+    virtual_token_reserves: int = INITIAL_VIRTUAL_TOKEN_RESERVES
+    virtual_sol_reserves: int = INITIAL_VIRTUAL_SOL_RESERVES
+    real_token_reserves: int = INITIAL_REAL_TOKEN_RESERVES
     real_sol_reserves: int = 0
     token_total_supply: int = TOKEN_TOTAL_SUPPLY
     complete: bool = False

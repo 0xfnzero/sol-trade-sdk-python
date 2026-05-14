@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from solders.pubkey import Pubkey
 from solders.instruction import Instruction, AccountMeta
 
-from . import (
+from .. import (
     DexType,
     PUMPFUN_PROGRAM,
     PUMPSWAP_PROGRAM,
@@ -214,8 +214,13 @@ class PumpFunInstructionBuilder(InstructionBuilder):
             is_cashback_coin=bc.is_cashback_coin,
             associated_bonding_curve=assoc if assoc != Pubkey.default() else None,
             creator_vault=protocol_params.creator_vault,
+            fee_sharing_creator_vault_if_active=protocol_params.fee_sharing_creator_vault_if_active,
+            observed_trade_creator=protocol_params.observed_trade_creator,
             token_program=protocol_params.token_program,
             close_token_account_when_sell=bool(protocol_params.close_token_account_when_sell),
+            fee_recipient=protocol_params.fee_recipient,
+            quote_mint=protocol_params.quote_mint,
+            use_v2_ix=protocol_params.use_v2_ix,
         )
 
     async def build_buy_instructions(
@@ -228,6 +233,10 @@ class PumpFunInstructionBuilder(InstructionBuilder):
         protocol_params: PumpFunParams,
         create_output_ata: bool = True,
         close_input_ata: bool = False,
+        create_input_ata: bool = False,
+        fixed_output_amount: Optional[int] = None,
+        use_exact_sol_amount: bool = True,
+        use_pumpfun_v2: bool = False,
     ) -> List[Instruction]:
         """Build buy instructions for PumpFun（与 Rust / pumpfun_builder 一致）。"""
         from .pumpfun_builder import build_buy_instructions as pfb_buy
@@ -245,8 +254,11 @@ class PumpFunInstructionBuilder(InstructionBuilder):
             pfb_params,
             slippage_basis_points,
             create_output_ata=create_output_ata,
+            create_input_ata=create_input_ata,
             close_input_ata=close_input_ata,
-            use_exact_sol_amount=True,
+            fixed_output_amount=fixed_output_amount,
+            use_exact_sol_amount=use_exact_sol_amount,
+            use_pumpfun_v2=use_pumpfun_v2,
         )
 
     async def build_sell_instructions(
@@ -259,6 +271,8 @@ class PumpFunInstructionBuilder(InstructionBuilder):
         protocol_params: PumpFunParams,
         create_output_ata: bool = False,
         close_input_ata: bool = False,
+        fixed_output_amount: Optional[int] = None,
+        use_pumpfun_v2: bool = False,
     ) -> List[Instruction]:
         """Build sell instructions for PumpFun（与 Rust / pumpfun_builder 一致）。"""
         from .pumpfun_builder import build_sell_instructions as pfb_sell
@@ -285,6 +299,8 @@ class PumpFunInstructionBuilder(InstructionBuilder):
             create_output_ata=create_output_ata,
             close_output_ata=False,
             close_input_ata=close_token,
+            fixed_output_amount=fixed_output_amount,
+            use_pumpfun_v2=use_pumpfun_v2,
         )
 
 

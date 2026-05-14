@@ -14,6 +14,7 @@ from .common import (
     SYSTEM_PROGRAM,
     TOKEN_PROGRAM,
     TOKEN_PROGRAM_2022,
+    ASSOCIATED_TOKEN_PROGRAM,
     WSOL_TOKEN_ACCOUNT,
     DEFAULT_SLIPPAGE,
     get_associated_token_address,
@@ -80,6 +81,8 @@ PROTOCOL_EXTRA_FEE_RECIPIENTS: List[Pubkey] = [
     Pubkey.from_string("A7hAgCzFw14fejgCp387JUJRMNyz4j89JKnhtKU8piqW"),
 ]
 
+BUYBACK_FEE_RECIPIENTS: List[Pubkey] = PROTOCOL_EXTRA_FEE_RECIPIENTS
+
 # ============================================
 # Instruction Discriminators
 # ============================================
@@ -87,6 +90,9 @@ PROTOCOL_EXTRA_FEE_RECIPIENTS: List[Pubkey] = [
 BUY_DISCRIMINATOR: bytes = bytes([102, 6, 61, 18, 1, 218, 235, 234])
 BUY_EXACT_SOL_IN_DISCRIMINATOR: bytes = bytes([56, 252, 116, 8, 158, 223, 205, 95])
 SELL_DISCRIMINATOR: bytes = bytes([51, 230, 133, 164, 1, 127, 131, 173])
+BUY_V2_DISCRIMINATOR: bytes = bytes([184, 23, 238, 97, 103, 197, 211, 61])
+SELL_V2_DISCRIMINATOR: bytes = bytes([93, 246, 130, 60, 231, 233, 64, 178])
+BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR: bytes = bytes([194, 171, 28, 70, 104, 77, 91, 47])
 CLAIM_CASHBACK_DISCRIMINATOR: bytes = bytes([37, 58, 35, 126, 190, 53, 228, 197])
 
 # ============================================
@@ -99,6 +105,11 @@ CREATOR_VAULT_SEED = b"creator-vault"
 USER_VOLUME_ACCUMULATOR_SEED = b"user_volume_accumulator"
 GLOBAL_VOLUME_ACCUMULATOR_SEED = b"global_volume_accumulator"
 FEE_CONFIG_SEED = b"fee_config"
+SHARING_CONFIG_SEED = b"sharing-config"
+DEFAULT_PUBKEY = Pubkey.from_string("11111111111111111111111111111111")
+PHANTOM_DEFAULT_CREATOR_VAULT = Pubkey.from_string("2DR3iqRPVThyRLVJnwjPW1qiGWrp8RUFfHVjMbZyhdNc")
+FEE_BASIS_POINTS = 95
+CREATOR_FEE_BASIS_POINTS = 30
 
 # ============================================
 # PDA Derivation Functions
@@ -144,14 +155,20 @@ def get_user_volume_accumulator_pda(user: Pubkey) -> Pubkey:
     return pda
 
 
+def get_fee_sharing_config_pda(mint: Pubkey) -> Pubkey:
+    """Derive the fee sharing config PDA under the Pump.fun fee program."""
+    seeds = [SHARING_CONFIG_SEED, bytes(mint)]
+    (pda, _) = Pubkey.find_program_address(seeds, FEE_PROGRAM)
+    return pda
+
+
 def get_creator(creator_vault_pda: Pubkey) -> Pubkey:
     """
     Get the creator pubkey from the creator vault PDA.
     Returns default pubkey if creator_vault_pda is default.
     """
-    default_pubkey = Pubkey.from_string("11111111111111111111111111111111")
-    if creator_vault_pda == default_pubkey:
-        return default_pubkey
+    if creator_vault_pda == DEFAULT_PUBKEY:
+        return DEFAULT_PUBKEY
     return creator_vault_pda
 
 
@@ -165,6 +182,62 @@ def get_mayhem_fee_recipient_random() -> Pubkey:
 def get_protocol_extra_fee_recipient_random() -> Pubkey:
     """Random protocol extra fee recipient (after bonding-curve-v2, writable)."""
     return random.choice(PROTOCOL_EXTRA_FEE_RECIPIENTS)
+
+
+def get_buyback_fee_recipient_random() -> Pubkey:
+    """Random PumpFun V2 buyback fee recipient."""
+    return random.choice(BUYBACK_FEE_RECIPIENTS)
+
+
+def _is_usable_pubkey(value: Optional[Pubkey]) -> bool:
+    return value is not None and value != DEFAULT_PUBKEY and value != PHANTOM_DEFAULT_CREATOR_VAULT
+
+
+def _pump_fun_fee_recipient(params: "PumpFunParams") -> Pubkey:
+    if _is_usable_pubkey(params.fee_recipient):
+        return params.fee_recipient
+    return get_mayhem_fee_recipient_random() if params.is_mayhem_mode else FEE_RECIPIENT
+
+
+def _effective_creator_for_trade(params: "PumpFunParams") -> Pubkey:
+    if _is_usable_pubkey(params.observed_trade_creator):
+        return params.observed_trade_creator
+    if _is_usable_pubkey(params.creator):
+        return params.creator
+    return DEFAULT_PUBKEY
+
+
+def _resolve_creator_vault_for_ix(params: "PumpFunParams", mint: Pubkey) -> Pubkey:
+    if _is_usable_pubkey(params.creator_vault):
+        return params.creator_vault
+    if _is_usable_pubkey(params.fee_sharing_creator_vault_if_active):
+        return params.fee_sharing_creator_vault_if_active
+    creator = _effective_creator_for_trade(params)
+    if _is_usable_pubkey(creator):
+        return get_creator_vault_pda(creator)
+    raise ValueError(f"creator_vault PDA derivation failed for mint {mint}")
+
+
+def _resolve_creator_vault_for_sell_v2(params: "PumpFunParams", mint: Pubkey) -> Pubkey:
+    if _is_usable_pubkey(params.creator_vault):
+        return params.creator_vault
+    if _is_usable_pubkey(params.fee_sharing_creator_vault_if_active):
+        return params.fee_sharing_creator_vault_if_active
+    if _is_usable_pubkey(params.creator):
+        return get_creator_vault_pda(params.creator)
+    raise ValueError(f"creator_vault PDA derivation failed for sell_v2 mint {mint}")
+
+
+def _effective_pump_mint_token_program(mint: Pubkey, params: "PumpFunParams") -> Pubkey:
+    if str(mint).endswith("pump"):
+        return TOKEN_PROGRAM_2022
+    if _is_usable_pubkey(params.token_program):
+        return params.token_program
+    return TOKEN_PROGRAM_2022
+
+
+def _effective_quote_mint(params: "PumpFunParams") -> Pubkey:
+    return params.quote_mint if _is_usable_pubkey(params.quote_mint) else WSOL_TOKEN_ACCOUNT
 
 
 # ============================================
@@ -186,8 +259,13 @@ class PumpFunParams:
     is_cashback_coin: bool = False
     associated_bonding_curve: Optional[Pubkey] = None
     creator_vault: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
-    token_program: Pubkey = TOKEN_PROGRAM
+    fee_sharing_creator_vault_if_active: Optional[Pubkey] = None
+    observed_trade_creator: Optional[Pubkey] = None
+    token_program: Pubkey = TOKEN_PROGRAM_2022
     close_token_account_when_sell: bool = False
+    fee_recipient: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
+    quote_mint: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
+    use_v2_ix: bool = False
 
 
 # ============================================
@@ -205,23 +283,24 @@ def get_buy_token_amount_from_sol_amount(
     Calculate the token amount received for a given SOL amount on PumpFun.
     Uses the bonding curve formula.
     """
-    if sol_amount == 0:
+    if sol_amount == 0 or virtual_token_reserves == 0:
         return 0
 
-    default_pubkey = Pubkey.from_string("11111111111111111111111111111111")
-    is_non_zero_creator = creator != default_pubkey
+    total_fee_bps = FEE_BASIS_POINTS + (
+        CREATOR_FEE_BASIS_POINTS if _is_usable_pubkey(creator) else 0
+    )
+    input_amount = (sol_amount * 10_000) // (total_fee_bps + 10_000)
+    denominator = virtual_sol_reserves + input_amount
+    if denominator == 0:
+        return 0
 
-    # Calculate using AMM formula
-    n = virtual_sol_reserves * virtual_token_reserves
-    i = virtual_sol_reserves + sol_amount
-    r = n // i + 1
-    s = virtual_token_reserves - r
+    tokens_received = (input_amount * virtual_token_reserves) // denominator
+    tokens_received = min(tokens_received, real_token_reserves)
 
-    # Apply creator fee if applicable
-    if is_non_zero_creator:
-        s = s - (s * 30) // 10000  # 0.30% creator fee
+    if tokens_received <= 100 * 1_000_000:
+        tokens_received = 25_547_619 * 1_000_000 if sol_amount > 10_000_000 else 255_476 * 1_000_000
 
-    return min(s, real_token_reserves)
+    return tokens_received
 
 
 def get_sell_sol_amount_from_token_amount(
@@ -233,23 +312,15 @@ def get_sell_sol_amount_from_token_amount(
     """
     Calculate the SOL amount received for a given token amount on PumpFun.
     """
-    if token_amount == 0:
+    if token_amount == 0 or virtual_token_reserves == 0:
         return 0
 
-    default_pubkey = Pubkey.from_string("11111111111111111111111111111111")
-    is_non_zero_creator = creator != default_pubkey
-
-    # Calculate using AMM formula
-    n = virtual_sol_reserves * virtual_token_reserves
-    i = virtual_token_reserves + token_amount
-    r = n // i + 1
-    sol_amount = virtual_sol_reserves - r
-
-    # Apply creator fee if applicable
-    if is_non_zero_creator:
-        sol_amount = sol_amount - (sol_amount * 30) // 10000  # 0.30% creator fee
-
-    return sol_amount
+    sol_cost = (token_amount * virtual_sol_reserves) // (virtual_token_reserves + token_amount)
+    total_fee_bps = FEE_BASIS_POINTS + (
+        CREATOR_FEE_BASIS_POINTS if _is_usable_pubkey(creator) else 0
+    )
+    fee = (sol_cost * total_fee_bps + 9_999) // 10_000
+    return max(sol_cost - fee, 0)
 
 
 # ============================================
@@ -263,9 +334,11 @@ def build_buy_instructions(
     params: PumpFunParams,
     slippage_bps: int = DEFAULT_SLIPPAGE,
     create_output_ata: bool = True,
+    create_input_ata: bool = False,
     close_input_ata: bool = False,
     fixed_output_amount: Optional[int] = None,
     use_exact_sol_amount: bool = True,
+    use_pumpfun_v2: bool = False,
 ) -> List[Instruction]:
     """
     Build PumpFun buy instructions.
@@ -284,6 +357,19 @@ def build_buy_instructions(
     Returns:
         List of instructions for the buy operation
     """
+    if use_pumpfun_v2 or params.use_v2_ix or _is_usable_pubkey(params.quote_mint):
+        return build_buy_v2_instructions(
+            payer=payer,
+            output_mint=output_mint,
+            input_amount=input_amount,
+            params=params,
+            slippage_bps=slippage_bps,
+            create_output_ata=create_output_ata,
+            create_input_ata=create_input_ata,
+            fixed_output_amount=fixed_output_amount,
+            use_exact_sol_amount=use_exact_sol_amount,
+        )
+
     if input_amount == 0:
         raise ValueError("Amount cannot be zero")
 
@@ -294,8 +380,11 @@ def build_buy_instructions(
     if bonding_curve_addr is None:
         bonding_curve_addr = get_bonding_curve_pda(output_mint)
 
-    # Get creator from creator_vault
-    creator = get_creator(params.creator_vault)
+    creator = _effective_creator_for_trade(params)
+    try:
+        creator_vault_account = _resolve_creator_vault_for_ix(params, output_mint)
+    except ValueError:
+        creator_vault_account = params.creator_vault
 
     # Calculate token amount
     if fixed_output_amount is not None:
@@ -316,19 +405,21 @@ def build_buy_instructions(
     associated_bonding_curve = params.associated_bonding_curve
     if associated_bonding_curve is None:
         associated_bonding_curve = get_associated_token_address(
-            bonding_curve_addr, output_mint, params.token_program
+            bonding_curve_addr, output_mint, _effective_pump_mint_token_program(output_mint, params)
         )
 
     # Get user token account
     user_token_account = get_associated_token_address(
-        payer, output_mint, params.token_program
+        payer, output_mint, _effective_pump_mint_token_program(output_mint, params)
     )
+
+    token_program = _effective_pump_mint_token_program(output_mint, params)
 
     # Create ATA if needed
     if create_output_ata:
         instructions.append(
             create_associated_token_account_idempotent_instruction(
-                payer, payer, output_mint, params.token_program
+                payer, payer, output_mint, token_program
             )
         )
 
@@ -338,11 +429,7 @@ def build_buy_instructions(
     # Get bonding curve v2
     bonding_curve_v2 = get_bonding_curve_v2_pda(output_mint)
 
-    # Determine fee recipient
-    if params.is_mayhem_mode:
-        fee_recipient = get_mayhem_fee_recipient_random()
-    else:
-        fee_recipient = FEE_RECIPIENT
+    fee_recipient = _pump_fun_fee_recipient(params)
 
     # Build instruction data
     track_volume = bytes([1, 1]) if params.is_cashback_coin else bytes([1, 0])
@@ -365,8 +452,8 @@ def build_buy_instructions(
         AccountMeta(user_token_account, False, True),  # user_token_account (writable)
         AccountMeta(payer, True, True),  # user (signer, writable)
         AccountMeta(SYSTEM_PROGRAM, False, False),  # system_program
-        AccountMeta(params.token_program, False, False),  # token_program
-        AccountMeta(params.creator_vault, False, True),  # creator_vault (writable)
+        AccountMeta(token_program, False, False),  # token_program
+        AccountMeta(creator_vault_account, False, True),  # creator_vault (writable)
         AccountMeta(EVENT_AUTHORITY, False, False),  # event_authority
         AccountMeta(PUMPFUN_PROGRAM_ID, False, False),  # program
         AccountMeta(GLOBAL_VOLUME_ACCUMULATOR, False, True),  # global_volume_accumulator (writable)
@@ -396,6 +483,7 @@ def build_sell_instructions(
     close_output_ata: bool = False,
     close_input_ata: bool = False,
     fixed_output_amount: Optional[int] = None,
+    use_pumpfun_v2: bool = False,
 ) -> List[Instruction]:
     """
     Build PumpFun sell instructions.
@@ -414,6 +502,18 @@ def build_sell_instructions(
     Returns:
         List of instructions for the sell operation
     """
+    if use_pumpfun_v2 or params.use_v2_ix or _is_usable_pubkey(params.quote_mint):
+        return build_sell_v2_instructions(
+            payer=payer,
+            input_mint=input_mint,
+            input_amount=input_amount,
+            params=params,
+            slippage_bps=slippage_bps,
+            create_output_ata=create_output_ata,
+            close_input_ata=close_input_ata,
+            fixed_output_amount=fixed_output_amount,
+        )
+
     if input_amount == 0:
         raise ValueError("Amount cannot be zero")
 
@@ -424,8 +524,12 @@ def build_sell_instructions(
     if bonding_curve_addr is None:
         bonding_curve_addr = get_bonding_curve_pda(input_mint)
 
-    # Get creator from creator_vault
-    creator = get_creator(params.creator_vault)
+    creator = _effective_creator_for_trade(params)
+    try:
+        creator_vault_account = _resolve_creator_vault_for_ix(params, input_mint)
+    except ValueError:
+        creator_vault_account = params.creator_vault
+    token_program = _effective_pump_mint_token_program(input_mint, params)
 
     # Calculate SOL amount
     sol_amount = get_sell_sol_amount_from_token_amount(
@@ -445,27 +549,23 @@ def build_sell_instructions(
     associated_bonding_curve = params.associated_bonding_curve
     if associated_bonding_curve is None:
         associated_bonding_curve = get_associated_token_address(
-            bonding_curve_addr, input_mint, params.token_program
+            bonding_curve_addr, input_mint, token_program
         )
 
     # Get user token account
     user_token_account = get_associated_token_address(
-        payer, input_mint, params.token_program
+        payer, input_mint, token_program
     )
 
     # Create WSOL ATA if needed for receiving SOL
     if create_output_ata or close_output_ata:
-        instructions.extend(
+        instructions.append(
             create_associated_token_account_idempotent_instruction(
                 payer, payer, WSOL_TOKEN_ACCOUNT, TOKEN_PROGRAM
             )
         )
 
-    # Determine fee recipient
-    if params.is_mayhem_mode:
-        fee_recipient = get_mayhem_fee_recipient_random()
-    else:
-        fee_recipient = FEE_RECIPIENT
+    fee_recipient = _pump_fun_fee_recipient(params)
 
     # Build instruction data
     data = SELL_DISCRIMINATOR + struct.pack("<QQ", input_amount, min_sol_output)
@@ -480,8 +580,8 @@ def build_sell_instructions(
         AccountMeta(user_token_account, False, True),  # user_token_account (writable)
         AccountMeta(payer, True, True),  # user (signer, writable)
         AccountMeta(SYSTEM_PROGRAM, False, False),  # system_program
-        AccountMeta(params.creator_vault, False, True),  # creator_vault (writable)
-        AccountMeta(params.token_program, False, False),  # token_program
+        AccountMeta(creator_vault_account, False, True),  # creator_vault (writable)
+        AccountMeta(token_program, False, False),  # token_program
         AccountMeta(EVENT_AUTHORITY, False, False),  # event_authority
         AccountMeta(PUMPFUN_PROGRAM_ID, False, False),  # program
         AccountMeta(FEE_CONFIG, False, False),  # fee_config
@@ -508,8 +608,235 @@ def build_sell_instructions(
     if close_input_ata or params.close_token_account_when_sell:
         instructions.append(
             close_token_account_instruction(
-                params.token_program,
+                token_program,
                 user_token_account,
+                payer,
+                payer,
+            )
+        )
+
+    return instructions
+
+
+def build_buy_v2_instructions(
+    payer: Pubkey,
+    output_mint: Pubkey,
+    input_amount: int,
+    params: PumpFunParams,
+    slippage_bps: int = DEFAULT_SLIPPAGE,
+    create_output_ata: bool = True,
+    create_input_ata: bool = False,
+    fixed_output_amount: Optional[int] = None,
+    use_exact_sol_amount: bool = True,
+) -> List[Instruction]:
+    """Build PumpFun V2 buy instructions."""
+    if input_amount == 0:
+        raise ValueError("Amount cannot be zero")
+
+    instructions: List[Instruction] = []
+    bonding_curve_addr = params.bonding_curve_account or get_bonding_curve_pda(output_mint)
+    creator = _effective_creator_for_trade(params)
+    creator_vault_account = _resolve_creator_vault_for_ix(params, output_mint)
+    base_token_program = _effective_pump_mint_token_program(output_mint, params)
+    quote_mint = _effective_quote_mint(params)
+    quote_token_program = TOKEN_PROGRAM
+
+    associated_base_bonding_curve = get_associated_token_address(
+        bonding_curve_addr, output_mint, base_token_program
+    )
+    associated_base_user = get_associated_token_address(payer, output_mint, base_token_program)
+    fee_recipient = _pump_fun_fee_recipient(params)
+    buyback_fee_recipient = get_buyback_fee_recipient_random()
+    associated_quote_fee_recipient = get_associated_token_address(
+        fee_recipient, quote_mint, quote_token_program
+    )
+    associated_quote_buyback_fee_recipient = get_associated_token_address(
+        buyback_fee_recipient, quote_mint, quote_token_program
+    )
+    associated_quote_bonding_curve = get_associated_token_address(
+        bonding_curve_addr, quote_mint, quote_token_program
+    )
+    associated_quote_user = get_associated_token_address(payer, quote_mint, quote_token_program)
+    associated_creator_vault = get_associated_token_address(
+        creator_vault_account, quote_mint, quote_token_program
+    )
+    sharing_config = get_fee_sharing_config_pda(output_mint)
+    user_volume_accumulator = get_user_volume_accumulator_pda(payer)
+    associated_user_volume_accumulator = get_associated_token_address(
+        user_volume_accumulator, quote_mint, quote_token_program
+    )
+
+    if create_output_ata:
+        instructions.append(
+            create_associated_token_account_idempotent_instruction(
+                payer, payer, output_mint, base_token_program
+            )
+        )
+
+    if create_input_ata:
+        instructions.append(
+            create_associated_token_account_idempotent_instruction(
+                payer, payer, quote_mint, quote_token_program
+            )
+        )
+
+    buy_token_amount = (
+        fixed_output_amount
+        if fixed_output_amount is not None
+        else get_buy_token_amount_from_sol_amount(
+            params.virtual_token_reserves,
+            params.virtual_sol_reserves,
+            params.real_token_reserves,
+            creator,
+            input_amount,
+        )
+    )
+    max_sol_cost = calculate_with_slippage_buy(input_amount, slippage_bps)
+    if use_exact_sol_amount:
+        min_tokens_out = (
+            fixed_output_amount
+            if fixed_output_amount is not None
+            else calculate_with_slippage_sell(buy_token_amount, slippage_bps)
+        )
+        data = BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR + struct.pack("<QQ", input_amount, min_tokens_out)
+    else:
+        data = BUY_V2_DISCRIMINATOR + struct.pack("<QQ", buy_token_amount, max_sol_cost)
+
+    accounts = [
+        AccountMeta(GLOBAL_ACCOUNT, False, False),
+        AccountMeta(output_mint, False, False),
+        AccountMeta(quote_mint, False, False),
+        AccountMeta(base_token_program, False, False),
+        AccountMeta(quote_token_program, False, False),
+        AccountMeta(ASSOCIATED_TOKEN_PROGRAM, False, False),
+        AccountMeta(fee_recipient, False, True),
+        AccountMeta(associated_quote_fee_recipient, False, True),
+        AccountMeta(buyback_fee_recipient, False, False),
+        AccountMeta(associated_quote_buyback_fee_recipient, False, True),
+        AccountMeta(bonding_curve_addr, False, True),
+        AccountMeta(associated_base_bonding_curve, False, True),
+        AccountMeta(associated_quote_bonding_curve, False, True),
+        AccountMeta(payer, True, True),
+        AccountMeta(associated_base_user, False, True),
+        AccountMeta(associated_quote_user, False, True),
+        AccountMeta(creator_vault_account, False, True),
+        AccountMeta(associated_creator_vault, False, True),
+        AccountMeta(sharing_config, False, False),
+        AccountMeta(GLOBAL_VOLUME_ACCUMULATOR, False, True),
+        AccountMeta(user_volume_accumulator, False, True),
+        AccountMeta(associated_user_volume_accumulator, False, True),
+        AccountMeta(FEE_CONFIG, False, False),
+        AccountMeta(FEE_PROGRAM, False, False),
+        AccountMeta(SYSTEM_PROGRAM, False, False),
+        AccountMeta(EVENT_AUTHORITY, False, False),
+        AccountMeta(PUMPFUN_PROGRAM_ID, False, False),
+    ]
+    instructions.append(Instruction(PUMPFUN_PROGRAM_ID, data, accounts))
+    return instructions
+
+
+def build_sell_v2_instructions(
+    payer: Pubkey,
+    input_mint: Pubkey,
+    input_amount: int,
+    params: PumpFunParams,
+    slippage_bps: int = DEFAULT_SLIPPAGE,
+    create_output_ata: bool = False,
+    close_input_ata: bool = False,
+    fixed_output_amount: Optional[int] = None,
+) -> List[Instruction]:
+    """Build PumpFun V2 sell instructions."""
+    if input_amount == 0:
+        raise ValueError("Amount cannot be zero")
+
+    instructions: List[Instruction] = []
+    bonding_curve_addr = params.bonding_curve_account or get_bonding_curve_pda(input_mint)
+    creator = _effective_creator_for_trade(params)
+    creator_vault_account = _resolve_creator_vault_for_sell_v2(params, input_mint)
+    base_token_program = _effective_pump_mint_token_program(input_mint, params)
+    quote_mint = _effective_quote_mint(params)
+    quote_token_program = TOKEN_PROGRAM
+
+    associated_base_bonding_curve = get_associated_token_address(
+        bonding_curve_addr, input_mint, base_token_program
+    )
+    associated_base_user = get_associated_token_address(payer, input_mint, base_token_program)
+    fee_recipient = _pump_fun_fee_recipient(params)
+    buyback_fee_recipient = get_buyback_fee_recipient_random()
+    associated_quote_fee_recipient = get_associated_token_address(
+        fee_recipient, quote_mint, quote_token_program
+    )
+    associated_quote_buyback_fee_recipient = get_associated_token_address(
+        buyback_fee_recipient, quote_mint, quote_token_program
+    )
+    associated_quote_bonding_curve = get_associated_token_address(
+        bonding_curve_addr, quote_mint, quote_token_program
+    )
+    associated_quote_user = get_associated_token_address(payer, quote_mint, quote_token_program)
+    associated_creator_vault = get_associated_token_address(
+        creator_vault_account, quote_mint, quote_token_program
+    )
+    sharing_config = get_fee_sharing_config_pda(input_mint)
+    user_volume_accumulator = get_user_volume_accumulator_pda(payer)
+    associated_user_volume_accumulator = get_associated_token_address(
+        user_volume_accumulator, quote_mint, quote_token_program
+    )
+
+    if create_output_ata:
+        instructions.append(
+            create_associated_token_account_idempotent_instruction(
+                payer, payer, quote_mint, quote_token_program
+            )
+        )
+
+    sol_amount = get_sell_sol_amount_from_token_amount(
+        params.virtual_token_reserves,
+        params.virtual_sol_reserves,
+        creator,
+        input_amount,
+    )
+    min_sol_output = (
+        fixed_output_amount
+        if fixed_output_amount is not None
+        else calculate_with_slippage_sell(sol_amount, slippage_bps)
+    )
+    data = SELL_V2_DISCRIMINATOR + struct.pack("<QQ", input_amount, min_sol_output)
+
+    accounts = [
+        AccountMeta(GLOBAL_ACCOUNT, False, False),
+        AccountMeta(input_mint, False, False),
+        AccountMeta(quote_mint, False, False),
+        AccountMeta(base_token_program, False, False),
+        AccountMeta(quote_token_program, False, False),
+        AccountMeta(ASSOCIATED_TOKEN_PROGRAM, False, False),
+        AccountMeta(fee_recipient, False, True),
+        AccountMeta(associated_quote_fee_recipient, False, True),
+        AccountMeta(buyback_fee_recipient, False, False),
+        AccountMeta(associated_quote_buyback_fee_recipient, False, True),
+        AccountMeta(bonding_curve_addr, False, True),
+        AccountMeta(associated_base_bonding_curve, False, True),
+        AccountMeta(associated_quote_bonding_curve, False, True),
+        AccountMeta(payer, True, True),
+        AccountMeta(associated_base_user, False, True),
+        AccountMeta(associated_quote_user, False, True),
+        AccountMeta(creator_vault_account, False, True),
+        AccountMeta(associated_creator_vault, False, True),
+        AccountMeta(sharing_config, False, False),
+        AccountMeta(user_volume_accumulator, False, True),
+        AccountMeta(associated_user_volume_accumulator, False, True),
+        AccountMeta(FEE_CONFIG, False, False),
+        AccountMeta(FEE_PROGRAM, False, False),
+        AccountMeta(SYSTEM_PROGRAM, False, False),
+        AccountMeta(EVENT_AUTHORITY, False, False),
+        AccountMeta(PUMPFUN_PROGRAM_ID, False, False),
+    ]
+    instructions.append(Instruction(PUMPFUN_PROGRAM_ID, data, accounts))
+
+    if close_input_ata or params.close_token_account_when_sell:
+        instructions.append(
+            close_token_account_instruction(
+                base_token_program,
+                associated_base_user,
                 payer,
                 payer,
             )
@@ -613,19 +940,18 @@ async def fetch_bonding_curve_account(
     # is_cashback_coin: bool
     is_cashback_coin = data[offset] == 1
     
-    # Create PumpFunParams
-    from .pumpfun_builder import PumpFunParams
     params = PumpFunParams(
-        bonding_curve=PumpFunParams.BondingCurve(
-            account=bonding_curve_pda,
-            virtual_token_reserves=virtual_token_reserves,
-            virtual_sol_reserves=virtual_sol_reserves,
-            real_token_reserves=real_token_reserves,
-            is_mayhem_mode=is_mayhem_mode,
-            is_cashback_coin=is_cashback_coin,
-        ),
+        bonding_curve_account=bonding_curve_pda,
+        virtual_token_reserves=virtual_token_reserves,
+        virtual_sol_reserves=virtual_sol_reserves,
+        real_token_reserves=real_token_reserves,
+        real_sol_reserves=real_sol_reserves,
+        complete=complete,
+        creator=creator,
+        is_mayhem_mode=is_mayhem_mode,
+        is_cashback_coin=is_cashback_coin,
         creator_vault=get_creator_vault_pda(creator),
-        token_program=TOKEN_PROGRAM,
+        token_program=TOKEN_PROGRAM_2022,
     )
     
     return (params, bonding_curve_pda)
@@ -677,19 +1003,25 @@ __all__ = [
     "FEE_CONFIG",
     "MAYHEM_FEE_RECIPIENTS",
     "PROTOCOL_EXTRA_FEE_RECIPIENTS",
+    "BUYBACK_FEE_RECIPIENTS",
     # Discriminators
     "BUY_DISCRIMINATOR",
     "BUY_EXACT_SOL_IN_DISCRIMINATOR",
     "SELL_DISCRIMINATOR",
+    "BUY_V2_DISCRIMINATOR",
+    "SELL_V2_DISCRIMINATOR",
+    "BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR",
     "CLAIM_CASHBACK_DISCRIMINATOR",
     # PDA Functions
     "get_bonding_curve_pda",
     "get_bonding_curve_v2_pda",
     "get_creator_vault_pda",
     "get_user_volume_accumulator_pda",
+    "get_fee_sharing_config_pda",
     "get_creator",
     "get_mayhem_fee_recipient_random",
     "get_protocol_extra_fee_recipient_random",
+    "get_buyback_fee_recipient_random",
     # Params
     "PumpFunParams",
     # Calculation Functions
@@ -698,5 +1030,7 @@ __all__ = [
     # Instruction Builders
     "build_buy_instructions",
     "build_sell_instructions",
+    "build_buy_v2_instructions",
+    "build_sell_v2_instructions",
     "claim_cashback_pumpfun_instruction",
 ]

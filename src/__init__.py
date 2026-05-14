@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Optional, List, Dict, Any, Union
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import asyncio
 import time
+import os
 
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
@@ -19,9 +20,9 @@ from solders.signature import Signature
 from solders.transaction import Transaction
 from solders.message import Message
 from solders.instruction import Instruction, AccountMeta
+from solders.hash import Hash as Blockhash
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Commitment, Confirmed
-from solana.transaction import Blockhash
 
 # ============== Enums ==============
 
@@ -59,6 +60,7 @@ class SwqosRegion(Enum):
     NEW_YORK = "NewYork"
     FRANKFURT = "Frankfurt"
     AMSTERDAM = "Amsterdam"
+    DUBLIN = "Dublin"
     SLC = "SLC"
     TOKYO = "Tokyo"
     LONDON = "London"
@@ -89,6 +91,22 @@ class SwqosType(Enum):
     LIGHTSPEED = "Lightspeed"
     SOYAS = "Soyas"
     SPEEDLANDING = "Speedlanding"
+
+
+class SwqosTransport(Enum):
+    """SWQOS transport mode."""
+
+    HTTP = "Http"
+    GRPC = "Grpc"
+    QUIC = "Quic"
+
+
+class AstralaneTransport(Enum):
+    """Astralane transport mode."""
+
+    BINARY = "Binary"
+    PLAIN = "Plain"
+    QUIC = "Quic"
 
 
 # ============== Constants ==============
@@ -140,6 +158,10 @@ class SwqosConfig:
     region: SwqosRegion
     api_key: str
     custom_url: Optional[str] = None
+    mev_protection: Optional[bool] = None
+    transport: Optional[SwqosTransport] = None
+    astralane_transport: Optional[AstralaneTransport] = None
+    swqos_only: Optional[bool] = None
 
 
 @dataclass
@@ -215,11 +237,30 @@ class TradeResult:
 class PumpFunParams:
     """PumpFun protocol parameters"""
 
-    bonding_curve: BondingCurveAccount
-    associated_bonding_curve: Pubkey
-    creator_vault: Pubkey
-    token_program: Pubkey
+    bonding_curve: BondingCurveAccount = field(
+        default_factory=lambda: BondingCurveAccount(
+            discriminator=0,
+            account=Pubkey.default(),
+            virtual_token_reserves=0,
+            virtual_sol_reserves=0,
+            real_token_reserves=0,
+            real_sol_reserves=0,
+            token_total_supply=0,
+            complete=False,
+            creator=Pubkey.default(),
+            is_mayhem_mode=False,
+            is_cashback_coin=False,
+        )
+    )
+    associated_bonding_curve: Pubkey = field(default_factory=Pubkey.default)
+    creator_vault: Pubkey = field(default_factory=Pubkey.default)
+    token_program: Pubkey = field(default_factory=lambda: TOKEN_PROGRAM)
     close_token_account_when_sell: Optional[bool] = None
+    fee_recipient: Pubkey = field(default_factory=Pubkey.default)
+    quote_mint: Pubkey = field(default_factory=Pubkey.default)
+    use_v2_ix: bool = False
+    observed_trade_creator: Optional[Pubkey] = None
+    fee_sharing_creator_vault_if_active: Optional[Pubkey] = None
 
     @classmethod
     def immediate_sell(
@@ -252,6 +293,12 @@ class PumpFunParams:
     def with_creator_vault(self, vault: Pubkey) -> "PumpFunParams":
         """Override creator vault"""
         self.creator_vault = vault
+        return self
+
+    def with_quote_mint(self, quote_mint: Pubkey, use_v2_ix: bool = True) -> "PumpFunParams":
+        """Set PumpFun V2 quote mint and enable V2 instructions by default."""
+        self.quote_mint = quote_mint
+        self.use_v2_ix = use_v2_ix
         return self
 
 
@@ -412,6 +459,11 @@ class TradeConfig:
     # MEV protection: when enabled, BlockRazor uses sandwichMitigation mode,
     # Astralane uses port 9000 (MEV-protected QUIC endpoint)
     mev_protection: bool = False
+    use_seed_optimize: bool = True
+    create_wsol_ata_on_startup: bool = False
+    use_pumpfun_v2: bool = False
+    swqos_cores_from_end: bool = True
+    max_swqos_submit_concurrency: Optional[int] = None
 
     @classmethod
     def builder(cls, rpc_url: str) -> "TradeConfigBuilder":
@@ -445,6 +497,11 @@ class TradeConfigBuilder:
         self._log_enabled: bool = True
         self._check_min_tip: bool = False
         self._mev_protection: bool = False
+        self._use_seed_optimize: bool = True
+        self._create_wsol_ata_on_startup: bool = False
+        self._use_pumpfun_v2: bool = False
+        self._swqos_cores_from_end: bool = True
+        self._max_swqos_submit_concurrency: Optional[int] = None
 
     def swqos_configs(self, configs: List[SwqosConfig]) -> "TradeConfigBuilder":
         """Set SWQOS provider configurations."""
@@ -480,6 +537,26 @@ class TradeConfigBuilder:
         self._mev_protection = enabled
         return self
 
+    def use_seed_optimize(self, enabled: bool) -> "TradeConfigBuilder":
+        self._use_seed_optimize = enabled
+        return self
+
+    def create_wsol_ata_on_startup(self, enabled: bool) -> "TradeConfigBuilder":
+        self._create_wsol_ata_on_startup = enabled
+        return self
+
+    def use_pumpfun_v2(self, enabled: bool) -> "TradeConfigBuilder":
+        self._use_pumpfun_v2 = enabled
+        return self
+
+    def swqos_cores_from_end(self, enabled: bool) -> "TradeConfigBuilder":
+        self._swqos_cores_from_end = enabled
+        return self
+
+    def max_swqos_submit_concurrency(self, limit: Optional[int]) -> "TradeConfigBuilder":
+        self._max_swqos_submit_concurrency = limit
+        return self
+
     def build(self) -> "TradeConfig":
         """Build and return the TradeConfig."""
         return TradeConfig(
@@ -489,7 +566,27 @@ class TradeConfigBuilder:
             log_enabled=self._log_enabled,
             check_min_tip=self._check_min_tip,
             mev_protection=self._mev_protection,
+            use_seed_optimize=self._use_seed_optimize,
+            create_wsol_ata_on_startup=self._create_wsol_ata_on_startup,
+            use_pumpfun_v2=self._use_pumpfun_v2,
+            swqos_cores_from_end=self._swqos_cores_from_end,
+            max_swqos_submit_concurrency=self._max_swqos_submit_concurrency,
         )
+
+
+def recommended_sender_thread_core_indices(
+    swqos_count: int,
+    available_cores: Optional[int] = None,
+    from_end: bool = True,
+) -> List[int]:
+    """Return Rust-parity SWQOS sender core indices."""
+    cores = available_cores or os.cpu_count() or 0
+    if swqos_count <= 0 or cores <= 0:
+        return []
+    count = min(swqos_count, cores)
+    if from_end:
+        return list(range(cores - count, cores))
+    return list(range(count))
 
 
 class TradingClient:
@@ -550,18 +647,36 @@ class TradingClient:
                 error="Must provide either recent_blockhash or durable_nonce",
             )
 
+        protocol_params = params.extension_params
+        if (
+            params.dex_type == DexType.PUMPFUN
+            and isinstance(protocol_params, PumpFunParams)
+            and self.config.use_pumpfun_v2
+        ):
+            protocol_params = replace(protocol_params, use_v2_ix=True)
+
         # Build instructions
         builder = self._create_instruction_builder(params.dex_type)
-        instructions = await builder.build_buy_instructions(
+        buy_kwargs = dict(
             payer=self.payer.pubkey(),
             input_mint=self._get_input_mint(params.input_token_type),
             output_mint=params.mint,
             input_amount=params.input_token_amount,
             slippage_basis_points=params.slippage_basis_points or DEFAULT_SLIPPAGE,
-            protocol_params=params.extension_params,
+            protocol_params=protocol_params,
             create_output_ata=params.create_mint_ata,
             close_input_ata=params.close_input_token_ata,
         )
+        if params.dex_type == DexType.PUMPFUN:
+            buy_kwargs.update(
+                create_input_ata=params.create_input_token_ata,
+                fixed_output_amount=params.fixed_output_token_amount,
+                use_exact_sol_amount=params.use_exact_sol_amount
+                if params.use_exact_sol_amount is not None
+                else True,
+                use_pumpfun_v2=self.config.use_pumpfun_v2,
+            )
+        instructions = await builder.build_buy_instructions(**buy_kwargs)
 
         # Process middlewares
         for middleware in self.middlewares:
@@ -589,17 +704,31 @@ class TradingClient:
                 error="Must provide either recent_blockhash or durable_nonce",
             )
 
+        protocol_params = params.extension_params
+        if (
+            params.dex_type == DexType.PUMPFUN
+            and isinstance(protocol_params, PumpFunParams)
+            and self.config.use_pumpfun_v2
+        ):
+            protocol_params = replace(protocol_params, use_v2_ix=True)
+
         builder = self._create_instruction_builder(params.dex_type)
-        instructions = await builder.build_sell_instructions(
+        sell_kwargs = dict(
             payer=self.payer.pubkey(),
             input_mint=params.mint,
             output_mint=self._get_output_mint(params.output_token_type),
             input_amount=params.input_token_amount,
             slippage_basis_points=params.slippage_basis_points or DEFAULT_SLIPPAGE,
-            protocol_params=params.extension_params,
+            protocol_params=protocol_params,
             create_output_ata=params.create_output_token_ata,
             close_input_ata=params.close_mint_token_ata,
         )
+        if params.dex_type == DexType.PUMPFUN:
+            sell_kwargs.update(
+                fixed_output_amount=params.fixed_output_token_amount,
+                use_pumpfun_v2=self.config.use_pumpfun_v2,
+            )
+        instructions = await builder.build_sell_instructions(**sell_kwargs)
 
         for middleware in self.middlewares:
             instructions = await middleware.process(instructions)
@@ -635,12 +764,34 @@ class TradingClient:
 
     async def wrap_sol_to_wsol(self, amount: int) -> str:
         """Wrap SOL to WSOL"""
-        # Implementation requires WSOL manager
-        raise NotImplementedError("wrap_sol_to_wsol not implemented")
+        if amount <= 0:
+            raise ValueError("amount must be greater than zero")
+
+        from .common.wsol_manager import handle_wsol
+
+        return await self._send_instructions_or_raise(
+            handle_wsol(self.payer.pubkey(), amount),
+            "wrap_sol_to_wsol",
+        )
 
     async def close_wsol(self) -> str:
         """Close WSOL account and unwrap to SOL"""
-        raise NotImplementedError("close_wsol not implemented")
+        from .common.wsol_manager import close_wsol
+
+        return await self._send_instructions_or_raise(
+            [close_wsol(self.payer.pubkey())],
+            "close_wsol",
+        )
+
+    async def _send_instructions_or_raise(
+        self,
+        instructions: List[Instruction],
+        operation: str,
+    ) -> str:
+        result = await self._execute_transaction(instructions, None, True)
+        if not result.success or not result.signatures:
+            raise RuntimeError(result.error or f"{operation} failed")
+        return result.signatures[0]
 
     def _get_input_mint(self, token_type: TradeTokenType) -> Pubkey:
         """Get input mint for token type"""
@@ -709,12 +860,15 @@ def create_gas_fee_strategy() -> GasFeeStrategy:
 
 
 def create_trade_config(
-    rpc_url: str, swqos_configs: Optional[List[SwqosConfig]] = None
+    rpc_url: str,
+    swqos_configs: Optional[List[SwqosConfig]] = None,
+    **options: Any,
 ) -> TradeConfig:
     """Create a new trade config"""
     return TradeConfig(
         rpc_url=rpc_url,
         swqos_configs=swqos_configs or [],
+        **options,
     )
 
 
@@ -739,6 +893,92 @@ from .hotpath import (
     create_hot_path_executor,
 )
 
+from .common.types import (
+    GasFeeStrategy,
+    GasFeeStrategyType,
+    GasFeeStrategyValue,
+    TradeType,
+    SwqosType,
+    BondingCurveAccount,
+    DurableNonceInfo,
+    NonceCache,
+)
+from .common.gas_fee_strategy import create_gas_fee_strategy
+from .cache import LRUCache, TTLCache, ShardedCache
+from .pool import WorkerPool, RateLimiter, MultiRateLimiter
+from .calc import (
+    ceil_div,
+    calculate_with_slippage_buy,
+    calculate_with_slippage_sell,
+    get_buy_token_amount_from_sol_amount,
+    get_sell_sol_amount_from_token_amount,
+    raydium_amm_v4_get_amount_out,
+    lamports_to_sol,
+    sol_to_lamports,
+)
+from .calc import (
+    buy_base_input_internal as _calc_buy_base_input_internal,
+    sell_base_input_internal as _calc_sell_base_input_internal,
+)
+from .seed import find_program_address, get_bonding_curve_pda, get_associated_token_address
+from .spl_token import TokenAccount, transfer_instruction, close_account_instruction
+from .instruction import PumpFunInstructionBuilder
+from .trading import TradeExecutor, TradeConfig, ExecuteOptions, default_execute_options
+
+
+@dataclass
+class BuildParams:
+    """Generic instruction build parameters used by compatibility tests."""
+
+    payer: bytes
+    input_mint: bytes
+    output_mint: bytes
+    input_amount: int
+    slippage_bps: int
+    protocol_params: Any
+
+
+def compute_fee(amount: int, fee_basis_points: int, denominator: int = 10_000) -> int:
+    """Calculate a fee with ceiling division."""
+
+    return ceil_div(amount * fee_basis_points, denominator)
+
+
+def buy_base_input_internal(
+    base: int,
+    base_reserve: int,
+    quote_reserve: int,
+    slippage_basis_points: int,
+    has_coin_creator: bool = False,
+):
+    """Compatibility wrapper using the public argument order from tests/docs."""
+
+    return _calc_buy_base_input_internal(
+        base,
+        slippage_basis_points,
+        base_reserve,
+        quote_reserve,
+        has_coin_creator,
+    )
+
+
+def sell_base_input_internal(
+    base: int,
+    base_reserve: int,
+    quote_reserve: int,
+    slippage_basis_points: int,
+    has_coin_creator: bool = False,
+):
+    """Compatibility wrapper using the public argument order from tests/docs."""
+
+    return _calc_sell_base_input_internal(
+        base,
+        slippage_basis_points,
+        base_reserve,
+        quote_reserve,
+        has_coin_creator,
+    )
+
 __all__ = [
     # Enums
     "DexType",
@@ -746,10 +986,15 @@ __all__ = [
     "TradeType",
     "SwqosRegion",
     "SwqosType",
+    "SwqosTransport",
+    "AstralaneTransport",
+    "GasFeeStrategyType",
+    "GasFeeStrategyValue",
     # Data Classes
     "SwqosConfig",
     "GasFeeStrategy",
     "DurableNonceInfo",
+    "NonceCache",
     "BondingCurveAccount",
     "TradeResult",
     # Protocol Params
@@ -764,10 +1009,40 @@ __all__ = [
     "TradeSellParams",
     # Client
     "TradeConfig",
+    "TradeConfigBuilder",
     "TradingClient",
     # Helper Functions
     "create_gas_fee_strategy",
     "create_trade_config",
+    "recommended_sender_thread_core_indices",
+    "compute_fee",
+    "ceil_div",
+    "calculate_with_slippage_buy",
+    "calculate_with_slippage_sell",
+    "get_buy_token_amount_from_sol_amount",
+    "get_sell_sol_amount_from_token_amount",
+    "buy_base_input_internal",
+    "sell_base_input_internal",
+    "raydium_amm_v4_get_amount_out",
+    "lamports_to_sol",
+    "sol_to_lamports",
+    "LRUCache",
+    "TTLCache",
+    "ShardedCache",
+    "WorkerPool",
+    "RateLimiter",
+    "MultiRateLimiter",
+    "find_program_address",
+    "get_bonding_curve_pda",
+    "get_associated_token_address",
+    "TokenAccount",
+    "transfer_instruction",
+    "close_account_instruction",
+    "PumpFunInstructionBuilder",
+    "BuildParams",
+    "TradeExecutor",
+    "ExecuteOptions",
+    "default_execute_options",
     # Constants
     "SYSTEM_PROGRAM",
     "TOKEN_PROGRAM",

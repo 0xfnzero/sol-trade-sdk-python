@@ -192,13 +192,6 @@ class HotPathExecutor:
         opts = opts or ExecuteOptions()
         start_time = time.time()
         
-        # Validate blockhash is fresh (no RPC, just check cache age)
-        if not opts.skip_blockhash_validation and not self.state.is_data_fresh():
-            return ExecuteResult(
-                success=False,
-                error="Stale blockhash - prefetch required",
-            )
-        
         # Get clients
         with self._clients_lock:
             clients = list(self._swqos_clients)
@@ -207,6 +200,13 @@ class HotPathExecutor:
             return ExecuteResult(
                 success=False,
                 error="No SWQoS clients configured",
+            )
+
+        # Validate blockhash is fresh (no RPC, just check cache age)
+        if not opts.skip_blockhash_validation and not self.state.is_data_fresh():
+            return ExecuteResult(
+                success=False,
+                error="Stale blockhash - prefetch required",
             )
         
         # Submit transaction

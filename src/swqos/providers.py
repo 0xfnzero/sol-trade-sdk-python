@@ -93,6 +93,13 @@ class TransactionResult:
     bundle_id: Optional[str] = None
     confirmation_status: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        if self.signature and self.signature.endswith("_signature_placeholder"):
+            self.success = False
+            self.error = self.error or f"{self.provider or 'SWQOS'} provider is not wired to a live submit endpoint"
+            self.signature = None
+            self.bundle_id = None
+
 
 class SwqosClient:
     """Base SWQOS client"""
