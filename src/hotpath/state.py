@@ -101,7 +101,7 @@ class HotPathState:
     
     def __init__(
         self,
-        rpc_client: Any,  # AsyncRPCClient
+        rpc_client: Optional[Any] = None,  # AsyncRPCClient
         config: Optional[HotPathConfig] = None,
     ):
         self.config = config or HotPathConfig()
@@ -392,7 +392,11 @@ class ContextExpiredError(HotPathError):
     pass
 
 
-# ===== Type Aliases for Compatibility =====
+# ===== Compatibility cache wrappers =====
 
-AccountStateCache = AccountState
-PoolStateCache = PoolState
+class AccountStateCache(dict):
+    """Dictionary-backed account-state cache kept for older tests/imports."""
+
+
+class PoolStateCache(dict):
+    """Dictionary-backed pool-state cache kept for older tests/imports."""

@@ -15,6 +15,11 @@ K = TypeVar('K')
 V = TypeVar('V')
 
 
+def _ttl_seconds(ttl: float) -> float:
+    """Accept Rust/Node-style millisecond TTLs while preserving small second TTLs."""
+    return ttl / 1000.0 if ttl >= 100 else ttl
+
+
 @dataclass
 class CacheStats:
     """Cache statistics"""
@@ -52,7 +57,7 @@ class LRUCache(Generic[K, V]):
     - Statistics tracking
     """
 
-    def __init__(self, max_size: int = 1000, ttl: float = 300.0):
+    def __init__(self, max_size: int = 1000, ttl: float = 300000.0):
         """
         Initialize LRU cache.
         
@@ -61,7 +66,7 @@ class LRUCache(Generic[K, V]):
             ttl: Time-to-live in seconds
         """
         self._max_size = max_size
-        self._ttl = ttl
+        self._ttl = _ttl_seconds(ttl)
         self._cache: OrderedDict[K, CacheEntry[V]] = OrderedDict()
         self._lock = RLock()
         self._stats = CacheStats()
@@ -140,6 +145,10 @@ class LRUCache(Generic[K, V]):
         """Get cache statistics"""
         return self._stats
 
+    def get_stats(self) -> CacheStats:
+        """Compatibility method matching Node/Rust-facing tests."""
+        return self._stats
+
 
 class TTLCache(Generic[K, V]):
     """
@@ -147,8 +156,8 @@ class TTLCache(Generic[K, V]):
     Optimized for read-heavy workloads.
     """
 
-    def __init__(self, ttl: float = 300.0):
-        self._ttl = ttl
+    def __init__(self, ttl: float = 300000.0):
+        self._ttl = _ttl_seconds(ttl)
         self._cache: Dict[K, CacheEntry[V]] = {}
         self._lock = RLock()
         self._stats = CacheStats()
@@ -192,6 +201,13 @@ class TTLCache(Generic[K, V]):
             self._stats.size = len(self._cache)
             return len(expired)
 
+    @property
+    def stats(self) -> CacheStats:
+        return self._stats
+
+    def get_stats(self) -> CacheStats:
+        return self._stats
+
 
 class ShardedCache(Generic[K, V]):
     """
@@ -199,7 +215,18 @@ class ShardedCache(Generic[K, V]):
     Distributes keys across multiple shards to reduce lock contention.
     """
 
-    def __init__(self, shards: int = 16, max_size_per_shard: int = 1000, ttl: float = 300.0):
+    def __init__(
+        self,
+        shards: int = 16,
+        max_size_per_shard: int = 1000,
+        ttl: float = 300000.0,
+        **kwargs: Any,
+    ):
+        if "maxSizePerShard" in kwargs:
+            max_size_per_shard = kwargs.pop("maxSizePerShard")
+        if kwargs:
+            unexpected = ", ".join(kwargs.keys())
+            raise TypeError(f"unexpected keyword argument(s): {unexpected}")
         self._shards = [
             LRUCache[K, V](max_size=max_size_per_shard, ttl=ttl)
             for _ in range(shards)
@@ -235,6 +262,9 @@ class ShardedCache(Generic[K, V]):
             total.evictions += shard.stats.evictions
             total.size += shard.stats.size
         return total
+
+    def get_stats(self) -> CacheStats:
+        return self.stats
 
 
 # ===== Decorator for Function Caching =====

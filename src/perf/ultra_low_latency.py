@@ -63,12 +63,14 @@ class MemoryPool:
     Provides fixed-size buffers for zero-allocation hot paths.
     """
 
-    def __init__(self, buffer_size: int, pool_size: int):
+    def __init__(self, buffer_size: int, pool_size: int, clear_on_release: bool = False):
         self.buffer_size = buffer_size
         self.pool_size = pool_size
+        self.clear_on_release = clear_on_release
         self._pool: deque[bytearray] = deque()
         self._lock = threading.Lock()
         self._allocated = 0
+        self._zero_buffer = bytes(buffer_size) if clear_on_release else None
 
         # Pre-allocate buffers
         for _ in range(pool_size):
@@ -88,8 +90,11 @@ class MemoryPool:
             return  # Don't accept wrong-sized buffers
 
         with self._lock:
+            if self._allocated <= 0:
+                return
             self._allocated -= 1
-            buffer[:] = b'\x00' * self.buffer_size  # Clear buffer
+            if self._zero_buffer is not None:
+                buffer[:] = self._zero_buffer
             self._pool.append(buffer)
 
     def utilization(self) -> float:

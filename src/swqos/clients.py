@@ -11,15 +11,18 @@ import ssl
 import struct
 import datetime
 import ipaddress
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from enum import Enum
+from urllib.parse import urlparse
 
 import aiohttp
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.hazmat.primitives import serialization, hashes
     from cryptography.hazmat.backends import default_backend
     from cryptography import x509
@@ -31,6 +34,9 @@ try:
     _QUIC_AVAILABLE = True
 except ImportError:
     _QUIC_AVAILABLE = False
+    QuicConfiguration = object  # type: ignore[assignment]
+    QuicConnectionProtocol = object  # type: ignore[assignment]
+    quic_connect = None  # type: ignore[assignment]
 
 from ..common.types import SwqosType, SwqosRegion, TradeType
 
@@ -329,6 +335,17 @@ ASTRALANE_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.LONDON:      "http://ny.gateway.astralane.io/irisb",
     SwqosRegion.LOS_ANGELES: "http://lax.gateway.astralane.io/irisb",
     SwqosRegion.DEFAULT:     "http://lim.gateway.astralane.io/irisb",
+}
+
+ASTRALANE_QUIC_HOSTS: Dict[SwqosRegion, str] = {
+    SwqosRegion.NEW_YORK:    "ny.gateway.astralane.io",
+    SwqosRegion.FRANKFURT:   "fr.gateway.astralane.io",
+    SwqosRegion.AMSTERDAM:   "ams.gateway.astralane.io",
+    SwqosRegion.SLC:         "ny.gateway.astralane.io",
+    SwqosRegion.TOKYO:       "jp.gateway.astralane.io",
+    SwqosRegion.LONDON:      "ams.gateway.astralane.io",
+    SwqosRegion.LOS_ANGELES: "lax.gateway.astralane.io",
+    SwqosRegion.DEFAULT:     "lim.gateway.astralane.io",
 }
 
 STELLIUM_ENDPOINTS: Dict[SwqosRegion, str] = {
@@ -1620,6 +1637,54 @@ def _make_solana_tpu_quic_config(server_name: str) -> "QuicConfiguration":
     return cfg
 
 
+def _host_port_from_http(endpoint: str, port: int) -> tuple[str, int]:
+    parsed = urlparse(endpoint)
+    host = parsed.hostname
+    if not host:
+        host = endpoint.removeprefix("http://").removeprefix("https://").split("/", 1)[0]
+        if ":" in host:
+            host = host.rsplit(":", 1)[0]
+    return host, port
+
+
+def _make_node1_quic_config(server_name: str) -> "QuicConfiguration":
+    from aioquic.quic.configuration import QuicConfiguration
+
+    return QuicConfiguration(
+        alpn_protocols=["h3"],
+        is_client=True,
+        verify_mode=ssl.CERT_NONE,
+        server_name=server_name,
+    )
+
+
+def _make_astralane_quic_config(api_key: str) -> "QuicConfiguration":
+    from aioquic.quic.configuration import QuicConfiguration
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    public_key = private_key.public_key()
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, api_key)])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(public_key)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.utcnow() - datetime.timedelta(hours=1))
+        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+        .sign(private_key, hashes.SHA256())
+    )
+    cfg = QuicConfiguration(
+        alpn_protocols=["astralane-tpu"],
+        is_client=True,
+        verify_mode=ssl.CERT_NONE,
+        server_name="astralane",
+    )
+    cfg.certificate = cert
+    cfg.private_key = private_key
+    return cfg
+
+
 class _SolanaTPUProtocol(QuicConnectionProtocol):
     """Minimal QUIC protocol: opens a unidirectional stream, writes bytes, closes."""
 
@@ -1655,6 +1720,151 @@ async def _send_via_quic(host: str, port: int, server_name: str, tx_bytes: bytes
         create_protocol=lambda *a, **kw: _SolanaTPUProtocol(*a, tx_bytes=tx_bytes, **kw),
     ) as protocol:
         await protocol.send_tx()
+
+
+class _Node1QuicProtocol(QuicConnectionProtocol):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._buffers: Dict[int, bytearray] = {}
+        self._done: Dict[int, asyncio.Future] = {}
+
+    def quic_event_received(self, event) -> None:
+        from aioquic.quic.events import StreamDataReceived
+
+        if isinstance(event, StreamDataReceived):
+            self._buffers.setdefault(event.stream_id, bytearray()).extend(event.data)
+            if event.end_stream and event.stream_id in self._done:
+                future = self._done[event.stream_id]
+                if not future.done():
+                    future.set_result(bytes(self._buffers.get(event.stream_id, b"")))
+
+    async def send_and_read(self, payload: bytes) -> bytes:
+        stream_id = self._quic.get_next_available_stream_id(is_unidirectional=False)
+        loop = asyncio.get_running_loop()
+        self._done[stream_id] = loop.create_future()
+        self._quic.send_stream_data(stream_id, payload, end_stream=True)
+        self.transmit()
+        return await asyncio.wait_for(self._done[stream_id], timeout=5.0)
+
+
+async def _node1_quic_submit(endpoint: str, api_key: str, tx_bytes: bytes) -> None:
+    if not _QUIC_AVAILABLE:
+        raise TradeError(501, "QUIC not available: install sol-trade-sdk[quic].")
+    if len(tx_bytes) > 1232:
+        raise TradeError(400, f"Node1 QUIC transaction too large: {len(tx_bytes)} > 1232")
+    api_key_bytes = uuid.UUID(api_key).bytes
+    host, port = _host_port_from_http(endpoint, 16666)
+    cfg = _make_node1_quic_config(host)
+    async with quic_connect(host, port, configuration=cfg, create_protocol=_Node1QuicProtocol) as protocol:
+        auth_reply = await protocol.send_and_read(api_key_bytes)
+        if auth_reply != b"\x00":
+            code = auth_reply[0] if auth_reply else -1
+            raise TradeError(401, f"Node1 QUIC auth rejected: {code}")
+        response = await protocol.send_and_read(tx_bytes)
+        if len(response) < 6:
+            raise TradeError(500, "Node1 QUIC response too short")
+        status = int.from_bytes(response[:2], "big")
+        msg_len = int.from_bytes(response[2:6], "big")
+        msg = response[6:6 + msg_len].decode("utf-8", errors="replace")
+        if status != 200:
+            raise TradeError(status, f"Node1 QUIC submit failed: {msg}")
+
+
+async def _astralane_quic_submit(endpoint: str, api_key: str, tx_bytes: bytes) -> None:
+    if not _QUIC_AVAILABLE:
+        raise TradeError(501, "QUIC not available: install sol-trade-sdk[quic].")
+    if len(tx_bytes) > 1232:
+        raise TradeError(400, f"Astralane QUIC transaction too large: {len(tx_bytes)} > 1232")
+    if endpoint.startswith("http://") or endpoint.startswith("https://"):
+        host, port = _host_port_from_http(endpoint, 7000)
+    else:
+        host_port = endpoint.rsplit(":", 1)
+        host = host_port[0]
+        port = int(host_port[1]) if len(host_port) == 2 and host_port[1].isdigit() else 7000
+    cfg = _make_astralane_quic_config(api_key)
+    async with quic_connect(
+        host,
+        port,
+        configuration=cfg,
+        create_protocol=lambda *a, **kw: _SolanaTPUProtocol(*a, tx_bytes=tx_bytes, **kw),
+    ) as protocol:
+        await protocol.send_tx()
+
+
+class Node1QuicClient(SwqosClient):
+    """Node1 QUIC client using UUID auth and bidirectional streams."""
+
+    def __init__(self, rpc_url: str, endpoint: str, api_key: str):
+        self.rpc_url = rpc_url
+        self.endpoint = endpoint
+        self.api_key = api_key
+
+    async def send_transaction(
+        self,
+        trade_type: TradeType,
+        transaction: bytes,
+        wait_confirmation: bool = False,
+    ) -> str:
+        await _node1_quic_submit(self.endpoint, self.api_key, transaction)
+        return ""
+
+    async def send_transactions(
+        self,
+        trade_type: TradeType,
+        transactions: List[bytes],
+        wait_confirmation: bool = False,
+    ) -> List[str]:
+        signatures: List[str] = []
+        for transaction in transactions:
+            signatures.append(await self.send_transaction(trade_type, transaction, wait_confirmation))
+        return signatures
+
+    def get_tip_account(self) -> str:
+        return random.choice(NODE1_TIP_ACCOUNTS)
+
+    def get_swqos_type(self) -> SwqosType:
+        return SwqosType.NODE1
+
+    def min_tip_sol(self) -> float:
+        return MIN_TIP_NODE1
+
+
+class AstralaneQuicClient(SwqosClient):
+    """Astralane QUIC TPU client using API key as client certificate CN."""
+
+    def __init__(self, rpc_url: str, endpoint: str, api_key: str):
+        self.rpc_url = rpc_url
+        self.endpoint = endpoint
+        self.api_key = api_key
+
+    async def send_transaction(
+        self,
+        trade_type: TradeType,
+        transaction: bytes,
+        wait_confirmation: bool = False,
+    ) -> str:
+        await _astralane_quic_submit(self.endpoint, self.api_key, transaction)
+        return ""
+
+    async def send_transactions(
+        self,
+        trade_type: TradeType,
+        transactions: List[bytes],
+        wait_confirmation: bool = False,
+    ) -> List[str]:
+        signatures: List[str] = []
+        for transaction in transactions:
+            signatures.append(await self.send_transaction(trade_type, transaction, wait_confirmation))
+        return signatures
+
+    def get_tip_account(self) -> str:
+        return random.choice(ASTRALANE_TIP_ACCOUNTS)
+
+    def get_swqos_type(self) -> SwqosType:
+        return SwqosType.ASTRALANE
+
+    def min_tip_sol(self) -> float:
+        return MIN_TIP_ASTRALANE
 
 
 # ===== Soyas Client =====
@@ -1821,12 +2031,15 @@ class ClientFactory:
             endpoint = config.custom_url or HELIUS_ENDPOINTS.get(
                 config.region, HELIUS_ENDPOINTS[SwqosRegion.DEFAULT]
             )
-            return HeliusClient(rpc_url, endpoint, config.api_key, swqos_only=False)
+            return HeliusClient(rpc_url, endpoint, config.api_key, swqos_only=bool(config.swqos_only))
 
         elif config.type == SwqosType.NODE1:
+            transport = getattr(getattr(config, "transport", None), "value", getattr(config, "transport", None))
             endpoint = config.custom_url or NODE1_ENDPOINTS.get(
                 config.region, NODE1_ENDPOINTS[SwqosRegion.DEFAULT]
             )
+            if transport == "Quic":
+                return Node1QuicClient(rpc_url, f"{_host_port_from_http(endpoint, 16666)[0]}:16666", config.api_key)
             return Node1Client(rpc_url, endpoint, config.api_key)
 
         elif config.type == SwqosType.BLOCK_RAZOR:
@@ -1841,6 +2054,24 @@ class ClientFactory:
             endpoint = config.custom_url or ASTRALANE_ENDPOINTS.get(
                 config.region, ASTRALANE_ENDPOINTS[SwqosRegion.DEFAULT]
             )
+            mode = getattr(
+                getattr(config, "astralane_transport", None),
+                "value",
+                getattr(config, "astralane_transport", None),
+            )
+            if mode == "Plain":
+                endpoint = endpoint.replace("/irisb", "/iris")
+            elif mode == "Quic":
+                if config.custom_url:
+                    if config.custom_url.startswith(("http://", "https://")):
+                        host, port = _host_port_from_http(config.custom_url, 9000 if config.mev_protection else 7000)
+                        endpoint = f"{host}:{port}"
+                    else:
+                        endpoint = config.custom_url
+                else:
+                    host = ASTRALANE_QUIC_HOSTS.get(config.region, ASTRALANE_QUIC_HOSTS[SwqosRegion.DEFAULT])
+                    endpoint = f"{host}:{9000 if config.mev_protection else 7000}"
+                return AstralaneQuicClient(rpc_url, endpoint, config.api_key)
             return AstralaneClient(rpc_url, endpoint, config.api_key)
 
         elif config.type == SwqosType.STELLIUM:

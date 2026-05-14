@@ -8,12 +8,12 @@ RPC communication for minimal latency.
 from __future__ import annotations
 
 import base64
-import hashlib
 import struct
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 import logging
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 logger = logging.getLogger(__name__)
 
@@ -185,11 +185,13 @@ class TransactionBuilder:
         """Sign message with all signers."""
         signatures = []
 
-        for pubkey, secret_key in self._signers.items():
-            # In real implementation, use ed25519 signing
-            # This is a placeholder
-            signature = hashlib.sha256(message + secret_key).digest()[:64]
-            signatures.append(signature)
+        for pubkey in sorted(self._signers):
+            secret_key = self._signers[pubkey]
+            seed = secret_key[:32] if len(secret_key) == 64 else secret_key
+            if len(seed) != 32:
+                continue
+            private_key = Ed25519PrivateKey.from_private_bytes(seed)
+            signatures.append(private_key.sign(message))
 
         return signatures
 

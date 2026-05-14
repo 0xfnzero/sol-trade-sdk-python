@@ -10,8 +10,6 @@ from .executor import (
     TradeExecutor,
     create_trade_executor,
     poll_for_confirmation,
-    ExecuteOptions,
-    default_execute_options,
 )
 
 from .high_perf_executor import (
@@ -20,6 +18,8 @@ from .high_perf_executor import (
     TradeConfig as HighPerfTradeConfig,
     TradeExecutor as HighPerfTradeExecutor,
     ExecuteOptions as HighPerfExecuteOptions,
+    ExecuteOptions,
+    default_execute_options,
     create_trade_executor as create_high_perf_executor,
 )
 

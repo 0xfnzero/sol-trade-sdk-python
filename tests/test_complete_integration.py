@@ -58,7 +58,6 @@ def test_all_calc_modules():
     print(f"  Meteora: {result['amount_out']} out")
 
     print("✓ All calculation modules passed")
-    return True
 
 
 def test_all_dex_params():
@@ -103,7 +102,6 @@ def test_all_dex_params():
     print("  Enums: OK")
 
     print("✓ All DEX parameter types passed")
-    return True
 
 
 def test_swqos_providers():
@@ -150,7 +148,6 @@ def test_swqos_providers():
     print("  SwqosManager: OK")
 
     print("✓ SWQoS providers passed")
-    return True
 
 
 def test_middleware_and_execution():
@@ -183,7 +180,6 @@ def test_middleware_and_execution():
     print("  InstructionProcessor: OK")
 
     print("✓ Middleware and execution modules passed")
-    return True
 
 
 def test_serialization_and_compute():
@@ -210,7 +206,6 @@ def test_serialization_and_compute():
     print("  ComputeBudgetManager: OK")
 
     print("✓ Serialization and compute budget passed")
-    return True
 
 
 def test_hotpath():
@@ -282,7 +277,6 @@ def test_hotpath():
     print("  HotPathMetrics: OK")
 
     print("✓ Hot path modules passed")
-    return True
 
 
 def main():
