@@ -19,8 +19,22 @@ logger = logging.getLogger(__name__)
 @dataclass
 class DurableNonceInfo:
     """Durable nonce information structure."""
-    nonce_account: Optional[Pubkey] = None
-    current_nonce: Optional[Hash] = None
+
+    nonce_account: Pubkey
+    authority: Pubkey
+    nonce_hash: str
+    recent_blockhash: str
+
+    @property
+    def current_nonce(self) -> Hash:
+        """Backward-compatible view of the nonce hash."""
+        return Hash.from_string(self.nonce_hash)
+
+    @current_nonce.setter
+    def current_nonce(self, value: Hash) -> None:
+        nonce_hash = str(value)
+        self.nonce_hash = nonce_hash
+        self.recent_blockhash = nonce_hash
 
 
 async def fetch_nonce_info(
@@ -59,27 +73,18 @@ async def fetch_nonce_info(
         # - Nonce hash (32 bytes) - only if initialized
         # - Fee calculator (8 bytes) - only if initialized
 
-        if len(data) < 8:
+        if len(data) < 72:
             logger.error(f"Invalid nonce account data length: {len(data)}")
             return None
 
-        # Check if initialized (state = 1)
-        state = int.from_bytes(data[4:8], byteorder='little')
-        if state != 1:
-            logger.error(f"Nonce account not initialized, state: {state}")
-            return None
-
-        # Extract nonce hash (starts at offset 44: 8 + 32 + 4)
-        if len(data) < 76:
-            logger.error(f"Invalid nonce account data length for initialized state: {len(data)}")
-            return None
-
-        nonce_bytes = data[44:76]
-        current_nonce = Hash.from_bytes(nonce_bytes)
+        authority = Pubkey.from_bytes(data[8:40])
+        nonce_hash = str(Hash.from_bytes(data[40:72]))
 
         return DurableNonceInfo(
             nonce_account=nonce_account,
-            current_nonce=current_nonce,
+            authority=authority,
+            nonce_hash=nonce_hash,
+            recent_blockhash=nonce_hash,
         )
 
     except Exception as e:

@@ -923,7 +923,12 @@ from .calc import (
 from .seed import find_program_address, get_bonding_curve_pda, get_associated_token_address
 from .spl_token import TokenAccount, transfer_instruction, close_account_instruction
 from .instruction import PumpFunInstructionBuilder
-from .trading import TradeExecutor, TradeConfig, ExecuteOptions, default_execute_options
+from .trading import (
+    TradeExecutor,
+    TradeConfig as TradeExecutorConfig,
+    ExecuteOptions as TradeExecutorOptions,
+    default_execute_options,
+)
 
 
 @dataclass
@@ -1041,7 +1046,8 @@ __all__ = [
     "PumpFunInstructionBuilder",
     "BuildParams",
     "TradeExecutor",
-    "ExecuteOptions",
+    "TradeExecutorConfig",
+    "TradeExecutorOptions",
     "default_execute_options",
     # Constants
     "SYSTEM_PROGRAM",

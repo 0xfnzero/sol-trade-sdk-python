@@ -1,38 +1,33 @@
-"""
-Middleware System Example
-
-This example demonstrates how to use the middleware system
-to modify, add, or remove instructions before transaction execution.
-"""
-
 import asyncio
-from sol_trade_sdk.middleware import (
-    MiddlewareManager,
-    LoggingMiddleware,
-    ValidationMiddleware,
-    TimerMiddleware,
-    MetricsMiddleware,
-)
+
+from solders.compute_budget import set_compute_unit_limit
+from sol_trade_sdk.middleware import InstructionMiddleware, LoggingMiddleware, MiddlewareManager
 
 
-async def main():
-    # Create middleware manager
-    manager = MiddlewareManager()
+class ValidationMiddleware(InstructionMiddleware):
+    def __init__(self, max_instructions: int, max_data_size: int):
+        self.max_instructions = max_instructions
+        self.max_data_size = max_data_size
 
-    # Add middlewares in order (executes in the order added)
-    manager.add_middleware(ValidationMiddleware(max_instructions=100))
-    manager.add_middleware(TimerMiddleware())
-    manager.add_middleware(LoggingMiddleware())
-    manager.add_middleware(MetricsMiddleware())
+    def name(self) -> str:
+        return "ValidationMiddleware"
 
-    print("Middleware manager created with 4 middlewares:")
-    print("  1. ValidationMiddleware - validates instructions")
-    print("  2. TimerMiddleware - times instruction processing")
-    print("  3. LoggingMiddleware - logs instruction details")
-    print("  4. MetricsMiddleware - collects metrics")
+    def process_protocol_instructions(self, protocol_instructions, protocol_name, is_buy):
+        if len(protocol_instructions) > self.max_instructions:
+            raise ValueError("too many instructions")
+        return protocol_instructions
 
-    # In a real scenario, you would apply middlewares to instructions:
-    # processed = await manager.apply(instructions, "PumpFun", is_buy=True)
+    def process_full_instructions(self, full_instructions, protocol_name, is_buy):
+        if len(full_instructions) > self.max_instructions:
+            raise ValueError("too many instructions")
+        return full_instructions
+
+
+async def main() -> None:
+    manager = MiddlewareManager().add_middleware(ValidationMiddleware(32, 1024)).add_middleware(LoggingMiddleware())
+    instructions = [set_compute_unit_limit(180_000)]
+    processed = manager.apply_middlewares_process_protocol_instructions(instructions, "PumpFun", True)
+    print("Middleware processed instructions:", len(processed))
 
 
 if __name__ == "__main__":
