@@ -150,6 +150,25 @@ DEFAULT_TIP_LAMPORTS = 100000
 # ============== Data Classes ==============
 
 
+def _parser_value(source: Any, name: str, default: Any = None) -> Any:
+    if source is None:
+        return default
+    if isinstance(source, dict):
+        return source.get(name, default)
+    return getattr(source, name, default)
+
+
+def _pubkey_from_parser(value: Any) -> Pubkey:
+    if value is None:
+        return Pubkey.default()
+    if isinstance(value, Pubkey):
+        return value
+    text = str(value)
+    if not text or text == "11111111111111111111111111111111":
+        return Pubkey.default()
+    return Pubkey.from_string(text)
+
+
 @dataclass
 class SwqosConfig:
     """SWQOS service configuration"""
@@ -258,7 +277,6 @@ class PumpFunParams:
     close_token_account_when_sell: Optional[bool] = None
     fee_recipient: Pubkey = field(default_factory=Pubkey.default)
     quote_mint: Pubkey = field(default_factory=Pubkey.default)
-    use_v2_ix: bool = False
     observed_trade_creator: Optional[Pubkey] = None
     fee_sharing_creator_vault_if_active: Optional[Pubkey] = None
 
@@ -295,11 +313,91 @@ class PumpFunParams:
         self.creator_vault = vault
         return self
 
-    def with_quote_mint(self, quote_mint: Pubkey, use_v2_ix: bool = True) -> "PumpFunParams":
-        """Set PumpFun V2 quote mint and enable V2 instructions by default."""
+    def with_quote_mint(self, quote_mint: Pubkey) -> "PumpFunParams":
+        """Set PumpFun quote mint. The instruction layout is selected from this value."""
         self.quote_mint = quote_mint
-        self.use_v2_ix = use_v2_ix
         return self
+
+    @classmethod
+    def from_trade(
+        cls,
+        bonding_curve: Pubkey,
+        associated_bonding_curve: Pubkey,
+        mint: Pubkey,
+        quote_mint: Pubkey,
+        creator: Pubkey,
+        creator_vault: Pubkey,
+        virtual_token_reserves: int,
+        virtual_quote_reserves: int,
+        real_token_reserves: int,
+        real_quote_reserves: int,
+        close_token_account_when_sell: Optional[bool],
+        fee_recipient: Pubkey,
+        token_program: Pubkey,
+        is_cashback_coin: bool,
+        mayhem_mode: Optional[bool],
+    ) -> "PumpFunParams":
+        """Build PumpFun params from sol-parser-sdk trade event fields."""
+        return cls(
+            bonding_curve=BondingCurveAccount(
+                discriminator=0,
+                account=bonding_curve,
+                virtual_token_reserves=int(virtual_token_reserves),
+                virtual_sol_reserves=int(virtual_quote_reserves),
+                real_token_reserves=int(real_token_reserves),
+                real_sol_reserves=int(real_quote_reserves),
+                token_total_supply=0,
+                complete=False,
+                creator=creator,
+                is_mayhem_mode=bool(mayhem_mode) if mayhem_mode is not None else False,
+                is_cashback_coin=is_cashback_coin,
+            ),
+            associated_bonding_curve=associated_bonding_curve,
+            creator_vault=creator_vault,
+            token_program=token_program,
+            close_token_account_when_sell=close_token_account_when_sell,
+            fee_recipient=fee_recipient,
+            quote_mint=quote_mint,
+            observed_trade_creator=creator if creator != Pubkey.default() else None,
+        )
+
+    @classmethod
+    def from_parser_trade_event(
+        cls,
+        event: Any,
+        close_token_account_when_sell: Optional[bool] = None,
+    ) -> "PumpFunParams":
+        """Build params directly from sol-parser-sdk PumpFunTradeEvent dataclass/dict."""
+        missing = object()
+        virtual_quote_value = _parser_value(event, "virtual_quote_reserves", missing)
+        if virtual_quote_value is missing:
+            virtual_quote_value = _parser_value(event, "virtual_sol_reserves", 0)
+        real_quote_value = _parser_value(event, "real_quote_reserves", missing)
+        if real_quote_value is missing:
+            real_quote_value = _parser_value(event, "real_sol_reserves", 0)
+        virtual_quote_reserves = int(
+            virtual_quote_value or 0
+        )
+        real_quote_reserves = int(real_quote_value or 0)
+        return cls.from_trade(
+            bonding_curve=_pubkey_from_parser(_parser_value(event, "bonding_curve")),
+            associated_bonding_curve=_pubkey_from_parser(
+                _parser_value(event, "associated_bonding_curve")
+            ),
+            mint=_pubkey_from_parser(_parser_value(event, "mint")),
+            quote_mint=_pubkey_from_parser(_parser_value(event, "quote_mint")),
+            creator=_pubkey_from_parser(_parser_value(event, "creator")),
+            creator_vault=_pubkey_from_parser(_parser_value(event, "creator_vault")),
+            virtual_token_reserves=int(_parser_value(event, "virtual_token_reserves", 0) or 0),
+            virtual_quote_reserves=virtual_quote_reserves,
+            real_token_reserves=int(_parser_value(event, "real_token_reserves", 0) or 0),
+            real_quote_reserves=real_quote_reserves,
+            close_token_account_when_sell=close_token_account_when_sell,
+            fee_recipient=_pubkey_from_parser(_parser_value(event, "fee_recipient")),
+            token_program=_pubkey_from_parser(_parser_value(event, "token_program")),
+            is_cashback_coin=bool(_parser_value(event, "is_cashback_coin", False)),
+            mayhem_mode=bool(_parser_value(event, "mayhem_mode", False)),
+        )
 
 
 @dataclass
@@ -319,6 +417,33 @@ class PumpSwapParams:
     quote_token_program: Pubkey
     is_mayhem_mode: bool
     is_cashback_coin: bool
+
+    @classmethod
+    def from_parser_event(cls, event: Any) -> "PumpSwapParams":
+        """Build params directly from sol-parser-sdk PumpSwapBuyEvent/PumpSwapSellEvent."""
+        return cls(
+            pool=_pubkey_from_parser(_parser_value(event, "pool")),
+            base_mint=_pubkey_from_parser(_parser_value(event, "base_mint")),
+            quote_mint=_pubkey_from_parser(_parser_value(event, "quote_mint")),
+            pool_base_token_account=_pubkey_from_parser(
+                _parser_value(event, "pool_base_token_account")
+            ),
+            pool_quote_token_account=_pubkey_from_parser(
+                _parser_value(event, "pool_quote_token_account")
+            ),
+            pool_base_token_reserves=int(_parser_value(event, "pool_base_token_reserves", 0) or 0),
+            pool_quote_token_reserves=int(_parser_value(event, "pool_quote_token_reserves", 0) or 0),
+            coin_creator_vault_ata=_pubkey_from_parser(
+                _parser_value(event, "coin_creator_vault_ata")
+            ),
+            coin_creator_vault_authority=_pubkey_from_parser(
+                _parser_value(event, "coin_creator_vault_authority")
+            ),
+            base_token_program=_pubkey_from_parser(_parser_value(event, "base_token_program")),
+            quote_token_program=_pubkey_from_parser(_parser_value(event, "quote_token_program")),
+            is_mayhem_mode=bool(_parser_value(event, "is_mayhem_mode", False)),
+            is_cashback_coin=bool(_parser_value(event, "is_cashback_coin", False)),
+        )
 
 
 @dataclass
@@ -365,6 +490,16 @@ class RaydiumAmmV4Params:
     pc_mint: Pubkey
     token_coin: Pubkey
     token_pc: Pubkey
+    amm_open_orders: Pubkey
+    amm_target_orders: Pubkey
+    serum_program: Pubkey
+    serum_market: Pubkey
+    serum_bids: Pubkey
+    serum_asks: Pubkey
+    serum_event_queue: Pubkey
+    serum_coin_vault_account: Pubkey
+    serum_pc_vault_account: Pubkey
+    serum_vault_signer: Pubkey
     coin_reserve: int
     pc_reserve: int
 
@@ -461,7 +596,6 @@ class TradeConfig:
     mev_protection: bool = False
     use_seed_optimize: bool = True
     create_wsol_ata_on_startup: bool = False
-    use_pumpfun_v2: bool = False
     swqos_cores_from_end: bool = True
     max_swqos_submit_concurrency: Optional[int] = None
 
@@ -499,7 +633,6 @@ class TradeConfigBuilder:
         self._mev_protection: bool = False
         self._use_seed_optimize: bool = True
         self._create_wsol_ata_on_startup: bool = False
-        self._use_pumpfun_v2: bool = False
         self._swqos_cores_from_end: bool = True
         self._max_swqos_submit_concurrency: Optional[int] = None
 
@@ -545,10 +678,6 @@ class TradeConfigBuilder:
         self._create_wsol_ata_on_startup = enabled
         return self
 
-    def use_pumpfun_v2(self, enabled: bool) -> "TradeConfigBuilder":
-        self._use_pumpfun_v2 = enabled
-        return self
-
     def swqos_cores_from_end(self, enabled: bool) -> "TradeConfigBuilder":
         self._swqos_cores_from_end = enabled
         return self
@@ -568,7 +697,6 @@ class TradeConfigBuilder:
             mev_protection=self._mev_protection,
             use_seed_optimize=self._use_seed_optimize,
             create_wsol_ata_on_startup=self._create_wsol_ata_on_startup,
-            use_pumpfun_v2=self._use_pumpfun_v2,
             swqos_cores_from_end=self._swqos_cores_from_end,
             max_swqos_submit_concurrency=self._max_swqos_submit_concurrency,
         )
@@ -648,12 +776,6 @@ class TradingClient:
             )
 
         protocol_params = params.extension_params
-        if (
-            params.dex_type == DexType.PUMPFUN
-            and isinstance(protocol_params, PumpFunParams)
-            and self.config.use_pumpfun_v2
-        ):
-            protocol_params = replace(protocol_params, use_v2_ix=True)
 
         # Build instructions
         builder = self._create_instruction_builder(params.dex_type)
@@ -674,7 +796,11 @@ class TradingClient:
                 use_exact_sol_amount=params.use_exact_sol_amount
                 if params.use_exact_sol_amount is not None
                 else True,
-                use_pumpfun_v2=self.config.use_pumpfun_v2,
+            )
+        elif params.dex_type in (DexType.RAYDIUM_AMM_V4, DexType.METEORA_DAMM_V2):
+            buy_kwargs.update(
+                create_input_ata=params.create_input_token_ata,
+                fixed_output_amount=params.fixed_output_token_amount,
             )
         instructions = await builder.build_buy_instructions(**buy_kwargs)
 
@@ -705,12 +831,6 @@ class TradingClient:
             )
 
         protocol_params = params.extension_params
-        if (
-            params.dex_type == DexType.PUMPFUN
-            and isinstance(protocol_params, PumpFunParams)
-            and self.config.use_pumpfun_v2
-        ):
-            protocol_params = replace(protocol_params, use_v2_ix=True)
 
         builder = self._create_instruction_builder(params.dex_type)
         sell_kwargs = dict(
@@ -721,12 +841,16 @@ class TradingClient:
             slippage_basis_points=params.slippage_basis_points or DEFAULT_SLIPPAGE,
             protocol_params=protocol_params,
             create_output_ata=params.create_output_token_ata,
+            close_output_ata=params.close_output_token_ata,
             close_input_ata=params.close_mint_token_ata,
         )
         if params.dex_type == DexType.PUMPFUN:
             sell_kwargs.update(
                 fixed_output_amount=params.fixed_output_token_amount,
-                use_pumpfun_v2=self.config.use_pumpfun_v2,
+            )
+        elif params.dex_type in (DexType.RAYDIUM_AMM_V4, DexType.METEORA_DAMM_V2):
+            sell_kwargs.update(
+                fixed_output_amount=params.fixed_output_token_amount,
             )
         instructions = await builder.build_sell_instructions(**sell_kwargs)
 
@@ -823,8 +947,11 @@ class TradingClient:
         """Execute transaction with instructions"""
         try:
             if blockhash is None:
-                bh = await self.get_latest_blockhash()
-                blockhash = str(bh.blockhash)
+                return TradeResult(
+                    success=False,
+                    signatures=[],
+                    error="recent_blockhash is required; trade execution hot path does not query RPC for blockhash",
+                )
 
             message = Message.new_with_blockhash(
                 instructions, self.payer.pubkey(), Pubkey.from_string(blockhash)

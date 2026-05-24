@@ -11,6 +11,7 @@ import struct
 
 from .common import (
     TOKEN_PROGRAM,
+    SOL_TOKEN_ACCOUNT,
     WSOL_TOKEN_ACCOUNT,
     USDC_TOKEN_ACCOUNT,
     DEFAULT_SLIPPAGE,
@@ -39,6 +40,8 @@ AUTHORITY: Pubkey = Pubkey.from_string("HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDai
 # ============================================
 
 SWAP_DISCRIMINATOR: bytes = bytes([248, 198, 158, 145, 225, 117, 135, 200])
+SWAP2_DISCRIMINATOR: bytes = bytes([65, 75, 63, 76, 235, 91, 91, 136])
+SWAP_MODE_PARTIAL_FILL: int = 1
 
 # ============================================
 # Seeds
@@ -87,6 +90,22 @@ class MeteoraDammV2Params:
         return self.token_a_mint == USDC_TOKEN_ACCOUNT or self.token_b_mint == USDC_TOKEN_ACCOUNT
 
 
+DEFAULT_PUBKEY: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
+
+
+def _mint_matches(requested: Pubkey, expected: Pubkey) -> bool:
+    return requested == expected or (
+        expected == WSOL_TOKEN_ACCOUNT and requested == SOL_TOKEN_ACCOUNT
+    )
+
+
+def _ensure_expected_mint(label: str, requested: Pubkey, expected: Pubkey) -> None:
+    if requested != DEFAULT_PUBKEY and not _mint_matches(requested, expected):
+        raise ValueError(
+            f"{label} must match the Meteora DAMM v2 pool side ({expected}), got {requested}"
+        )
+
+
 # ============================================
 # Build Buy Instructions
 # ============================================
@@ -101,6 +120,7 @@ def build_buy_instructions(
     create_output_ata: bool = True,
     close_input_ata: bool = False,
     fixed_output_amount: Optional[int] = None,
+    input_mint: Optional[Pubkey] = None,
 ) -> List[Instruction]:
     """
     Build Meteora DAMM V2 buy instructions.
@@ -137,35 +157,50 @@ def build_buy_instructions(
 
     minimum_amount_out = fixed_output_amount
 
-    # Determine input/output mints and programs
-    input_mint = WSOL_TOKEN_ACCOUNT if params.is_wsol else USDC_TOKEN_ACCOUNT
+    # Determine input/output mints and programs from the pool sides
+    expected_input_mint = params.token_a_mint if is_a_in else params.token_b_mint
+    expected_output_mint = params.token_b_mint if is_a_in else params.token_a_mint
+    if input_mint is not None:
+        _ensure_expected_mint("input_mint", input_mint, expected_input_mint)
+    _ensure_expected_mint("output_mint", output_mint, expected_output_mint)
+    input_mint = expected_input_mint
+    output_mint = expected_output_mint
 
     input_token_program = params.token_a_program if is_a_in else params.token_b_program
     output_token_program = params.token_b_program if is_a_in else params.token_a_program
 
     # Get user token accounts
-    input_token_account = get_associated_token_address(payer, input_mint, TOKEN_PROGRAM)
-    output_token_account = get_associated_token_address(payer, output_mint, TOKEN_PROGRAM)
+    input_token_account = get_associated_token_address(payer, input_mint, input_token_program)
+    output_token_account = get_associated_token_address(payer, output_mint, output_token_program)
 
     # Get event authority PDA
     event_authority = get_event_authority_pda()
 
-    # Handle WSOL if needed
-    if create_input_ata and params.is_wsol:
+    # Handle input account creation/wrapping
+    if create_input_ata and input_mint == WSOL_TOKEN_ACCOUNT:
         instructions.extend(handle_wsol(payer, input_amount))
+    elif create_input_ata:
+        instructions.append(
+            create_associated_token_account_idempotent_instruction(
+                payer, payer, input_mint, input_token_program
+            )
+        )
 
     # Create output ATA if needed
     if create_output_ata:
         instructions.append(
             create_associated_token_account_idempotent_instruction(
-                payer, payer, output_mint, TOKEN_PROGRAM
+                payer, payer, output_mint, output_token_program
             )
         )
 
-    # Build instruction data
-    data = SWAP_DISCRIMINATOR + struct.pack("<QQ", input_amount, minimum_amount_out)
+    # Build swap2 instruction data
+    data = (
+        SWAP2_DISCRIMINATOR
+        + struct.pack("<QQB", input_amount, minimum_amount_out, SWAP_MODE_PARTIAL_FILL)
+    )
 
-    # Build accounts list (14 accounts)
+    # Build accounts list (13 accounts)
     accounts = [
         AccountMeta(AUTHORITY, False, False),  # pool_authority (readonly)
         AccountMeta(params.pool, False, True),  # pool (writable)
@@ -178,7 +213,6 @@ def build_buy_instructions(
         AccountMeta(payer, True, False),  # user_transfer_authority (signer)
         AccountMeta(params.token_a_program, False, False),  # token_a_program (readonly)
         AccountMeta(params.token_b_program, False, False),  # token_b_program (readonly)
-        AccountMeta(METEORA_DAMM_V2_PROGRAM_ID, False, False),  # referral_token_account (readonly, program)
         AccountMeta(event_authority, False, False),  # event_authority (readonly)
         AccountMeta(METEORA_DAMM_V2_PROGRAM_ID, False, False),  # program (readonly)
     ]
@@ -186,7 +220,7 @@ def build_buy_instructions(
     instructions.append(Instruction(METEORA_DAMM_V2_PROGRAM_ID, data, accounts))
 
     # Close WSOL ATA if requested
-    if close_input_ata and params.is_wsol:
+    if close_input_ata and input_mint == WSOL_TOKEN_ACCOUNT:
         instructions.extend(close_wsol(payer))
 
     return instructions
@@ -206,6 +240,7 @@ def build_sell_instructions(
     close_output_ata: bool = False,
     close_input_ata: bool = False,
     fixed_output_amount: Optional[int] = None,
+    output_mint: Optional[Pubkey] = None,
 ) -> List[Instruction]:
     """
     Build Meteora DAMM V2 sell instructions.
@@ -242,8 +277,14 @@ def build_sell_instructions(
 
     minimum_amount_out = fixed_output_amount
 
-    # Determine output mint (WSOL or USDC)
-    output_mint = WSOL_TOKEN_ACCOUNT if params.is_wsol else USDC_TOKEN_ACCOUNT
+    # Determine input/output mints from the pool sides
+    expected_input_mint = params.token_a_mint if is_a_in else params.token_b_mint
+    expected_output_mint = params.token_b_mint if is_a_in else params.token_a_mint
+    _ensure_expected_mint("input_mint", input_mint, expected_input_mint)
+    if output_mint is not None:
+        _ensure_expected_mint("output_mint", output_mint, expected_output_mint)
+    input_mint = expected_input_mint
+    output_mint = expected_output_mint
 
     # Get token programs based on direction
     input_token_program = params.token_a_program if is_a_in else params.token_b_program
@@ -251,23 +292,32 @@ def build_sell_instructions(
 
     # Get user token accounts
     input_token_account = get_associated_token_address(payer, input_mint, input_token_program)
-    output_token_account = get_associated_token_address(payer, output_mint, TOKEN_PROGRAM)
+    output_token_account = get_associated_token_address(payer, output_mint, output_token_program)
 
     # Get event authority PDA
     event_authority = get_event_authority_pda()
 
-    # Create WSOL ATA if needed for receiving SOL
-    if create_output_ata and params.is_wsol:
+    # Create output ATA if needed
+    if create_output_ata and output_mint == WSOL_TOKEN_ACCOUNT:
         instructions.append(
             create_associated_token_account_idempotent_instruction(
                 payer, payer, WSOL_TOKEN_ACCOUNT, TOKEN_PROGRAM
             )
         )
+    elif create_output_ata:
+        instructions.append(
+            create_associated_token_account_idempotent_instruction(
+                payer, payer, output_mint, output_token_program
+            )
+        )
 
-    # Build instruction data
-    data = SWAP_DISCRIMINATOR + struct.pack("<QQ", input_amount, minimum_amount_out)
+    # Build swap2 instruction data
+    data = (
+        SWAP2_DISCRIMINATOR
+        + struct.pack("<QQB", input_amount, minimum_amount_out, SWAP_MODE_PARTIAL_FILL)
+    )
 
-    # Build accounts list (14 accounts)
+    # Build accounts list (13 accounts)
     accounts = [
         AccountMeta(AUTHORITY, False, False),  # pool_authority (readonly)
         AccountMeta(params.pool, False, True),  # pool (writable)
@@ -280,7 +330,6 @@ def build_sell_instructions(
         AccountMeta(payer, True, False),  # user_transfer_authority (signer)
         AccountMeta(params.token_a_program, False, False),  # token_a_program (readonly)
         AccountMeta(params.token_b_program, False, False),  # token_b_program (readonly)
-        AccountMeta(METEORA_DAMM_V2_PROGRAM_ID, False, False),  # referral_token_account (readonly, program)
         AccountMeta(event_authority, False, False),  # event_authority (readonly)
         AccountMeta(METEORA_DAMM_V2_PROGRAM_ID, False, False),  # program (readonly)
     ]
@@ -288,7 +337,7 @@ def build_sell_instructions(
     instructions.append(Instruction(METEORA_DAMM_V2_PROGRAM_ID, data, accounts))
 
     # Close WSOL ATA if requested
-    if close_output_ata and params.is_wsol:
+    if close_output_ata and output_mint == WSOL_TOKEN_ACCOUNT:
         instructions.extend(close_wsol(payer))
 
     # Close token ATA if requested

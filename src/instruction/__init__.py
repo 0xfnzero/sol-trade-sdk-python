@@ -163,6 +163,7 @@ class InstructionBuilder(ABC):
             MeteoraDammV2Params,
         ],
         create_output_ata: bool = False,
+        close_output_ata: bool = False,
         close_input_ata: bool = False,
     ) -> List[Instruction]:
         """Build sell instructions"""
@@ -220,7 +221,6 @@ class PumpFunInstructionBuilder(InstructionBuilder):
             close_token_account_when_sell=bool(protocol_params.close_token_account_when_sell),
             fee_recipient=protocol_params.fee_recipient,
             quote_mint=protocol_params.quote_mint,
-            use_v2_ix=protocol_params.use_v2_ix,
         )
 
     async def build_buy_instructions(
@@ -236,7 +236,6 @@ class PumpFunInstructionBuilder(InstructionBuilder):
         create_input_ata: bool = False,
         fixed_output_amount: Optional[int] = None,
         use_exact_sol_amount: bool = True,
-        use_pumpfun_v2: bool = False,
     ) -> List[Instruction]:
         """Build buy instructions for PumpFun（与 Rust / pumpfun_builder 一致）。"""
         from .pumpfun_builder import build_buy_instructions as pfb_buy
@@ -258,7 +257,7 @@ class PumpFunInstructionBuilder(InstructionBuilder):
             close_input_ata=close_input_ata,
             fixed_output_amount=fixed_output_amount,
             use_exact_sol_amount=use_exact_sol_amount,
-            use_pumpfun_v2=use_pumpfun_v2,
+            input_mint=input_mint,
         )
 
     async def build_sell_instructions(
@@ -270,9 +269,9 @@ class PumpFunInstructionBuilder(InstructionBuilder):
         slippage_basis_points: int,
         protocol_params: PumpFunParams,
         create_output_ata: bool = False,
+        close_output_ata: bool = False,
         close_input_ata: bool = False,
         fixed_output_amount: Optional[int] = None,
-        use_pumpfun_v2: bool = False,
     ) -> List[Instruction]:
         """Build sell instructions for PumpFun（与 Rust / pumpfun_builder 一致）。"""
         from .pumpfun_builder import build_sell_instructions as pfb_sell
@@ -297,10 +296,10 @@ class PumpFunInstructionBuilder(InstructionBuilder):
             pfb_params,
             slippage_basis_points,
             create_output_ata=create_output_ata,
-            close_output_ata=False,
+            close_output_ata=close_output_ata,
             close_input_ata=close_token,
             fixed_output_amount=fixed_output_amount,
-            use_pumpfun_v2=use_pumpfun_v2,
+            output_mint=output_mint,
         )
 
 
@@ -361,6 +360,7 @@ class PumpSwapInstructionBuilder(InstructionBuilder):
         slippage_basis_points: int,
         protocol_params: PumpSwapParams,
         create_output_ata: bool = False,
+        close_output_ata: bool = False,
         close_input_ata: bool = False,
     ) -> List[Instruction]:
         """Build sell instructions for PumpSwap - 100% port from Rust"""
@@ -391,6 +391,7 @@ class PumpSwapInstructionBuilder(InstructionBuilder):
                 is_cashback_coin=protocol_params.is_cashback_coin,
             ),
             create_output_mint_ata=create_output_ata,
+            close_output_mint_ata=close_output_ata,
             close_input_mint_ata=close_input_ata,
         )
         
@@ -422,6 +423,7 @@ class BonkInstructionBuilder(InstructionBuilder):
         slippage_basis_points: int,
         protocol_params: BonkParams,
         create_output_ata: bool = False,
+        close_output_ata: bool = False,
         close_input_ata: bool = False,
     ) -> List[Instruction]:
         return []
@@ -452,6 +454,7 @@ class RaydiumCpmmInstructionBuilder(InstructionBuilder):
         slippage_basis_points: int,
         protocol_params: RaydiumCpmmParams,
         create_output_ata: bool = False,
+        close_output_ata: bool = False,
         close_input_ata: bool = False,
     ) -> List[Instruction]:
         return []
@@ -470,8 +473,43 @@ class RaydiumAmmV4InstructionBuilder(InstructionBuilder):
         protocol_params: RaydiumAmmV4Params,
         create_output_ata: bool = True,
         close_input_ata: bool = False,
+        create_input_ata: bool = True,
+        fixed_output_amount: Optional[int] = None,
     ) -> List[Instruction]:
-        return []
+        from .raydium_amm_v4_builder import (
+            RaydiumAmmV4Params as BuilderParams,
+            build_buy_instructions,
+        )
+
+        return build_buy_instructions(
+            payer=payer,
+            output_mint=output_mint,
+            input_amount=input_amount,
+            slippage_bps=slippage_basis_points,
+            params=BuilderParams(
+                amm=protocol_params.amm,
+                coin_mint=protocol_params.coin_mint,
+                pc_mint=protocol_params.pc_mint,
+                token_coin=protocol_params.token_coin,
+                token_pc=protocol_params.token_pc,
+                amm_open_orders=protocol_params.amm_open_orders,
+                amm_target_orders=protocol_params.amm_target_orders,
+                serum_program=protocol_params.serum_program,
+                serum_market=protocol_params.serum_market,
+                serum_bids=protocol_params.serum_bids,
+                serum_asks=protocol_params.serum_asks,
+                serum_event_queue=protocol_params.serum_event_queue,
+                serum_coin_vault_account=protocol_params.serum_coin_vault_account,
+                serum_pc_vault_account=protocol_params.serum_pc_vault_account,
+                serum_vault_signer=protocol_params.serum_vault_signer,
+                coin_reserve=protocol_params.coin_reserve,
+                pc_reserve=protocol_params.pc_reserve,
+            ),
+            create_input_ata=create_input_ata,
+            create_output_ata=create_output_ata,
+            close_input_ata=close_input_ata,
+            fixed_output_amount=fixed_output_amount,
+        )
 
     async def build_sell_instructions(
         self,
@@ -482,9 +520,45 @@ class RaydiumAmmV4InstructionBuilder(InstructionBuilder):
         slippage_basis_points: int,
         protocol_params: RaydiumAmmV4Params,
         create_output_ata: bool = False,
+        close_output_ata: bool = False,
         close_input_ata: bool = False,
+        fixed_output_amount: Optional[int] = None,
     ) -> List[Instruction]:
-        return []
+        from .raydium_amm_v4_builder import (
+            RaydiumAmmV4Params as BuilderParams,
+            build_sell_instructions,
+        )
+
+        return build_sell_instructions(
+            payer=payer,
+            input_mint=input_mint,
+            input_amount=input_amount,
+            slippage_bps=slippage_basis_points,
+            params=BuilderParams(
+                amm=protocol_params.amm,
+                coin_mint=protocol_params.coin_mint,
+                pc_mint=protocol_params.pc_mint,
+                token_coin=protocol_params.token_coin,
+                token_pc=protocol_params.token_pc,
+                amm_open_orders=protocol_params.amm_open_orders,
+                amm_target_orders=protocol_params.amm_target_orders,
+                serum_program=protocol_params.serum_program,
+                serum_market=protocol_params.serum_market,
+                serum_bids=protocol_params.serum_bids,
+                serum_asks=protocol_params.serum_asks,
+                serum_event_queue=protocol_params.serum_event_queue,
+                serum_coin_vault_account=protocol_params.serum_coin_vault_account,
+                serum_pc_vault_account=protocol_params.serum_pc_vault_account,
+                serum_vault_signer=protocol_params.serum_vault_signer,
+                coin_reserve=protocol_params.coin_reserve,
+                pc_reserve=protocol_params.pc_reserve,
+            ),
+            create_output_ata=create_output_ata,
+            close_output_ata=close_output_ata,
+            close_input_ata=close_input_ata,
+            fixed_output_amount=fixed_output_amount,
+            output_mint=output_mint,
+        )
 
 
 class MeteoraDammV2InstructionBuilder(InstructionBuilder):
@@ -500,8 +574,34 @@ class MeteoraDammV2InstructionBuilder(InstructionBuilder):
         protocol_params: MeteoraDammV2Params,
         create_output_ata: bool = True,
         close_input_ata: bool = False,
+        create_input_ata: bool = True,
+        fixed_output_amount: Optional[int] = None,
     ) -> List[Instruction]:
-        return []
+        from .meteora_damm_v2_builder import (
+            MeteoraDammV2Params as BuilderParams,
+            build_buy_instructions,
+        )
+
+        return build_buy_instructions(
+            payer=payer,
+            input_mint=input_mint,
+            output_mint=output_mint,
+            input_amount=input_amount,
+            slippage_bps=slippage_basis_points,
+            params=BuilderParams(
+                pool=protocol_params.pool,
+                token_a_vault=protocol_params.token_a_vault,
+                token_b_vault=protocol_params.token_b_vault,
+                token_a_mint=protocol_params.token_a_mint,
+                token_b_mint=protocol_params.token_b_mint,
+                token_a_program=protocol_params.token_a_program,
+                token_b_program=protocol_params.token_b_program,
+            ),
+            create_input_ata=create_input_ata,
+            create_output_ata=create_output_ata,
+            close_input_ata=close_input_ata,
+            fixed_output_amount=fixed_output_amount,
+        )
 
     async def build_sell_instructions(
         self,
@@ -512,6 +612,32 @@ class MeteoraDammV2InstructionBuilder(InstructionBuilder):
         slippage_basis_points: int,
         protocol_params: MeteoraDammV2Params,
         create_output_ata: bool = False,
+        close_output_ata: bool = False,
         close_input_ata: bool = False,
+        fixed_output_amount: Optional[int] = None,
     ) -> List[Instruction]:
-        return []
+        from .meteora_damm_v2_builder import (
+            MeteoraDammV2Params as BuilderParams,
+            build_sell_instructions,
+        )
+
+        return build_sell_instructions(
+            payer=payer,
+            input_mint=input_mint,
+            input_amount=input_amount,
+            slippage_bps=slippage_basis_points,
+            params=BuilderParams(
+                pool=protocol_params.pool,
+                token_a_vault=protocol_params.token_a_vault,
+                token_b_vault=protocol_params.token_b_vault,
+                token_a_mint=protocol_params.token_a_mint,
+                token_b_mint=protocol_params.token_b_mint,
+                token_a_program=protocol_params.token_a_program,
+                token_b_program=protocol_params.token_b_program,
+            ),
+            create_output_ata=create_output_ata,
+            close_output_ata=close_output_ata,
+            close_input_ata=close_input_ata,
+            fixed_output_amount=fixed_output_amount,
+            output_mint=output_mint,
+        )

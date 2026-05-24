@@ -5,12 +5,12 @@ from _shared import RUN_LIVE, create_example_client, describe_dry_run, example_b
 
 
 async def main() -> None:
-    client = create_example_client(use_pumpfun_v2=True)
+    client = create_example_client()
     buy_params = example_buy_params(DexType.PUMPFUN)
 
     describe_dry_run("Complete PumpFun buy flow")
     print("Wallet:", client.get_payer())
-    print("PumpFun v2 enabled:", client.config.use_pumpfun_v2)
+    print("PumpFun quote mint:", buy_params.extension_params.quote_mint)
     print("Cashback flag:", buy_params.extension_params.bonding_curve.is_cashback_coin)
 
     if RUN_LIVE:

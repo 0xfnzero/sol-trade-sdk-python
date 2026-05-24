@@ -15,7 +15,9 @@ from .common import (
     TOKEN_PROGRAM,
     TOKEN_PROGRAM_2022,
     ASSOCIATED_TOKEN_PROGRAM,
+    SOL_TOKEN_ACCOUNT,
     WSOL_TOKEN_ACCOUNT,
+    USDC_TOKEN_ACCOUNT,
     DEFAULT_SLIPPAGE,
     get_associated_token_address,
     create_associated_token_account_idempotent_instruction,
@@ -237,7 +239,37 @@ def _effective_pump_mint_token_program(mint: Pubkey, params: "PumpFunParams") ->
 
 
 def _effective_quote_mint(params: "PumpFunParams") -> Pubkey:
-    return params.quote_mint if _is_usable_pubkey(params.quote_mint) else WSOL_TOKEN_ACCOUNT
+    if not _is_usable_pubkey(params.quote_mint) or params.quote_mint == SOL_TOKEN_ACCOUNT:
+        return WSOL_TOKEN_ACCOUNT
+    return params.quote_mint
+
+
+def _is_sol_quote_mint(mint: Pubkey) -> bool:
+    return mint == SOL_TOKEN_ACCOUNT or mint == WSOL_TOKEN_ACCOUNT
+
+
+def _validate_v2_buy_quote_mint(input_mint: Pubkey, quote_mint: Pubkey) -> None:
+    if _is_sol_quote_mint(quote_mint):
+        if input_mint in (SOL_TOKEN_ACCOUNT, WSOL_TOKEN_ACCOUNT):
+            return
+    elif input_mint == quote_mint:
+        return
+    raise ValueError(
+        f"PumpFun V2 buy input_mint {input_mint} does not match quote_mint {quote_mint}; "
+        "USDC quote pools must be bought with USDC, not SOL"
+    )
+
+
+def _validate_v2_sell_quote_mint(output_mint: Pubkey, quote_mint: Pubkey) -> None:
+    if _is_sol_quote_mint(quote_mint):
+        if output_mint in (SOL_TOKEN_ACCOUNT, WSOL_TOKEN_ACCOUNT):
+            return
+    elif output_mint == quote_mint:
+        return
+    raise ValueError(
+        f"PumpFun V2 sell output_mint {output_mint} does not match quote_mint {quote_mint}; "
+        "USDC quote pools settle to USDC, not SOL"
+    )
 
 
 # ============================================
@@ -265,7 +297,6 @@ class PumpFunParams:
     close_token_account_when_sell: bool = False
     fee_recipient: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
     quote_mint: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
-    use_v2_ix: bool = False
 
 
 # ============================================
@@ -338,7 +369,7 @@ def build_buy_instructions(
     close_input_ata: bool = False,
     fixed_output_amount: Optional[int] = None,
     use_exact_sol_amount: bool = True,
-    use_pumpfun_v2: bool = False,
+    input_mint: Pubkey = SOL_TOKEN_ACCOUNT,
 ) -> List[Instruction]:
     """
     Build PumpFun buy instructions.
@@ -357,10 +388,11 @@ def build_buy_instructions(
     Returns:
         List of instructions for the buy operation
     """
-    if use_pumpfun_v2 or params.use_v2_ix or _is_usable_pubkey(params.quote_mint):
+    if _is_usable_pubkey(params.quote_mint):
         return build_buy_v2_instructions(
             payer=payer,
             output_mint=output_mint,
+            input_mint=input_mint,
             input_amount=input_amount,
             params=params,
             slippage_bps=slippage_bps,
@@ -432,15 +464,15 @@ def build_buy_instructions(
     fee_recipient = _pump_fun_fee_recipient(params)
 
     # Build instruction data
-    track_volume = bytes([1, 1]) if params.is_cashback_coin else bytes([1, 0])
+    track_volume = 1 if params.is_cashback_coin else 0
 
     if use_exact_sol_amount:
         # buy_exact_sol_in(spendable_sol_in: u64, min_tokens_out: u64, track_volume)
         min_tokens_out = calculate_with_slippage_sell(buy_token_amount, slippage_bps)
-        data = BUY_EXACT_SOL_IN_DISCRIMINATOR + struct.pack("<QQ", input_amount, min_tokens_out) + track_volume
+        data = BUY_EXACT_SOL_IN_DISCRIMINATOR + struct.pack("<QQB", input_amount, min_tokens_out, track_volume)
     else:
         # buy(token_amount: u64, max_sol_cost: u64, track_volume)
-        data = BUY_DISCRIMINATOR + struct.pack("<QQ", buy_token_amount, max_sol_cost) + track_volume
+        data = BUY_DISCRIMINATOR + struct.pack("<QQB", buy_token_amount, max_sol_cost, track_volume)
 
     # Build accounts list
     accounts = [
@@ -483,7 +515,7 @@ def build_sell_instructions(
     close_output_ata: bool = False,
     close_input_ata: bool = False,
     fixed_output_amount: Optional[int] = None,
-    use_pumpfun_v2: bool = False,
+    output_mint: Pubkey = SOL_TOKEN_ACCOUNT,
 ) -> List[Instruction]:
     """
     Build PumpFun sell instructions.
@@ -502,10 +534,11 @@ def build_sell_instructions(
     Returns:
         List of instructions for the sell operation
     """
-    if use_pumpfun_v2 or params.use_v2_ix or _is_usable_pubkey(params.quote_mint):
+    if _is_usable_pubkey(params.quote_mint):
         return build_sell_v2_instructions(
             payer=payer,
             input_mint=input_mint,
+            output_mint=output_mint,
             input_amount=input_amount,
             params=params,
             slippage_bps=slippage_bps,
@@ -621,6 +654,7 @@ def build_sell_instructions(
 def build_buy_v2_instructions(
     payer: Pubkey,
     output_mint: Pubkey,
+    input_mint: Pubkey,
     input_amount: int,
     params: PumpFunParams,
     slippage_bps: int = DEFAULT_SLIPPAGE,
@@ -639,6 +673,7 @@ def build_buy_v2_instructions(
     creator_vault_account = _resolve_creator_vault_for_ix(params, output_mint)
     base_token_program = _effective_pump_mint_token_program(output_mint, params)
     quote_mint = _effective_quote_mint(params)
+    _validate_v2_buy_quote_mint(input_mint, quote_mint)
     quote_token_program = TOKEN_PROGRAM
 
     associated_base_bonding_curve = get_associated_token_address(
@@ -738,6 +773,7 @@ def build_buy_v2_instructions(
 def build_sell_v2_instructions(
     payer: Pubkey,
     input_mint: Pubkey,
+    output_mint: Pubkey,
     input_amount: int,
     params: PumpFunParams,
     slippage_bps: int = DEFAULT_SLIPPAGE,
@@ -755,6 +791,7 @@ def build_sell_v2_instructions(
     creator_vault_account = _resolve_creator_vault_for_sell_v2(params, input_mint)
     base_token_program = _effective_pump_mint_token_program(input_mint, params)
     quote_mint = _effective_quote_mint(params)
+    _validate_v2_sell_quote_mint(output_mint, quote_mint)
     quote_token_program = TOKEN_PROGRAM
 
     associated_base_bonding_curve = get_associated_token_address(

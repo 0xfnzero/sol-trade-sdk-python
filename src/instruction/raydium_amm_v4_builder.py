@@ -11,6 +11,7 @@ import struct
 
 from .common import (
     TOKEN_PROGRAM,
+    SOL_TOKEN_ACCOUNT,
     WSOL_TOKEN_ACCOUNT,
     USDC_TOKEN_ACCOUNT,
     DEFAULT_SLIPPAGE,
@@ -54,6 +55,7 @@ SWAP_BASE_OUT_DISCRIMINATOR: bytes = bytes([11])
 # ============================================
 
 POOL_SEED = b"pool"
+DEFAULT_PUBKEY: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
 
 
 # ============================================
@@ -63,11 +65,21 @@ POOL_SEED = b"pool"
 @dataclass
 class RaydiumAmmV4Params:
     """Parameters for Raydium AMM V4 protocol trading."""
-    amm: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
-    coin_mint: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
-    pc_mint: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
-    token_coin: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
-    token_pc: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
+    amm: Pubkey = DEFAULT_PUBKEY
+    coin_mint: Pubkey = DEFAULT_PUBKEY
+    pc_mint: Pubkey = DEFAULT_PUBKEY
+    token_coin: Pubkey = DEFAULT_PUBKEY
+    token_pc: Pubkey = DEFAULT_PUBKEY
+    amm_open_orders: Pubkey = DEFAULT_PUBKEY
+    amm_target_orders: Pubkey = DEFAULT_PUBKEY
+    serum_program: Pubkey = DEFAULT_PUBKEY
+    serum_market: Pubkey = DEFAULT_PUBKEY
+    serum_bids: Pubkey = DEFAULT_PUBKEY
+    serum_asks: Pubkey = DEFAULT_PUBKEY
+    serum_event_queue: Pubkey = DEFAULT_PUBKEY
+    serum_coin_vault_account: Pubkey = DEFAULT_PUBKEY
+    serum_pc_vault_account: Pubkey = DEFAULT_PUBKEY
+    serum_vault_signer: Pubkey = DEFAULT_PUBKEY
     coin_reserve: int = 0
     pc_reserve: int = 0
 
@@ -80,6 +92,39 @@ class RaydiumAmmV4Params:
     def is_usdc(self) -> bool:
         """Check if the pool contains USDC."""
         return self.coin_mint == USDC_TOKEN_ACCOUNT or self.pc_mint == USDC_TOKEN_ACCOUNT
+
+
+def ensure_market_accounts(params: RaydiumAmmV4Params) -> None:
+    required = [
+        ("amm_open_orders", params.amm_open_orders),
+        ("amm_target_orders", params.amm_target_orders),
+        ("serum_program", params.serum_program),
+        ("serum_market", params.serum_market),
+        ("serum_bids", params.serum_bids),
+        ("serum_asks", params.serum_asks),
+        ("serum_event_queue", params.serum_event_queue),
+        ("serum_coin_vault_account", params.serum_coin_vault_account),
+        ("serum_pc_vault_account", params.serum_pc_vault_account),
+        ("serum_vault_signer", params.serum_vault_signer),
+    ]
+    for name, account in required:
+        if account == DEFAULT_PUBKEY:
+            raise ValueError(
+                f"Raydium AMM v4 requires {name}; pass real market accounts from the AMM/market state"
+            )
+
+
+def _mint_matches(requested: Pubkey, expected: Pubkey) -> bool:
+    return requested == expected or (
+        expected == WSOL_TOKEN_ACCOUNT and requested == SOL_TOKEN_ACCOUNT
+    )
+
+
+def _ensure_expected_mint(label: str, requested: Pubkey, expected: Pubkey) -> None:
+    if requested != DEFAULT_PUBKEY and not _mint_matches(requested, expected):
+        raise ValueError(
+            f"{label} must match the Raydium AMM v4 pool side ({expected}), got {requested}"
+        )
 
 
 # ============================================
@@ -155,6 +200,7 @@ def build_buy_instructions(
         raise ValueError("Amount cannot be zero")
 
     instructions = []
+    ensure_market_accounts(params)
 
     # Validate pool contains WSOL or USDC
     if not params.is_wsol and not params.is_usdc:
@@ -177,16 +223,25 @@ def build_buy_instructions(
     else:
         minimum_amount_out = min_amount_out
 
-    # Determine input mint (WSOL or USDC)
-    input_mint = WSOL_TOKEN_ACCOUNT if params.is_wsol else USDC_TOKEN_ACCOUNT
+    # Determine input/output mints from the pool sides
+    input_mint = params.coin_mint if is_coin_in else params.pc_mint
+    expected_output_mint = params.pc_mint if is_coin_in else params.coin_mint
+    _ensure_expected_mint("output_mint", output_mint, expected_output_mint)
+    output_mint = expected_output_mint
 
     # Get user token accounts
     user_source_token_account = get_associated_token_address(payer, input_mint, TOKEN_PROGRAM)
     user_destination_token_account = get_associated_token_address(payer, output_mint, TOKEN_PROGRAM)
 
     # Handle WSOL if needed
-    if create_input_ata and params.is_wsol:
+    if create_input_ata and input_mint == WSOL_TOKEN_ACCOUNT:
         instructions.extend(handle_wsol(payer, input_amount))
+    elif create_input_ata:
+        instructions.append(
+            create_associated_token_account_idempotent_instruction(
+                payer, payer, input_mint, TOKEN_PROGRAM
+            )
+        )
 
     # Create output ATA if needed
     if create_output_ata:
@@ -196,26 +251,32 @@ def build_buy_instructions(
             )
         )
 
-    # Build instruction data (1 byte discriminator + 8 bytes amount_in + 8 bytes min_out)
-    data = SWAP_BASE_IN_DISCRIMINATOR + struct.pack("<QQ", input_amount, minimum_amount_out)
+    # Build instruction data (1 byte discriminator + 8 bytes amount_in + 8 bytes amount_out/min_out)
+    discriminator = (
+        SWAP_BASE_OUT_DISCRIMINATOR
+        if fixed_output_amount is not None
+        else SWAP_BASE_IN_DISCRIMINATOR
+    )
+    data = discriminator + struct.pack("<QQ", input_amount, minimum_amount_out)
 
-    # Build accounts list (17 accounts)
+    # Build accounts list (18 accounts)
     # Note: Raydium AMM V4 has specific account ordering
     accounts = [
         AccountMeta(TOKEN_PROGRAM, False, False),  # token_program (readonly)
         AccountMeta(params.amm, False, True),  # amm (writable)
         AccountMeta(AUTHORITY, False, False),  # authority (readonly)
-        AccountMeta(params.amm, False, False),  # amm_open_orders (uses amm address)
+        AccountMeta(params.amm_open_orders, False, True),  # amm_open_orders
+        AccountMeta(params.amm_target_orders, False, True),  # amm_target_orders
         AccountMeta(params.token_coin, False, True),  # pool_coin_token_account (writable)
         AccountMeta(params.token_pc, False, True),  # pool_pc_token_account (writable)
-        AccountMeta(params.amm, False, False),  # serum_program (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_market (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_bids (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_asks (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_event_queue (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_coin_vault_account (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_pc_vault_account (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_vault_signer (placeholder)
+        AccountMeta(params.serum_program, False, False),  # serum_program
+        AccountMeta(params.serum_market, False, True),  # serum_market
+        AccountMeta(params.serum_bids, False, True),  # serum_bids
+        AccountMeta(params.serum_asks, False, True),  # serum_asks
+        AccountMeta(params.serum_event_queue, False, True),  # serum_event_queue
+        AccountMeta(params.serum_coin_vault_account, False, True),  # serum_coin_vault_account
+        AccountMeta(params.serum_pc_vault_account, False, True),  # serum_pc_vault_account
+        AccountMeta(params.serum_vault_signer, False, False),  # serum_vault_signer
         AccountMeta(user_source_token_account, False, True),  # user_source_token_account (writable)
         AccountMeta(user_destination_token_account, False, True),  # user_destination_token_account (writable)
         AccountMeta(payer, True, False),  # user_source_owner (signer)
@@ -224,7 +285,7 @@ def build_buy_instructions(
     instructions.append(Instruction(RAYDIUM_AMM_V4_PROGRAM_ID, data, accounts))
 
     # Close WSOL ATA if requested
-    if close_input_ata and params.is_wsol:
+    if close_input_ata and input_mint == WSOL_TOKEN_ACCOUNT:
         instructions.extend(close_wsol(payer))
 
     return instructions
@@ -244,6 +305,7 @@ def build_sell_instructions(
     close_output_ata: bool = False,
     close_input_ata: bool = False,
     fixed_output_amount: Optional[int] = None,
+    output_mint: Optional[Pubkey] = None,
 ) -> List[Instruction]:
     """
     Build Raydium AMM V4 sell instructions.
@@ -266,6 +328,7 @@ def build_sell_instructions(
         raise ValueError("Amount cannot be zero")
 
     instructions = []
+    ensure_market_accounts(params)
 
     # Validate pool contains WSOL or USDC
     if not params.is_wsol and not params.is_usdc:
@@ -276,11 +339,11 @@ def build_sell_instructions(
     # is_base_in = False means we're selling Coin to get PC
     is_pc_out = params.pc_mint == WSOL_TOKEN_ACCOUNT or params.pc_mint == USDC_TOKEN_ACCOUNT
 
-    # Calculate swap amount (is_pc_out reversed because we're selling to get WSOL/USDC)
+    # Calculate swap amount using the same direction semantics as Rust.
     _, min_amount_out = compute_swap_amount(
         params.coin_reserve,
         params.pc_reserve,
-        not is_pc_out,  # Reversed for sell
+        is_pc_out,
         input_amount,
         slippage_bps,
     )
@@ -290,40 +353,58 @@ def build_sell_instructions(
     else:
         minimum_amount_out = min_amount_out
 
-    # Determine output mint (WSOL or USDC)
-    output_mint = WSOL_TOKEN_ACCOUNT if params.is_wsol else USDC_TOKEN_ACCOUNT
+    # Determine input/output mints from the pool sides
+    expected_input_mint = params.coin_mint if is_pc_out else params.pc_mint
+    expected_output_mint = params.pc_mint if is_pc_out else params.coin_mint
+    _ensure_expected_mint("input_mint", input_mint, expected_input_mint)
+    if output_mint is not None:
+        _ensure_expected_mint("output_mint", output_mint, expected_output_mint)
+    input_mint = expected_input_mint
+    output_mint = expected_output_mint
 
     # Get user token accounts
     user_source_token_account = get_associated_token_address(payer, input_mint, TOKEN_PROGRAM)
     user_destination_token_account = get_associated_token_address(payer, output_mint, TOKEN_PROGRAM)
 
-    # Create WSOL ATA if needed for receiving SOL
-    if create_output_ata and params.is_wsol:
+    # Create output ATA if needed for receiving SOL/USDC
+    if create_output_ata and output_mint == WSOL_TOKEN_ACCOUNT:
         instructions.append(
             create_associated_token_account_idempotent_instruction(
                 payer, payer, WSOL_TOKEN_ACCOUNT, TOKEN_PROGRAM
             )
         )
+    elif create_output_ata:
+        instructions.append(
+            create_associated_token_account_idempotent_instruction(
+                payer, payer, output_mint, TOKEN_PROGRAM
+            )
+        )
 
-    # Build instruction data (1 byte discriminator + 8 bytes amount_in + 8 bytes min_out)
-    data = SWAP_BASE_IN_DISCRIMINATOR + struct.pack("<QQ", input_amount, minimum_amount_out)
+    # Build instruction data (1 byte discriminator + 8 bytes amount_in + 8 bytes amount_out/min_out)
+    discriminator = (
+        SWAP_BASE_OUT_DISCRIMINATOR
+        if fixed_output_amount is not None
+        else SWAP_BASE_IN_DISCRIMINATOR
+    )
+    data = discriminator + struct.pack("<QQ", input_amount, minimum_amount_out)
 
-    # Build accounts list (17 accounts)
+    # Build accounts list (18 accounts)
     accounts = [
         AccountMeta(TOKEN_PROGRAM, False, False),  # token_program (readonly)
         AccountMeta(params.amm, False, True),  # amm (writable)
         AccountMeta(AUTHORITY, False, False),  # authority (readonly)
-        AccountMeta(params.amm, False, False),  # amm_open_orders (uses amm address)
+        AccountMeta(params.amm_open_orders, False, True),  # amm_open_orders
+        AccountMeta(params.amm_target_orders, False, True),  # amm_target_orders
         AccountMeta(params.token_coin, False, True),  # pool_coin_token_account (writable)
         AccountMeta(params.token_pc, False, True),  # pool_pc_token_account (writable)
-        AccountMeta(params.amm, False, False),  # serum_program (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_market (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_bids (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_asks (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_event_queue (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_coin_vault_account (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_pc_vault_account (placeholder)
-        AccountMeta(params.amm, False, False),  # serum_vault_signer (placeholder)
+        AccountMeta(params.serum_program, False, False),  # serum_program
+        AccountMeta(params.serum_market, False, True),  # serum_market
+        AccountMeta(params.serum_bids, False, True),  # serum_bids
+        AccountMeta(params.serum_asks, False, True),  # serum_asks
+        AccountMeta(params.serum_event_queue, False, True),  # serum_event_queue
+        AccountMeta(params.serum_coin_vault_account, False, True),  # serum_coin_vault_account
+        AccountMeta(params.serum_pc_vault_account, False, True),  # serum_pc_vault_account
+        AccountMeta(params.serum_vault_signer, False, False),  # serum_vault_signer
         AccountMeta(user_source_token_account, False, True),  # user_source_token_account (writable)
         AccountMeta(user_destination_token_account, False, True),  # user_destination_token_account (writable)
         AccountMeta(payer, True, False),  # user_source_owner (signer)
@@ -332,7 +413,7 @@ def build_sell_instructions(
     instructions.append(Instruction(RAYDIUM_AMM_V4_PROGRAM_ID, data, accounts))
 
     # Close WSOL ATA if requested
-    if close_output_ata and params.is_wsol:
+    if close_output_ata and output_mint == WSOL_TOKEN_ACCOUNT:
         instructions.extend(close_wsol(payer))
 
     # Close token ATA if requested

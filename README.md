@@ -121,7 +121,7 @@ dependencies = [
 ### Use PyPI
 
 ```bash
-pip install sol-trade-sdk
+pip install sol-trade-sdk==0.1.1
 ```
 
 ## 🛠️ Usage Examples

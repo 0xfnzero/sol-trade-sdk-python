@@ -8,7 +8,6 @@ from _shared import default_swqos_configs, trade_config
 async def main() -> None:
     config = trade_config(
         swqos_configs=default_swqos_configs(),
-        use_pumpfun_v2=True,
         max_swqos_submit_concurrency=8,
     )
     client = TradingClient(Keypair(), config)

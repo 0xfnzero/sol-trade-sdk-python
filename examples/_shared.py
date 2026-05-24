@@ -90,7 +90,6 @@ def trade_config(**overrides) -> TradeConfig:
     builder = (
         TradeConfig.builder(rpc_url())
         .swqos_configs(overrides.pop("swqos_configs", default_swqos_configs()))
-        .use_pumpfun_v2(overrides.pop("use_pumpfun_v2", True))
         .use_seed_optimize(overrides.pop("use_seed_optimize", True))
         .swqos_cores_from_end(overrides.pop("swqos_cores_from_end", True))
         .max_swqos_submit_concurrency(overrides.pop("max_swqos_submit_concurrency", 8))
@@ -127,7 +126,6 @@ def pump_fun_params() -> PumpFunParams:
         token_program=TOKEN_PROGRAM,
         fee_recipient=example_pubkey(15),
         quote_mint=WSOL_TOKEN_ACCOUNT,
-        use_v2_ix=True,
     )
 
 
@@ -189,6 +187,16 @@ def raydium_amm_v4_params() -> RaydiumAmmV4Params:
         pc_mint=WSOL_TOKEN_ACCOUNT,
         token_coin=example_pubkey(53),
         token_pc=example_pubkey(54),
+        amm_open_orders=example_pubkey(55),
+        amm_target_orders=example_pubkey(56),
+        serum_program=example_pubkey(57),
+        serum_market=example_pubkey(58),
+        serum_bids=example_pubkey(59),
+        serum_asks=example_pubkey(60),
+        serum_event_queue=example_pubkey(61),
+        serum_coin_vault_account=example_pubkey(62),
+        serum_pc_vault_account=example_pubkey(63),
+        serum_vault_signer=example_pubkey(64),
         coin_reserve=2_000_000_000,
         pc_reserve=50_000_000_000,
     )
@@ -196,10 +204,10 @@ def raydium_amm_v4_params() -> RaydiumAmmV4Params:
 
 def meteora_damm_v2_params() -> MeteoraDammV2Params:
     return MeteoraDammV2Params(
-        pool=example_pubkey(61),
-        token_a_vault=example_pubkey(62),
-        token_b_vault=example_pubkey(63),
-        token_a_mint=example_pubkey(64),
+        pool=example_pubkey(71),
+        token_a_vault=example_pubkey(72),
+        token_b_vault=example_pubkey(73),
+        token_a_mint=example_pubkey(74),
         token_b_mint=WSOL_TOKEN_ACCOUNT,
         token_a_program=TOKEN_PROGRAM,
         token_b_program=TOKEN_PROGRAM,
@@ -222,11 +230,23 @@ def protocol_params(dex_type: DexType):
     raise ValueError(f"unsupported dex type: {dex_type}")
 
 
+def default_trade_mint(dex_type: DexType) -> Pubkey:
+    if dex_type == DexType.PUMPSWAP:
+        return pump_swap_params().base_mint
+    if dex_type == DexType.RAYDIUM_CPMM:
+        return raydium_cpmm_params().base_mint
+    if dex_type == DexType.RAYDIUM_AMM_V4:
+        return raydium_amm_v4_params().coin_mint
+    if dex_type == DexType.METEORA_DAMM_V2:
+        return meteora_damm_v2_params().token_a_mint
+    return example_pubkey(91)
+
+
 def example_buy_params(dex_type: DexType, mint: Optional[Pubkey] = None) -> TradeBuyParams:
-    return TradeBuyParams(
+    params = TradeBuyParams(
         dex_type=dex_type,
         input_token_type=TradeTokenType.USD1 if dex_type == DexType.BONK else TradeTokenType.WSOL,
-        mint=mint or example_pubkey(91),
+        mint=mint or default_trade_mint(dex_type),
         input_token_amount=100_000,
         extension_params=protocol_params(dex_type),
         slippage_basis_points=300,
@@ -238,13 +258,16 @@ def example_buy_params(dex_type: DexType, mint: Optional[Pubkey] = None) -> Trad
         gas_fee_strategy=low_latency_gas_strategy(),
         grpc_recv_us=0,
     )
+    if dex_type == DexType.METEORA_DAMM_V2:
+        params.fixed_output_token_amount = 90_000
+    return params
 
 
 def example_sell_params(dex_type: DexType, mint: Optional[Pubkey] = None) -> TradeSellParams:
-    return TradeSellParams(
+    params = TradeSellParams(
         dex_type=dex_type,
         output_token_type=TradeTokenType.USD1 if dex_type == DexType.BONK else TradeTokenType.WSOL,
-        mint=mint or example_pubkey(91),
+        mint=mint or default_trade_mint(dex_type),
         input_token_amount=50_000,
         extension_params=protocol_params(dex_type),
         slippage_basis_points=300,
@@ -257,6 +280,9 @@ def example_sell_params(dex_type: DexType, mint: Optional[Pubkey] = None) -> Tra
         gas_fee_strategy=low_latency_gas_strategy(),
         grpc_recv_us=0,
     )
+    if dex_type == DexType.METEORA_DAMM_V2:
+        params.fixed_output_token_amount = 45_000
+    return params
 
 
 def describe_dry_run(name: str) -> None:

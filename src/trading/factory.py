@@ -46,7 +46,6 @@ def _pumpfun_bonding_to_builder_params(
     close_token_account: bool,
     fee_recipient: Any = None,
     quote_mint: Any = None,
-    use_v2_ix: bool = False,
     observed_trade_creator: Any = None,
     fee_sharing_creator_vault_if_active: Any = None,
 ):
@@ -90,7 +89,6 @@ def _pumpfun_bonding_to_builder_params(
         close_token_account_when_sell=close_token_account,
         fee_recipient=_to_pubkey(fee_recipient) if fee_recipient is not None else Pubkey.default(),
         quote_mint=_to_pubkey(quote_mint) if quote_mint is not None else Pubkey.default(),
-        use_v2_ix=use_v2_ix,
         observed_trade_creator=(
             _to_pubkey(observed_trade_creator) if observed_trade_creator is not None else None
         ),
@@ -131,7 +129,6 @@ class PumpFunExecutor(TradeExecutor):
             close_token_account=False,
             fee_recipient=params.get("fee_recipient"),
             quote_mint=params.get("quote_mint"),
-            use_v2_ix=bool(params.get("use_v2_ix", params.get("use_pumpfun_v2", False))),
             observed_trade_creator=params.get("observed_trade_creator"),
             fee_sharing_creator_vault_if_active=params.get("fee_sharing_creator_vault_if_active"),
         )
@@ -146,7 +143,7 @@ class PumpFunExecutor(TradeExecutor):
             close_input_ata=bool(params.get("close_input_mint_ata", False)),
             fixed_output_amount=params.get("fixed_output_amount"),
             use_exact_sol_amount=bool(params.get("use_exact_sol_amount", True)),
-            use_pumpfun_v2=bool(params.get("use_pumpfun_v2", False)),
+            input_mint=_to_pubkey(params.get("input_mint", params.get("quote_mint", bytes(32)))),
         )
 
         return {
@@ -169,7 +166,6 @@ class PumpFunExecutor(TradeExecutor):
             close_token_account=close_tok,
             fee_recipient=params.get("fee_recipient"),
             quote_mint=params.get("quote_mint"),
-            use_v2_ix=bool(params.get("use_v2_ix", params.get("use_pumpfun_v2", False))),
             observed_trade_creator=params.get("observed_trade_creator"),
             fee_sharing_creator_vault_if_active=params.get("fee_sharing_creator_vault_if_active"),
         )
@@ -183,7 +179,7 @@ class PumpFunExecutor(TradeExecutor):
             close_output_ata=bool(params.get("close_output_mint_ata", False)),
             close_input_ata=close_tok,
             fixed_output_amount=params.get("fixed_output_amount"),
-            use_pumpfun_v2=bool(params.get("use_pumpfun_v2", False)),
+            output_mint=_to_pubkey(params.get("output_mint", params.get("quote_mint", bytes(32)))),
         )
 
         return {

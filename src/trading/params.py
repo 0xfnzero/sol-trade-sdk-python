@@ -352,6 +352,16 @@ class RaydiumAmmV4Params:
     pc_mint: bytes = field(default_factory=lambda: bytes(32))
     token_coin: bytes = field(default_factory=lambda: bytes(32))
     token_pc: bytes = field(default_factory=lambda: bytes(32))
+    amm_open_orders: bytes = field(default_factory=lambda: bytes(32))
+    amm_target_orders: bytes = field(default_factory=lambda: bytes(32))
+    serum_program: bytes = field(default_factory=lambda: bytes(32))
+    serum_market: bytes = field(default_factory=lambda: bytes(32))
+    serum_bids: bytes = field(default_factory=lambda: bytes(32))
+    serum_asks: bytes = field(default_factory=lambda: bytes(32))
+    serum_event_queue: bytes = field(default_factory=lambda: bytes(32))
+    serum_coin_vault_account: bytes = field(default_factory=lambda: bytes(32))
+    serum_pc_vault_account: bytes = field(default_factory=lambda: bytes(32))
+    serum_vault_signer: bytes = field(default_factory=lambda: bytes(32))
     coin_reserve: int = 0
     pc_reserve: int = 0
 
@@ -363,6 +373,16 @@ class RaydiumAmmV4Params:
         pc_mint: bytes,
         token_coin: bytes,
         token_pc: bytes,
+        amm_open_orders: bytes,
+        amm_target_orders: bytes,
+        serum_program: bytes,
+        serum_market: bytes,
+        serum_bids: bytes,
+        serum_asks: bytes,
+        serum_event_queue: bytes,
+        serum_coin_vault_account: bytes,
+        serum_pc_vault_account: bytes,
+        serum_vault_signer: bytes,
         coin_reserve: int,
         pc_reserve: int,
     ) -> "RaydiumAmmV4Params":
@@ -373,6 +393,16 @@ class RaydiumAmmV4Params:
             pc_mint=pc_mint,
             token_coin=token_coin,
             token_pc=token_pc,
+            amm_open_orders=amm_open_orders,
+            amm_target_orders=amm_target_orders,
+            serum_program=serum_program,
+            serum_market=serum_market,
+            serum_bids=serum_bids,
+            serum_asks=serum_asks,
+            serum_event_queue=serum_event_queue,
+            serum_coin_vault_account=serum_coin_vault_account,
+            serum_pc_vault_account=serum_pc_vault_account,
+            serum_vault_signer=serum_vault_signer,
             coin_reserve=coin_reserve,
             pc_reserve=pc_reserve,
         )

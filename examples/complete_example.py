@@ -12,7 +12,7 @@ from _shared import (
 
 
 async def main() -> None:
-    client = create_example_client(use_pumpfun_v2=True, max_swqos_submit_concurrency=8)
+    client = create_example_client(max_swqos_submit_concurrency=8)
     gas_strategy = low_latency_gas_strategy()
     buy_params = example_buy_params(DexType.PUMPFUN)
     sell_params = example_sell_params(DexType.PUMPFUN)
