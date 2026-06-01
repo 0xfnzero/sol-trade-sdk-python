@@ -11,7 +11,7 @@ import time
 import threading
 from enum import Enum
 
-from ..common.types import TradeType, SwqosType, GasFeeStrategy, GasFeeStrategyType
+from ..common.types import TradeType, SwqosType, SwqosRegion, GasFeeStrategy, GasFeeStrategyType
 from ..swqos.clients import SwqosClient, ClientFactory, SwqosConfig, TradeError
 from ..cache.cache import LRUCache, TTLCache
 from ..pool.pool import WorkerPool, RateLimiter
@@ -72,6 +72,13 @@ class TradeConfig:
     confirmation_retry_count: int = 30
     rate_limit_per_second: float = 100.0
 
+    def __post_init__(self) -> None:
+        if self.swqos_configs and not any(c.type == SwqosType.DEFAULT for c in self.swqos_configs):
+            self.swqos_configs = [
+                *self.swqos_configs,
+                SwqosConfig(type=SwqosType.DEFAULT, region=SwqosRegion.DEFAULT),
+            ]
+
 
 # ===== High-Performance Trade Executor =====
 
@@ -121,6 +128,11 @@ class TradeExecutor:
         """Add a new SWQOS client"""
         client = ClientFactory.create_client(config, self.config.rpc_url)
         self._clients[config.type] = client
+        if config.type != SwqosType.DEFAULT and SwqosType.DEFAULT not in self._clients:
+            self._clients[SwqosType.DEFAULT] = ClientFactory.create_client(
+                SwqosConfig(type=SwqosType.DEFAULT, region=SwqosRegion.DEFAULT),
+                self.config.rpc_url,
+            )
 
     def remove_client(self, swqos_type: SwqosType) -> None:
         """Remove a SWQOS client"""
@@ -186,28 +198,20 @@ class TradeExecutor:
             )
             futures.append(future)
         
-        # Wait for first success
-        done, pending = await asyncio.wait(
-            futures,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        
-        # Cancel pending
-        for future in pending:
-            future.cancel()
-        
-        # Check results
-        for future in done:
+        last_error = "All parallel submissions failed"
+        for future in asyncio.as_completed(futures):
             try:
-                result = future.result()
+                result = await future
                 if result.success:
                     self._record_success(time.time() - start_time)
                     return result
-            except Exception:
+                if result.error:
+                    last_error = result.error
+            except Exception as exc:
+                last_error = str(exc)
                 continue
         
         # All failed
-        last_error = "All parallel submissions failed"
         self._record_failure()
         
         return TradeResult(

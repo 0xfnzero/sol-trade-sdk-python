@@ -244,6 +244,10 @@ def _effective_quote_mint(params: "PumpFunParams") -> Pubkey:
     return params.quote_mint
 
 
+def _uses_v2_layout(params: "PumpFunParams") -> bool:
+    return _is_usable_pubkey(params.quote_mint) and params.quote_mint != SOL_TOKEN_ACCOUNT
+
+
 def _is_sol_quote_mint(mint: Pubkey) -> bool:
     return mint == SOL_TOKEN_ACCOUNT or mint == WSOL_TOKEN_ACCOUNT
 
@@ -388,7 +392,7 @@ def build_buy_instructions(
     Returns:
         List of instructions for the buy operation
     """
-    if _is_usable_pubkey(params.quote_mint):
+    if _uses_v2_layout(params):
         return build_buy_v2_instructions(
             payer=payer,
             output_mint=output_mint,
@@ -398,6 +402,7 @@ def build_buy_instructions(
             slippage_bps=slippage_bps,
             create_output_ata=create_output_ata,
             create_input_ata=create_input_ata,
+            close_input_ata=close_input_ata,
             fixed_output_amount=fixed_output_amount,
             use_exact_sol_amount=use_exact_sol_amount,
         )
@@ -466,7 +471,11 @@ def build_buy_instructions(
     # Build instruction data
     track_volume = 1 if params.is_cashback_coin else 0
 
-    if use_exact_sol_amount:
+    if fixed_output_amount is not None:
+        data = BUY_DISCRIMINATOR + struct.pack(
+            "<QQB", fixed_output_amount, input_amount, track_volume
+        )
+    elif use_exact_sol_amount:
         # buy_exact_sol_in(spendable_sol_in: u64, min_tokens_out: u64, track_volume)
         min_tokens_out = calculate_with_slippage_sell(buy_token_amount, slippage_bps)
         data = BUY_EXACT_SOL_IN_DISCRIMINATOR + struct.pack("<QQB", input_amount, min_tokens_out, track_volume)
@@ -534,7 +543,7 @@ def build_sell_instructions(
     Returns:
         List of instructions for the sell operation
     """
-    if _is_usable_pubkey(params.quote_mint):
+    if _uses_v2_layout(params):
         return build_sell_v2_instructions(
             payer=payer,
             input_mint=input_mint,
@@ -660,6 +669,7 @@ def build_buy_v2_instructions(
     slippage_bps: int = DEFAULT_SLIPPAGE,
     create_output_ata: bool = True,
     create_input_ata: bool = False,
+    close_input_ata: bool = False,
     fixed_output_amount: Optional[int] = None,
     use_exact_sol_amount: bool = True,
 ) -> List[Instruction]:
@@ -708,13 +718,6 @@ def build_buy_v2_instructions(
             )
         )
 
-    if create_input_ata:
-        instructions.append(
-            create_associated_token_account_idempotent_instruction(
-                payer, payer, quote_mint, quote_token_program
-            )
-        )
-
     buy_token_amount = (
         fixed_output_amount
         if fixed_output_amount is not None
@@ -727,15 +730,26 @@ def build_buy_v2_instructions(
         )
     )
     max_sol_cost = calculate_with_slippage_buy(input_amount, slippage_bps)
-    if use_exact_sol_amount:
-        min_tokens_out = (
-            fixed_output_amount
-            if fixed_output_amount is not None
-            else calculate_with_slippage_sell(buy_token_amount, slippage_bps)
-        )
+    if fixed_output_amount is not None:
+        data = BUY_V2_DISCRIMINATOR + struct.pack("<QQ", fixed_output_amount, input_amount)
+        quote_amount_to_fund = input_amount
+    elif use_exact_sol_amount:
+        min_tokens_out = calculate_with_slippage_sell(buy_token_amount, slippage_bps)
         data = BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR + struct.pack("<QQ", input_amount, min_tokens_out)
+        quote_amount_to_fund = input_amount
     else:
         data = BUY_V2_DISCRIMINATOR + struct.pack("<QQ", buy_token_amount, max_sol_cost)
+        quote_amount_to_fund = max_sol_cost
+
+    if create_input_ata:
+        if quote_mint == WSOL_TOKEN_ACCOUNT:
+            instructions.extend(handle_wsol(payer, quote_amount_to_fund))
+        else:
+            instructions.append(
+                create_associated_token_account_idempotent_instruction(
+                    payer, payer, quote_mint, quote_token_program
+                )
+            )
 
     accounts = [
         AccountMeta(GLOBAL_ACCOUNT, False, False),
@@ -767,6 +781,8 @@ def build_buy_v2_instructions(
         AccountMeta(PUMPFUN_PROGRAM_ID, False, False),
     ]
     instructions.append(Instruction(PUMPFUN_PROGRAM_ID, data, accounts))
+    if close_input_ata and quote_mint == WSOL_TOKEN_ACCOUNT:
+        instructions.extend(close_wsol(payer))
     return instructions
 
 

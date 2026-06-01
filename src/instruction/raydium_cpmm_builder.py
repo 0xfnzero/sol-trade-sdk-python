@@ -210,29 +210,28 @@ def build_buy_instructions(
     # Determine if base is input (WSOL/USDC)
     is_base_in = params.base_mint == WSOL_TOKEN_ACCOUNT or params.base_mint == USDC_TOKEN_ACCOUNT
 
-    # Get output token program
-    mint_token_program = params.quote_token_program if is_base_in else params.base_token_program
-
-    # Calculate swap amount
-    _, min_amount_out = compute_swap_amount(
-        params.base_reserve,
-        params.quote_reserve,
-        is_base_in,
-        input_amount,
-        slippage_bps,
-    )
+    input_mint = params.base_mint if is_base_in else params.quote_mint
+    input_token_program = params.base_token_program if is_base_in else params.quote_token_program
+    expected_output_mint = params.quote_mint if is_base_in else params.base_mint
+    output_token_program = params.quote_token_program if is_base_in else params.base_token_program
+    if output_mint != expected_output_mint:
+        raise ValueError(f"output_mint must match Raydium CPMM pool side {expected_output_mint}")
 
     if fixed_output_amount is not None:
         minimum_amount_out = fixed_output_amount
     else:
+        _, min_amount_out = compute_swap_amount(
+            params.base_reserve,
+            params.quote_reserve,
+            is_base_in,
+            input_amount,
+            slippage_bps,
+        )
         minimum_amount_out = min_amount_out
 
-    # Determine input mint (WSOL or USDC)
-    input_mint = WSOL_TOKEN_ACCOUNT if params.is_wsol else USDC_TOKEN_ACCOUNT
-
     # Get user token accounts
-    input_token_account = get_associated_token_address(payer, input_mint, TOKEN_PROGRAM)
-    output_token_account = get_associated_token_address(payer, output_mint, mint_token_program)
+    input_token_account = get_associated_token_address(payer, input_mint, input_token_program)
+    output_token_account = get_associated_token_address(payer, output_mint, output_token_program)
 
     # Get vaults
     input_vault = params.base_vault if is_base_in else params.quote_vault
@@ -248,20 +247,30 @@ def build_buy_instructions(
     if observation_state is None:
         observation_state = get_observation_state_pda(pool_state)
 
-    # Handle WSOL if needed
-    if create_input_ata and params.is_wsol:
-        instructions.extend(handle_wsol(payer, input_amount))
+    # Handle input account creation/wrapping
+    if create_input_ata:
+        if input_mint == WSOL_TOKEN_ACCOUNT:
+            instructions.extend(handle_wsol(payer, input_amount))
+        else:
+            instructions.append(
+                create_associated_token_account_idempotent_instruction(
+                    payer, payer, input_mint, input_token_program
+                )
+            )
 
     # Create output ATA if needed
     if create_output_ata:
         instructions.append(
             create_associated_token_account_idempotent_instruction(
-                payer, payer, output_mint, mint_token_program
+                payer, payer, output_mint, output_token_program
             )
         )
 
     # Build instruction data
-    data = SWAP_BASE_IN_DISCRIMINATOR + struct.pack("<QQ", input_amount, minimum_amount_out)
+    if fixed_output_amount is not None:
+        data = SWAP_BASE_OUT_DISCRIMINATOR + struct.pack("<QQ", input_amount, fixed_output_amount)
+    else:
+        data = SWAP_BASE_IN_DISCRIMINATOR + struct.pack("<QQ", input_amount, minimum_amount_out)
 
     # Build accounts list
     accounts = [
@@ -273,8 +282,8 @@ def build_buy_instructions(
         AccountMeta(output_token_account, False, True),  # output_token_account (writable)
         AccountMeta(input_vault, False, True),  # input_vault (writable)
         AccountMeta(output_vault, False, True),  # output_vault (writable)
-        AccountMeta(TOKEN_PROGRAM, False, False),  # input_token_program (readonly)
-        AccountMeta(mint_token_program, False, False),  # output_token_program (readonly)
+        AccountMeta(input_token_program, False, False),  # input_token_program (readonly)
+        AccountMeta(output_token_program, False, False),  # output_token_program (readonly)
         AccountMeta(input_mint, False, False),  # input_token_mint (readonly)
         AccountMeta(output_mint, False, False),  # output_token_mint (readonly)
         AccountMeta(observation_state, False, True),  # observation_state (writable)
@@ -283,7 +292,7 @@ def build_buy_instructions(
     instructions.append(Instruction(RAYDIUM_CPMM_PROGRAM_ID, data, accounts))
 
     # Close WSOL ATA if requested
-    if close_input_ata and params.is_wsol:
+    if close_input_ata and input_mint == WSOL_TOKEN_ACCOUNT:
         instructions.extend(close_wsol(payer))
 
     return instructions
@@ -338,29 +347,28 @@ def build_sell_instructions(
     # Determine if quote is output (WSOL/USDC)
     is_quote_out = params.quote_mint == WSOL_TOKEN_ACCOUNT or params.quote_mint == USDC_TOKEN_ACCOUNT
 
-    # Get input token program
-    mint_token_program = params.base_token_program if is_quote_out else params.quote_token_program
-
-    # Calculate swap amount
-    _, min_amount_out = compute_swap_amount(
-        params.base_reserve,
-        params.quote_reserve,
-        is_quote_out,  # Swap direction is reversed for sell
-        input_amount,
-        slippage_bps,
-    )
+    expected_input_mint = params.base_mint if is_quote_out else params.quote_mint
+    input_token_program = params.base_token_program if is_quote_out else params.quote_token_program
+    output_mint = params.quote_mint if is_quote_out else params.base_mint
+    output_token_program = params.quote_token_program if is_quote_out else params.base_token_program
+    if input_mint != expected_input_mint:
+        raise ValueError(f"input_mint must match Raydium CPMM pool side {expected_input_mint}")
 
     if fixed_output_amount is not None:
         minimum_amount_out = fixed_output_amount
     else:
+        _, min_amount_out = compute_swap_amount(
+            params.base_reserve,
+            params.quote_reserve,
+            is_quote_out,  # Swap direction is reversed for sell
+            input_amount,
+            slippage_bps,
+        )
         minimum_amount_out = min_amount_out
 
-    # Determine output mint (WSOL or USDC)
-    output_mint = WSOL_TOKEN_ACCOUNT if params.is_wsol else USDC_TOKEN_ACCOUNT
-
     # Get user token accounts
-    output_token_account = get_associated_token_address(payer, output_mint, TOKEN_PROGRAM)
-    input_token_account = get_associated_token_address(payer, input_mint, mint_token_program)
+    output_token_account = get_associated_token_address(payer, output_mint, output_token_program)
+    input_token_account = get_associated_token_address(payer, input_mint, input_token_program)
 
     # Get vaults
     output_vault = params.quote_vault if is_quote_out else params.base_vault
@@ -376,16 +384,19 @@ def build_sell_instructions(
     if observation_state is None:
         observation_state = get_observation_state_pda(pool_state)
 
-    # Create WSOL ATA if needed for receiving SOL
-    if create_output_ata and params.is_wsol:
+    # Create output ATA if needed
+    if create_output_ata:
         instructions.append(
             create_associated_token_account_idempotent_instruction(
-                payer, payer, WSOL_TOKEN_ACCOUNT, TOKEN_PROGRAM
+                payer, payer, output_mint, output_token_program
             )
         )
 
     # Build instruction data
-    data = SWAP_BASE_IN_DISCRIMINATOR + struct.pack("<QQ", input_amount, minimum_amount_out)
+    if fixed_output_amount is not None:
+        data = SWAP_BASE_OUT_DISCRIMINATOR + struct.pack("<QQ", input_amount, fixed_output_amount)
+    else:
+        data = SWAP_BASE_IN_DISCRIMINATOR + struct.pack("<QQ", input_amount, minimum_amount_out)
 
     # Build accounts list
     accounts = [
@@ -397,8 +408,8 @@ def build_sell_instructions(
         AccountMeta(output_token_account, False, True),  # output_token_account (writable)
         AccountMeta(input_vault, False, True),  # input_vault (writable)
         AccountMeta(output_vault, False, True),  # output_vault (writable)
-        AccountMeta(mint_token_program, False, False),  # input_token_program (readonly)
-        AccountMeta(TOKEN_PROGRAM, False, False),  # output_token_program (readonly)
+        AccountMeta(input_token_program, False, False),  # input_token_program (readonly)
+        AccountMeta(output_token_program, False, False),  # output_token_program (readonly)
         AccountMeta(input_mint, False, False),  # input_token_mint (readonly)
         AccountMeta(output_mint, False, False),  # output_token_mint (readonly)
         AccountMeta(observation_state, False, True),  # observation_state (writable)
@@ -407,14 +418,14 @@ def build_sell_instructions(
     instructions.append(Instruction(RAYDIUM_CPMM_PROGRAM_ID, data, accounts))
 
     # Close WSOL ATA if requested
-    if close_output_ata and params.is_wsol:
+    if close_output_ata and output_mint == WSOL_TOKEN_ACCOUNT:
         instructions.extend(close_wsol(payer))
 
     # Close token ATA if requested
     if close_input_ata:
         instructions.append(
             close_token_account_instruction(
-                mint_token_program,
+                input_token_program,
                 input_token_account,
                 payer,
                 payer,

@@ -120,9 +120,8 @@ def create_wsol_account_instruction(
     )
     instructions.append(transfer_ix)
 
-    # Sync native token account (needed for wrapped SOL)
-    # Sync instruction: 17, 2, 218, 95, 237, 188, 186, 205 (sync_native discriminator)
-    sync_data = bytes([17, 2, 218, 95, 237, 188, 186, 205])
+    # SPL Token SyncNative discriminator.
+    sync_data = bytes([17])
     sync_accounts = [AccountMeta(wsol_ata, False, True)]
     sync_ix = Instruction(TOKEN_PROGRAM, sync_data, sync_accounts)
     instructions.append(sync_ix)
@@ -138,8 +137,7 @@ def close_wsol_account_instruction(
     """
     wsol_ata = get_associated_token_address(payer, WSOL_TOKEN_ACCOUNT, TOKEN_PROGRAM)
 
-    # Close account discriminator
-    close_data = bytes([153, 228, 76, 56, 218, 79, 98, 4])  # close_account
+    close_data = bytes([9])
 
     accounts = [
         AccountMeta(wsol_ata, False, True),  # account to close (writable)
@@ -159,7 +157,7 @@ def close_token_account_instruction(
     """
     Create instruction to close a token account and reclaim rent.
     """
-    close_data = bytes([153, 228, 76, 56, 218, 79, 98, 4])  # close_account
+    close_data = bytes([9])
 
     accounts = [
         AccountMeta(account, False, True),  # account to close (writable)

@@ -403,6 +403,41 @@ class TestHotPathExecutor:
         )
         assert result.success is True
 
+    @pytest.mark.asyncio
+    async def test_execute_parallel_waits_past_first_failure(self, executor, mock_rpc_client):
+        """Fast failed routes must not hide a slower successful submit"""
+        await executor.state._prefetch_blockhash()
+
+        client1 = AsyncMock()
+        client1.send_transaction = AsyncMock(side_effect=RuntimeError("fast failure"))
+        client1.swqos_type = "jito"
+
+        async def slow_success(*args):
+            await asyncio.sleep(0.005)
+            return "sig2"
+
+        client2 = AsyncMock()
+        client2.send_transaction = AsyncMock(side_effect=slow_success)
+        client2.swqos_type = "default"
+
+        executor.add_swqos_client(client1)
+        executor.add_swqos_client(client2)
+
+        result = await executor.execute(
+            "buy",
+            b"tx_bytes",
+            ExecuteOptions(
+                parallel_submit=True,
+                skip_blockhash_validation=True,
+                timeout=0.1,
+            )
+        )
+
+        assert result.success is True
+        assert result.signature == "sig2"
+        assert client1.send_transaction.await_count == 1
+        assert client2.send_transaction.await_count == 1
+
     def test_get_metrics(self, executor):
         """Test getting execution metrics"""
         metrics = executor.get_metrics()

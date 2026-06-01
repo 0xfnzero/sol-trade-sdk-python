@@ -16,6 +16,7 @@ from ..common.types import (
     GasFeeStrategyType,
     TradeType,
     SwqosType,
+    SwqosRegion,
 )
 from solders.hash import Hash
 from solders.instruction import Instruction
@@ -53,6 +54,13 @@ class TradeConfig:
     retry_delay_ms: int = 100
     confirmation_timeout_ms: int = 30000
     parallel_submissions: bool = True
+
+    def __post_init__(self) -> None:
+        if self.swqos_configs and not any(c.type == SwqosType.DEFAULT for c in self.swqos_configs):
+            self.swqos_configs = [
+                *self.swqos_configs,
+                SwqosConfig(type=SwqosType.DEFAULT, region=SwqosRegion.DEFAULT),
+            ]
 
 
 @dataclass
@@ -214,38 +222,34 @@ class TradeExecutor:
         results: List[TradeResult] = []
 
         for tx in transactions:
-            # Create tasks for all clients
+            tx_result: Optional[TradeResult] = None
             tasks = [
-                self._submit_single(client, trade_type, tx, wait_confirmation)
+                asyncio.create_task(
+                    self._submit_single(client, trade_type, tx, wait_confirmation)
+                )
                 for client in clients
             ]
+            failures: List[str] = []
 
-            # Run all tasks concurrently and get first successful result
-            done, pending = await asyncio.wait(
-                tasks,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
-            # Cancel pending tasks
-            for task in pending:
-                task.cancel()
-
-            # Get result from completed task
-            for task in done:
+            for task in asyncio.as_completed(tasks):
                 try:
-                    result = task.result()
+                    result = await task
                     if result.success:
-                        results.append(result)
+                        tx_result = result
                         break
-                except Exception as e:
+                    if result.error:
+                        failures.append(result.error)
+                except Exception as exc:
+                    failures.append(str(exc))
                     continue
 
-            if len(results) < len(transactions):
-                results.append(TradeResult(
+            if tx_result is None:
+                tx_result = TradeResult(
                     signature="",
                     success=False,
-                    error="All parallel submissions failed",
-                ))
+                    error="; ".join(failures) or "All parallel submissions failed",
+                )
+            results.append(tx_result)
 
         return results
 
@@ -335,6 +339,11 @@ class TradeExecutor:
         """Add a new SWQOS client"""
         client = ClientFactory.create_client(config, self.config.rpc_url)
         self._clients[config.type] = client
+        if config.type != SwqosType.DEFAULT and SwqosType.DEFAULT not in self._clients:
+            self._clients[SwqosType.DEFAULT] = ClientFactory.create_client(
+                SwqosConfig(type=SwqosType.DEFAULT, region=SwqosRegion.DEFAULT),
+                self.config.rpc_url,
+            )
 
     def remove_swqos_client(self, swqos_type: SwqosType) -> None:
         """Remove a SWQOS client"""

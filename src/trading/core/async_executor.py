@@ -54,7 +54,9 @@ class ExecutionConfig:
     confirmation_timeout_ms: int = 60000
     retry_attempts: int = 3
     retry_delay_ms: int = 100
-    parallel_submit_count: int = 3  # Number of providers for parallel mode
+    # Deprecated compatibility field. PARALLEL mode submits every configured provider
+    # so the default RPC lane is never hidden behind a local cap.
+    parallel_submit_count: int = 0
     confirmation_check_interval_ms: int = 500
     enable_metrics: bool = True
     priority_fee_multiplier: float = 1.0
@@ -250,46 +252,46 @@ class AsyncTradeExecutor:
                 total_time_ms=int((time.time() - start_time) * 1000),
             )
 
-        # Limit parallel submissions
-        clients = clients[:config.parallel_submit_count]
-
-        # Create submission tasks
         tasks = [
-            self._submit_single(client, transaction)
+            asyncio.create_task(self._submit_single(client, transaction))
             for client in clients
         ]
+        pending = set(tasks)
+        attempts = 0
+        deadline = start_time + (config.timeout_ms / 1000)
 
-        # Wait for first success or all failures
-        done, pending = await asyncio.wait(
-            tasks,
-            return_when=asyncio.FIRST_COMPLETED,
-            timeout=config.timeout_ms / 1000,
-        )
+        while pending:
+            timeout = deadline - time.time()
+            if timeout <= 0:
+                break
+            done, pending = await asyncio.wait(
+                pending,
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=timeout,
+            )
+            if not done:
+                break
+            for task in done:
+                try:
+                    result = task.result()
+                    attempts += 1
+                    if result.success:
+                        total_time = int((time.time() - start_time) * 1000)
+                        return ExecutionResult(
+                            signature=result.signature,
+                            status=ExecutionStatus.CONFIRMED,
+                            success=True,
+                            provider=result.provider,
+                            submit_time_ms=result.latency_ms,
+                            total_time_ms=total_time,
+                            attempts=attempts,
+                            slot=result.slot,
+                        )
+                except Exception:
+                    attempts += 1
 
-        # Cancel remaining tasks
         for task in pending:
             task.cancel()
-
-        # Process results
-        attempts = 0
-        for task in done:
-            try:
-                result = task.result()
-                attempts += 1
-                if result.success:
-                    total_time = int((time.time() - start_time) * 1000)
-                    return ExecutionResult(
-                        signature=result.signature,
-                        status=ExecutionStatus.CONFIRMED,
-                        success=True,
-                        provider=result.provider,
-                        submit_time_ms=result.latency_ms,
-                        total_time_ms=total_time,
-                        attempts=attempts,
-                        slot=result.slot,
-                    )
-            except Exception:
-                attempts += 1
 
         total_time = int((time.time() - start_time) * 1000)
         return ExecutionResult(

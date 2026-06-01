@@ -236,10 +236,8 @@ class HotPathExecutor:
     ) -> ExecuteResult:
         """Submit to all SWQoS clients in parallel - NO RPC
 
-        Security fixes applied:
-        - Proper task creation with asyncio.create_task
-        - Proper cleanup of remaining tasks
-        - Exception handling with context preservation
+        Submit tasks are intentionally not cancelled after the first success so every
+        configured SWQoS/default RPC lane gets a chance to send the transaction.
         """
 
         async def submit_to_client(client: Any) -> ExecuteResult:
@@ -274,18 +272,6 @@ class HotPathExecutor:
             for coro in asyncio.as_completed(tasks):
                 result = await coro
                 if result.success:
-                    # Cancel remaining tasks
-                    for task in tasks:
-                        if not task.done():
-                            task.cancel()
-                    # Wait for cancellations to complete (with timeout)
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.gather(*tasks, return_exceptions=True),
-                            timeout=5.0
-                        )
-                    except asyncio.TimeoutError:
-                        pass  # Some tasks didn't cancel in time
                     return result
         except Exception as e:
             # Cancel all tasks on error
@@ -300,11 +286,6 @@ class HotPathExecutor:
             except asyncio.TimeoutError:
                 pass
             return ExecuteResult(success=False, error=f"Execution error: {type(e).__name__}: {str(e)}")
-        finally:
-            # Ensure all tasks are cleaned up
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
 
         # All failed - gather all errors
         errors = []

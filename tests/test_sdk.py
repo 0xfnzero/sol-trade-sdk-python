@@ -2,6 +2,7 @@
 Tests for Sol Trade SDK - Python
 """
 
+import asyncio
 import pytest
 from sol_trade_sdk.common.types import (
     GasFeeStrategy,
@@ -14,6 +15,58 @@ from sol_trade_sdk.common.types import (
 )
 from sol_trade_sdk.common.gas_fee_strategy import create_gas_fee_strategy
 from sol_trade_sdk import calc
+from sol_trade_sdk import (
+    TradeConfig as RootTradeConfig,
+    SwqosConfig as RootSwqosConfig,
+    SwqosRegion as RootSwqosRegion,
+    SwqosType as RootSwqosType,
+    create_trade_config,
+)
+from sol_trade_sdk.trading.executor import (
+    TradeConfig as ExecutorTradeConfig,
+    TradeExecutor,
+)
+from sol_trade_sdk.trading.core.async_executor import (
+    AsyncTradeExecutor,
+    ExecutionConfig,
+    SubmitMode,
+)
+from sol_trade_sdk.swqos.providers import (
+    SwqosConfig as ProviderSwqosConfig,
+    SwqosManager,
+    SwqosType as ProviderSwqosType,
+    TransactionResult,
+)
+
+
+class _FakeSwqosClient:
+    def __init__(self, signature: str, delay: float, fail: bool = False):
+        self.signature = signature
+        self.delay = delay
+        self.fail = fail
+
+    async def send_transaction(self, trade_type, transaction, wait_confirmation):
+        await asyncio.sleep(self.delay)
+        if self.fail:
+            raise RuntimeError("submit failed")
+        return self.signature
+
+
+class _FakeProviderClient:
+    def __init__(self, swqos_type: ProviderSwqosType, signature: str, delay: float = 0.0):
+        self.config = ProviderSwqosConfig(swqos_type=swqos_type)
+        self.signature = signature
+        self.delay = delay
+        self.calls = 0
+
+    async def submit_transaction(self, transaction: bytes, tip: int = 0):
+        self.calls += 1
+        await asyncio.sleep(self.delay)
+        return TransactionResult(
+            success=True,
+            signature=self.signature,
+            provider=self.config.swqos_type.value,
+        )
 
 
 class TestGasFeeStrategy:
@@ -103,6 +156,95 @@ class TestGasFeeStrategy:
         assert low is None
         assert high is None
         assert normal is not None
+
+
+class TestTradeConfig:
+    """Tests for trade configuration normalization"""
+
+    def test_adds_default_rpc_when_swqos_configured(self):
+        cfg = create_trade_config(
+            "https://x",
+            [
+                RootSwqosConfig(
+                    type=RootSwqosType.JITO,
+                    region=RootSwqosRegion.FRANKFURT,
+                    api_key="uuid",
+                )
+            ],
+        )
+
+        assert [c.type for c in cfg.swqos_configs] == [
+            RootSwqosType.JITO,
+            RootSwqosType.DEFAULT,
+        ]
+
+    def test_does_not_add_default_rpc_when_no_swqos_configured(self):
+        cfg = RootTradeConfig(rpc_url="https://x")
+        assert cfg.swqos_configs == []
+
+
+class TestParallelExecutor:
+    """Tests for first-success parallel submit behavior"""
+
+    @pytest.mark.asyncio
+    async def test_parallel_submit_waits_past_first_failure(self):
+        executor = TradeExecutor(ExecutorTradeConfig(rpc_url="https://x"))
+        executor._clients = {
+            SwqosType.JITO: _FakeSwqosClient("", 0.001, fail=True),
+            SwqosType.BLOXROUTE: _FakeSwqosClient("sig-ok", 0.01),
+        }
+
+        results = await executor.execute_parallel(
+            TradeType.BUY,
+            [b"tx"],
+            wait_confirmation=False,
+        )
+
+        assert len(results) == 1
+        assert results[0].success is True
+        assert results[0].signature == "sig-ok"
+
+    @pytest.mark.asyncio
+    async def test_parallel_submit_keeps_one_result_per_transaction(self):
+        executor = TradeExecutor(ExecutorTradeConfig(rpc_url="https://x"))
+        executor._clients = {
+            SwqosType.JITO: _FakeSwqosClient("sig-ok", 0.001),
+        }
+
+        results = await executor.execute_parallel(
+            TradeType.BUY,
+            [b"tx1", b"tx2"],
+            wait_confirmation=False,
+        )
+
+        assert len(results) == 2
+        assert all(result.success for result in results)
+
+    @pytest.mark.asyncio
+    async def test_core_parallel_executor_submits_all_providers(self):
+        manager = SwqosManager()
+        clients = [
+            _FakeProviderClient(ProviderSwqosType.JITO, "sig-jito", 0.001),
+            _FakeProviderClient(ProviderSwqosType.BLOXROUTE, "sig-blox", 0.01),
+            _FakeProviderClient(ProviderSwqosType.HELIUS, "sig-helius", 0.01),
+            _FakeProviderClient(ProviderSwqosType.DEFAULT, "sig-default", 0.01),
+        ]
+        for client in clients:
+            manager.add_client(client)
+
+        executor = AsyncTradeExecutor(manager)
+        result = await executor.execute(
+            b"tx",
+            ExecutionConfig(
+                submit_mode=SubmitMode.PARALLEL,
+                parallel_submit_count=1,
+                timeout_ms=1000,
+            ),
+        )
+        await asyncio.sleep(0.03)
+
+        assert result.success is True
+        assert all(client.calls == 1 for client in clients)
 
 
 class TestBondingCurveAccount:

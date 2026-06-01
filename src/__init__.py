@@ -183,6 +183,20 @@ class SwqosConfig:
     swqos_only: Optional[bool] = None
 
 
+def _normalize_swqos_configs(rpc_url: str, configs: List[SwqosConfig]) -> List[SwqosConfig]:
+    if not configs or any(c.type == SwqosType.DEFAULT for c in configs):
+        return configs
+    return [
+        *configs,
+        SwqosConfig(
+            type=SwqosType.DEFAULT,
+            region=SwqosRegion.DEFAULT,
+            api_key="",
+            custom_url=rpc_url,
+        ),
+    ]
+
+
 @dataclass
 class GasFeeStrategy:
     """Gas fee strategy configuration"""
@@ -251,6 +265,11 @@ class TradeResult:
 
 # ============== Protocol Params ==============
 
+def _pumpfun_quote_mint_for_layout(quote_mint: Pubkey) -> Pubkey:
+    if quote_mint == Pubkey.default() or quote_mint == SOL_TOKEN_ACCOUNT:
+        return Pubkey.default()
+    return quote_mint
+
 
 @dataclass
 class PumpFunParams:
@@ -315,7 +334,7 @@ class PumpFunParams:
 
     def with_quote_mint(self, quote_mint: Pubkey) -> "PumpFunParams":
         """Set PumpFun quote mint. The instruction layout is selected from this value."""
-        self.quote_mint = quote_mint
+        self.quote_mint = _pumpfun_quote_mint_for_layout(quote_mint)
         return self
 
     @classmethod
@@ -357,7 +376,7 @@ class PumpFunParams:
             token_program=token_program,
             close_token_account_when_sell=close_token_account_when_sell,
             fee_recipient=fee_recipient,
-            quote_mint=quote_mint,
+            quote_mint=_pumpfun_quote_mint_for_layout(quote_mint),
             observed_trade_creator=creator if creator != Pubkey.default() else None,
         )
 
@@ -368,12 +387,14 @@ class PumpFunParams:
         close_token_account_when_sell: Optional[bool] = None,
     ) -> "PumpFunParams":
         """Build params directly from sol-parser-sdk PumpFunTradeEvent dataclass/dict."""
+        quote_mint = _pubkey_from_parser(_parser_value(event, "quote_mint"))
+        legacy_sol_quote = quote_mint == Pubkey.default() or quote_mint == SOL_TOKEN_ACCOUNT
         missing = object()
         virtual_quote_value = _parser_value(event, "virtual_quote_reserves", missing)
-        if virtual_quote_value is missing:
+        if legacy_sol_quote or virtual_quote_value is missing:
             virtual_quote_value = _parser_value(event, "virtual_sol_reserves", 0)
         real_quote_value = _parser_value(event, "real_quote_reserves", missing)
-        if real_quote_value is missing:
+        if legacy_sol_quote or real_quote_value is missing:
             real_quote_value = _parser_value(event, "real_sol_reserves", 0)
         virtual_quote_reserves = int(
             virtual_quote_value or 0
@@ -385,7 +406,7 @@ class PumpFunParams:
                 _parser_value(event, "associated_bonding_curve")
             ),
             mint=_pubkey_from_parser(_parser_value(event, "mint")),
-            quote_mint=_pubkey_from_parser(_parser_value(event, "quote_mint")),
+            quote_mint=quote_mint,
             creator=_pubkey_from_parser(_parser_value(event, "creator")),
             creator_vault=_pubkey_from_parser(_parser_value(event, "creator_vault")),
             virtual_token_reserves=int(_parser_value(event, "virtual_token_reserves", 0) or 0),
@@ -599,6 +620,9 @@ class TradeConfig:
     swqos_cores_from_end: bool = True
     max_swqos_submit_concurrency: Optional[int] = None
 
+    def __post_init__(self) -> None:
+        self.swqos_configs = _normalize_swqos_configs(self.rpc_url, self.swqos_configs)
+
     @classmethod
     def builder(cls, rpc_url: str) -> "TradeConfigBuilder":
         """Create a TradeConfigBuilder for fluent configuration."""
@@ -638,7 +662,7 @@ class TradeConfigBuilder:
 
     def swqos_configs(self, configs: List[SwqosConfig]) -> "TradeConfigBuilder":
         """Set SWQOS provider configurations."""
-        self._swqos_configs = configs
+        self._swqos_configs = _normalize_swqos_configs(self._rpc_url, configs)
         return self
 
     def commitment(self, commitment: Commitment) -> "TradeConfigBuilder":

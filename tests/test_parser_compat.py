@@ -1,6 +1,6 @@
 from solders.pubkey import Pubkey
 
-from src import PumpFunParams, PumpSwapParams, TOKEN_PROGRAM, USDC_TOKEN_ACCOUNT
+from src import PumpFunParams, PumpSwapParams, SOL_TOKEN_ACCOUNT, TOKEN_PROGRAM, USDC_TOKEN_ACCOUNT
 
 
 def test_pumpfun_params_from_parser_trade_uses_quote_reserves():
@@ -53,6 +53,31 @@ def test_pumpfun_params_from_parser_trade_preserves_zero_quote_reserves():
 
     assert params.bonding_curve.virtual_sol_reserves == 0
     assert params.bonding_curve.real_sol_reserves == 0
+
+
+def test_pumpfun_params_from_parser_trade_solscan_sol_uses_legacy_reserves():
+    event = {
+        "mint": "11111111111111111111111111111111",
+        "bonding_curve": "11111111111111111111111111111111",
+        "associated_bonding_curve": "11111111111111111111111111111111",
+        "creator": "11111111111111111111111111111111",
+        "creator_vault": "11111111111111111111111111111111",
+        "fee_recipient": "11111111111111111111111111111111",
+        "token_program": str(TOKEN_PROGRAM),
+        "quote_mint": str(SOL_TOKEN_ACCOUNT),
+        "virtual_token_reserves": 1_000_000,
+        "virtual_sol_reserves": 30_123_456_789,
+        "virtual_quote_reserves": 0,
+        "real_token_reserves": 900_000,
+        "real_sol_reserves": 123_456_789,
+        "real_quote_reserves": 0,
+    }
+
+    params = PumpFunParams.from_parser_trade_event(event)
+
+    assert params.quote_mint == Pubkey.default()
+    assert params.bonding_curve.virtual_sol_reserves == 30_123_456_789
+    assert params.bonding_curve.real_sol_reserves == 123_456_789
 
 
 def test_pumpswap_params_from_parser_event_uses_creator_vault_accounts():

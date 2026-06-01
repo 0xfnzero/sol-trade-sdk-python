@@ -1,7 +1,7 @@
 import pytest
 from solders.pubkey import Pubkey
 
-from src import SOL_TOKEN_ACCOUNT, TOKEN_PROGRAM, WSOL_TOKEN_ACCOUNT
+from src import SOL_TOKEN_ACCOUNT, SYSTEM_PROGRAM, TOKEN_PROGRAM, USDC_TOKEN_ACCOUNT, WSOL_TOKEN_ACCOUNT
 from src.instruction.meteora_damm_v2_builder import (
     METEORA_DAMM_V2_PROGRAM_ID,
     SWAP2_DISCRIMINATOR,
@@ -14,10 +14,58 @@ from src.instruction.raydium_amm_v4_builder import (
     RaydiumAmmV4Params,
     build_buy_instructions as build_raydium_amm_v4_buy_instructions,
 )
+from src.instruction.raydium_cpmm_builder import (
+    SWAP_BASE_OUT_DISCRIMINATOR as CPMM_SWAP_BASE_OUT_DISCRIMINATOR,
+    RaydiumCpmmParams,
+    build_buy_instructions as build_raydium_cpmm_buy_instructions,
+)
+from src.instruction.pumpfun_builder import (
+    BUY_V2_DISCRIMINATOR,
+    PumpFunParams,
+    build_buy_instructions as build_pumpfun_buy_instructions,
+)
 
 
 def pk(seed: int) -> Pubkey:
     return Pubkey(bytes([seed]) * 32)
+
+
+def pumpfun_params(quote_mint: Pubkey = Pubkey.default()) -> PumpFunParams:
+    return PumpFunParams(
+        bonding_curve_account=Pubkey.default(),
+        virtual_token_reserves=1_073_000_000_000_000,
+        virtual_sol_reserves=30_000_000_000,
+        real_token_reserves=793_100_000_000_000,
+        creator=pk(7),
+        creator_vault=pk(8),
+        token_program=TOKEN_PROGRAM,
+        quote_mint=quote_mint,
+    )
+
+
+def test_raydium_cpmm_uses_swap_base_out_for_fixed_output_buy():
+    ixs = build_raydium_cpmm_buy_instructions(
+        payer=pk(99),
+        output_mint=pk(2),
+        input_amount=100_000,
+        fixed_output_amount=42,
+        create_input_ata=False,
+        create_output_ata=False,
+        params=RaydiumCpmmParams(
+            amm_config=pk(1),
+            base_mint=WSOL_TOKEN_ACCOUNT,
+            quote_mint=pk(2),
+            base_token_program=TOKEN_PROGRAM,
+            quote_token_program=TOKEN_PROGRAM,
+            base_reserve=1_000_000_000,
+            quote_reserve=2_000_000_000,
+        ),
+    )
+    data = bytes(ixs[-1].data)
+
+    assert data[:8] == CPMM_SWAP_BASE_OUT_DISCRIMINATOR
+    assert int.from_bytes(data[8:16], "little") == 100_000
+    assert int.from_bytes(data[16:24], "little") == 42
 
 
 def test_raydium_amm_v4_uses_market_account_order():
@@ -138,3 +186,54 @@ def test_meteora_damm_v2_accepts_sol_alias_for_wsol_input():
     )
 
     assert ixs[-1].accounts[6].pubkey == WSOL_TOKEN_ACCOUNT
+
+
+def test_pumpfun_v2_buy_uses_current_27_account_layout():
+    ixs = build_pumpfun_buy_instructions(
+        payer=pk(99),
+        input_mint=USDC_TOKEN_ACCOUNT,
+        output_mint=pk(2),
+        input_amount=100_000,
+        create_input_ata=False,
+        create_output_ata=False,
+        params=pumpfun_params(USDC_TOKEN_ACCOUNT),
+    )
+    ix = ixs[-1]
+
+    assert len(ix.accounts) == 27
+    assert ix.accounts[16].pubkey == pk(8)
+    assert ix.accounts[18].is_writable is False
+
+
+def test_pumpfun_v2_fixed_output_uses_buy_v2():
+    ixs = build_pumpfun_buy_instructions(
+        payer=pk(99),
+        input_mint=SOL_TOKEN_ACCOUNT,
+        output_mint=pk(2),
+        input_amount=100_000,
+        fixed_output_amount=42,
+        create_input_ata=False,
+        create_output_ata=False,
+        params=pumpfun_params(WSOL_TOKEN_ACCOUNT),
+    )
+    data = bytes(ixs[-1].data)
+
+    assert data[:8] == BUY_V2_DISCRIMINATOR
+    assert int.from_bytes(data[8:16], "little") == 42
+    assert int.from_bytes(data[16:24], "little") == 100_000
+
+
+def test_pumpfun_v2_regular_wsol_buy_wraps_max_quote_budget():
+    ixs = build_pumpfun_buy_instructions(
+        payer=pk(99),
+        input_mint=SOL_TOKEN_ACCOUNT,
+        output_mint=pk(2),
+        input_amount=100_000,
+        slippage_bps=1000,
+        use_exact_sol_amount=False,
+        create_input_ata=True,
+        create_output_ata=False,
+        params=pumpfun_params(WSOL_TOKEN_ACCOUNT),
+    )
+
+    assert ixs[1].program_id == SYSTEM_PROGRAM
