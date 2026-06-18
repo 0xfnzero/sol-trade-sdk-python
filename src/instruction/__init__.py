@@ -432,6 +432,30 @@ class BonkInstructionBuilder(InstructionBuilder):
 class RaydiumCpmmInstructionBuilder(InstructionBuilder):
     """Instruction builder for Raydium CPMM protocol"""
 
+    @staticmethod
+    def _optional_pubkey(value: Pubkey) -> Optional[Pubkey]:
+        return None if value == Pubkey.default() else value
+
+    @staticmethod
+    def _builder_params(protocol_params: RaydiumCpmmParams):
+        from .raydium_cpmm_builder import RaydiumCpmmParams as BuilderParams
+
+        return BuilderParams(
+            pool_state=RaydiumCpmmInstructionBuilder._optional_pubkey(protocol_params.pool_state),
+            amm_config=protocol_params.amm_config,
+            base_mint=protocol_params.base_mint,
+            quote_mint=protocol_params.quote_mint,
+            base_reserve=protocol_params.base_reserve,
+            quote_reserve=protocol_params.quote_reserve,
+            base_vault=RaydiumCpmmInstructionBuilder._optional_pubkey(protocol_params.base_vault),
+            quote_vault=RaydiumCpmmInstructionBuilder._optional_pubkey(protocol_params.quote_vault),
+            base_token_program=protocol_params.base_token_program,
+            quote_token_program=protocol_params.quote_token_program,
+            observation_state=RaydiumCpmmInstructionBuilder._optional_pubkey(
+                protocol_params.observation_state
+            ),
+        )
+
     async def build_buy_instructions(
         self,
         payer: Pubkey,
@@ -442,8 +466,22 @@ class RaydiumCpmmInstructionBuilder(InstructionBuilder):
         protocol_params: RaydiumCpmmParams,
         create_output_ata: bool = True,
         close_input_ata: bool = False,
+        create_input_ata: bool = True,
+        fixed_output_amount: Optional[int] = None,
     ) -> List[Instruction]:
-        return []
+        from .raydium_cpmm_builder import build_buy_instructions
+
+        return build_buy_instructions(
+            payer=payer,
+            output_mint=output_mint,
+            input_amount=input_amount,
+            params=self._builder_params(protocol_params),
+            slippage_bps=slippage_basis_points,
+            create_input_ata=create_input_ata,
+            create_output_ata=create_output_ata,
+            close_input_ata=close_input_ata,
+            fixed_output_amount=fixed_output_amount,
+        )
 
     async def build_sell_instructions(
         self,
@@ -456,8 +494,21 @@ class RaydiumCpmmInstructionBuilder(InstructionBuilder):
         create_output_ata: bool = False,
         close_output_ata: bool = False,
         close_input_ata: bool = False,
+        fixed_output_amount: Optional[int] = None,
     ) -> List[Instruction]:
-        return []
+        from .raydium_cpmm_builder import build_sell_instructions
+
+        return build_sell_instructions(
+            payer=payer,
+            input_mint=input_mint,
+            input_amount=input_amount,
+            params=self._builder_params(protocol_params),
+            slippage_bps=slippage_basis_points,
+            create_output_ata=create_output_ata,
+            close_output_ata=close_output_ata,
+            close_input_ata=close_input_ata,
+            fixed_output_amount=fixed_output_amount,
+        )
 
 
 class RaydiumAmmV4InstructionBuilder(InstructionBuilder):

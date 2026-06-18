@@ -9,7 +9,7 @@ async def main() -> None:
     buy_params = example_buy_params(DexType.PUMPFUN)
     sell_params = example_sell_params(DexType.PUMPFUN)
 
-    describe_dry_run("PumpFun copy-trading example with parser-derived fee recipient support")
+    describe_dry_run("PumpFun copy-trading example with decoded event fee recipient support")
     print("Wallet:", client.get_payer())
     print("Buy params:", buy_params.dex_type, buy_params.input_token_amount)
     print("Sell params:", sell_params.dex_type, sell_params.input_token_amount)

@@ -40,6 +40,7 @@ class SwqosType(Enum):
     SOYAS = "Soyas"
     SPEEDLANDING = "Speedlanding"
     HELIUS = "Helius"
+    SOLAMI = "Solami"
     DEFAULT = "Default"
 
 
@@ -48,8 +49,10 @@ class SwqosRegion(Enum):
     NEW_YORK = "NewYork"
     FRANKFURT = "Frankfurt"
     AMSTERDAM = "Amsterdam"
+    DUBLIN = "Dublin"
     SLC = "SLC"
     TOKYO = "Tokyo"
+    SINGAPORE = "Singapore"
     LONDON = "London"
     LOS_ANGELES = "LosAngeles"
     DEFAULT = "Default"

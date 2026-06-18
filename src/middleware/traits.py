@@ -4,7 +4,7 @@ Based on sol-trade-sdk Rust implementation.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
+from typing import Any, List
 
 
 class InstructionMiddleware(ABC):
@@ -18,10 +18,10 @@ class InstructionMiddleware(ABC):
     @abstractmethod
     def process_protocol_instructions(
         self,
-        protocol_instructions: List[Dict[str, Any]],
+        protocol_instructions: List[Any],
         protocol_name: str,
         is_buy: bool,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Any]:
         """
         Process protocol instructions.
 
@@ -38,10 +38,10 @@ class InstructionMiddleware(ABC):
     @abstractmethod
     def process_full_instructions(
         self,
-        full_instructions: List[Dict[str, Any]],
+        full_instructions: List[Any],
         protocol_name: str,
         is_buy: bool,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Any]:
         """
         Process full instructions.
 
@@ -73,10 +73,10 @@ class MiddlewareManager:
 
     def apply_middlewares_process_protocol_instructions(
         self,
-        protocol_instructions: List[Dict[str, Any]],
+        protocol_instructions: List[Any],
         protocol_name: str,
         is_buy: bool,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Any]:
         """Apply all middlewares to process protocol instructions"""
         result = protocol_instructions
         for middleware in self.middlewares:
@@ -87,10 +87,10 @@ class MiddlewareManager:
 
     def apply_middlewares_process_full_instructions(
         self,
-        full_instructions: List[Dict[str, Any]],
+        full_instructions: List[Any],
         protocol_name: str,
         is_buy: bool,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Any]:
         """Apply all middlewares to process full instructions"""
         result = full_instructions
         for middleware in self.middlewares:

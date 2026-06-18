@@ -3,7 +3,7 @@ Built-in middleware implementations.
 Based on sol-trade-sdk Rust implementation.
 """
 
-from typing import List, Dict, Any
+from typing import Any, List
 
 try:
     from .traits import InstructionMiddleware
@@ -19,10 +19,10 @@ class LoggingMiddleware(InstructionMiddleware):
 
     def process_protocol_instructions(
         self,
-        protocol_instructions: List[Dict[str, Any]],
+        protocol_instructions: List[Any],
         protocol_name: str,
         is_buy: bool,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Any]:
         """Log protocol instructions"""
         print(f"-------------------[{self.name()}]-------------------")
         print("process_protocol_instructions")
@@ -36,10 +36,10 @@ class LoggingMiddleware(InstructionMiddleware):
 
     def process_full_instructions(
         self,
-        full_instructions: List[Dict[str, Any]],
+        full_instructions: List[Any],
         protocol_name: str,
         is_buy: bool,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Any]:
         """Log full instructions"""
         print(f"-------------------[{self.name()}]-------------------")
         print("process_full_instructions")

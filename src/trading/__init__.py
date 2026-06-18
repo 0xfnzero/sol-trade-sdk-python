@@ -10,6 +10,7 @@ from .executor import (
     TradeExecutor,
     create_trade_executor,
     poll_for_confirmation,
+    poll_for_confirmation_error,
 )
 
 from .high_perf_executor import (
@@ -62,6 +63,7 @@ __all__ = [
     "TradeExecutor",
     "create_trade_executor",
     "poll_for_confirmation",
+    "poll_for_confirmation_error",
     "ExecuteOptions",
     "default_execute_options",
     # High perf executor

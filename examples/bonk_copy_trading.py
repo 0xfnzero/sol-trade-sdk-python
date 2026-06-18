@@ -9,7 +9,7 @@ async def main() -> None:
     buy_params = example_buy_params(DexType.BONK)
     sell_params = example_sell_params(DexType.BONK)
 
-    describe_dry_run("Bonk copy-trading example using parser event reserves")
+    describe_dry_run("Bonk copy-trading example using decoded event reserves")
     print("Wallet:", client.get_payer())
     print("Buy params:", buy_params.dex_type, buy_params.input_token_amount)
     print("Sell params:", sell_params.dex_type, sell_params.input_token_amount)

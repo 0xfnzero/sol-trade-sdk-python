@@ -77,6 +77,10 @@
 
 本版本刷新 PumpFun V2 与 USDC quote 池处理逻辑，确保默认 RPC 提交通道会和 SWQoS 通道一起发出，并将 Raydium CPMM fixed-output 交易对齐到链上 `swap_base_out` 指令。交易执行必须由调用方传入 `recent_blockhash` 或 durable nonce；热路径不会查询 RPC 获取 blockhash、账户或余额数据。
 
+## Rust v4.0.21 对齐
+
+本 SDK 现在按 Rust SDK `v4.0.21` 对齐高层交易 intent API 和 SWQoS provider 覆盖。新代码可以使用 `buy_simple` / `sell_simple`，并通过 `AccountPolicy`、`BuyAmount`、`SellAmount` 描述意图；内部会转换到现有 `buy` / `sell` 参数，不移除旧 API。SWQoS 已包含 Rust 的 `Solami` 类型与默认配置（`beam.solami.dev:11000`，最小 tip `0.0001 SOL`）；真实 Solami 提交走主 QUIC client 路径，并需要和 Rust 相同的 base58 Solana keypair api token。配置显式 SWQoS 时仍会自动追加默认 RPC 通道。
+
 ## ✨ 项目特性
 
 1. **PumpFun 交易**: 统一 `buy`、`sell`、`buy_exact_quote_in` 流程，自动按 SOL 或 USDC quote 池选择旧版或 V2 链上指令
@@ -87,7 +91,7 @@
 6. **Meteora DAMM V2 交易**: 支持 Meteora DAMM V2 (Dynamic AMM) 的交易操作
 7. **多种 MEV 保护**: 支持 Jito、Nextblock、ZeroSlot、Temporal、Bloxroute、FlashBlock、BlockRazor、Node1、Astralane 等服务
 8. **并发交易**: 所有已配置的 SWQoS 通道和默认 RPC 通道都会发出提交；首个成功只影响返回，较慢通道会继续提交
-9. **统一交易接口**: 使用统一的交易协议类型进行交易操作
+9. **统一交易接口**: 使用统一的交易协议类型进行交易操作，并支持 Rust 对齐的 `buy_simple` / `sell_simple` intent 参数
 10. **中间件系统**: 支持自定义指令中间件，可在交易执行前对指令进行修改、添加或移除
 11. **共享基础设施**: 多钱包可共享同一套 RPC 与 SWQoS 客户端，降低资源占用
 12. **热路径 RPC 边界**: 交易执行使用调用方传入的 blockhash 或 durable nonce，不在热路径查询 blockhash、账户或余额
@@ -134,6 +138,8 @@ pip install sol-trade-sdk==0.1.2
 ## 🛠️ 使用示例
 
 ### 📋 使用示例
+
+高层 intent API 可参考 [Simple Trading](examples/simple_trading.py)，示例展示 `SimpleBuyParams.new`、`BuyAmount.with_max_input`、`AccountPolicy.AUTO` 以及到旧版 `TradeBuyParams` 的转换。
 
 #### 1. 创建 TradingClient 实例
 
@@ -199,21 +205,29 @@ gas_fee_strategy.set_global_fee_strategy(150000, 150000, 500000, 500000, 0.001, 
 #### 3. 构建交易参数
 
 ```python
-from sol_trade_sdk import TradeBuyParams, DexType, TradeTokenType
+from sol_trade_sdk import (
+    AccountPolicy,
+    BuyAmount,
+    DexType,
+    SimpleBuyParams,
+    TradeTokenType,
+    simple_buy_params_to_trade_buy_params,
+)
 
-buy_params = TradeBuyParams(
-    dex_type=DexType.PUMPSWAP,
-    input_token_type=TradeTokenType.WSOL,
-    mint=mint_pubkey,
-    input_token_amount=buy_sol_amount,
-    slippage_basis_points=500,
-    recent_blockhash=recent_blockhash,
-    # 使用 extension_params 传递协议特定参数
-    extension_params={"type": "PumpSwap", "params": pumpswap_params},
-    address_lookup_table_account=None,
-    wait_transaction_confirmed=True,
-    create_input_token_ata=True,
-    close_input_token_ata=True,
+simple = (
+    SimpleBuyParams.new(
+        DexType.PUMPSWAP,
+        TradeTokenType.WSOL,
+        mint_pubkey,
+        BuyAmount.with_max_input(buy_sol_amount),
+        {"type": "PumpSwap", "params": pumpswap_params},
+        recent_blockhash,
+        gas_fee_strategy,
+    )
+    .set_slippage_basis_points(500)
+    .set_account_policy(AccountPolicy.AUTO)
+)
+buy_params = simple_buy_params_to_trade_buy_params(simple)
     create_mint_ata=True,
     durable_nonce=None,
     fixed_output_token_amount=None,
@@ -344,7 +358,7 @@ nonce_info = await fetch_nonce_info(rpc, nonce_account)
 PumpFun 和 PumpSwap 为符合条件的代币支持 **cashback**：部分交易费用可以返还给用户。SDK **必须知道**代币是否启用了 cashback，以便买/卖指令包含正确的账户。
 
 - **当参数来自 RPC 时**: 如果您使用 `PumpFunParams.from_mint_by_rpc` 或 `PumpSwapParams.from_pool_address_by_rpc`，SDK 会从链上读取 `is_cashback_coin`——无需额外步骤。
-- **当参数来自事件/解析器时**: 如果您从交易事件构建参数（例如 [sol-parser-sdk](https://github.com/0xfnzero/sol-parser-sdk)），您**必须**将 cashback 标志传递给 SDK：
+- **当参数来自已解码事件时**: 如果您从已解码的交易事件构建参数（例如外部解析服务输出），您**必须**将 cashback 标志传递给 SDK：
   - **PumpFun**: 从解析的事件构建参数时设置 `is_cashback_coin`。
   - **PumpSwap**: 手动构建参数时设置 `is_cashback_coin` 字段。
 

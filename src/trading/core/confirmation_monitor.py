@@ -14,6 +14,8 @@ from enum import Enum, auto
 from typing import Any, Callable, Dict, List, Optional, Set
 import logging
 
+from ..confirmation_parity import instruction_error_code_from_meta_err
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,6 +50,8 @@ class ConfirmationState:
     slot: Optional[int] = None
     confirmations: int = 0
     err: Optional[Dict[str, Any]] = None
+    error_code: Optional[int] = None
+    instruction_index: Optional[int] = None
     last_check: float = field(default_factory=time.time)
     check_count: int = 0
 
@@ -61,6 +65,8 @@ class ConfirmationResult:
     slot: Optional[int] = None
     confirmations: int = 0
     error: Optional[str] = None
+    error_code: Optional[int] = None
+    instruction_index: Optional[int] = None
     confirmation_time_ms: int = 0
     total_checks: int = 0
 
@@ -202,13 +208,18 @@ class ConfirmationMonitor:
             # Check if reached target
             if self._status_reached(state.status, target_status):
                 elapsed = int((time.time() - start_time) * 1000)
+                error = str(state.err) if state.err else None
+                if state.error_code is not None:
+                    error = f"{error or 'transaction failed'} (code {state.error_code})"
                 return ConfirmationResult(
                     signature=signature,
                     status=state.status,
                     success=state.status != ConfirmationStatus.FAILED,
                     slot=state.slot,
                     confirmations=state.confirmations,
-                    error=str(state.err) if state.err else None,
+                    error=error,
+                    error_code=state.error_code,
+                    instruction_index=state.instruction_index,
                     confirmation_time_ms=elapsed,
                     total_checks=state.check_count,
                 )
@@ -315,14 +326,21 @@ class ConfirmationMonitor:
         if not state:
             return
 
-        # Parse status info and update state
-        # Placeholder logic
         new_status = self._parse_status(status_info)
+        state.slot = self._get_status_field(status_info, "slot", state.slot)
+        state.confirmations = self._get_status_field(
+            status_info, "confirmations", state.confirmations
+        ) or 0
+        state.err = self._get_status_field(status_info, "err", None)
+        if state.err:
+            parsed = instruction_error_code_from_meta_err(state.err)
+            state.error_code = parsed.code
+            state.instruction_index = parsed.instruction_index
 
+        state.check_count += 1
         if new_status != state.status:
             state.status = new_status
             state.last_check = time.time()
-            state.check_count += 1
 
             # Notify callbacks
             await self._notify_callbacks(signature, new_status)
@@ -335,8 +353,30 @@ class ConfirmationMonitor:
 
     def _parse_status(self, status_info: Any) -> ConfirmationStatus:
         """Parse RPC status response."""
-        # Placeholder - would parse actual RPC response
+        if status_info is None:
+            return ConfirmationStatus.PENDING
+
+        if self._get_status_field(status_info, "err", None):
+            return ConfirmationStatus.FAILED
+
+        status = (
+            self._get_status_field(status_info, "confirmationStatus", None)
+            or self._get_status_field(status_info, "confirmation_status", None)
+        )
+        status = str(status or "").lower()
+        if status == "finalized":
+            return ConfirmationStatus.FINALIZED
+        if status == "confirmed":
+            return ConfirmationStatus.CONFIRMED
+        if status == "processed":
+            return ConfirmationStatus.PROCESSED
         return ConfirmationStatus.PENDING
+
+    @staticmethod
+    def _get_status_field(status_info: Any, name: str, default: Any = None) -> Any:
+        if isinstance(status_info, dict):
+            return status_info.get(name, default)
+        return getattr(status_info, name, default)
 
     async def _notify_callbacks(
         self,

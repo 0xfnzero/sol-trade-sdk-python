@@ -298,23 +298,59 @@ class PumpSwapExecutor(TradeExecutor):
 class RaydiumCpmmExecutor(TradeExecutor):
     """Raydium CPMM trade executor"""
 
+    @staticmethod
+    def _optional_pubkey(value: Any) -> Optional[Pubkey]:
+        pk = _to_pubkey(value)
+        return None if pk == Pubkey.default() else pk
+
+    @staticmethod
+    def _protocol_params(params: Dict[str, Any]):
+        from ..instruction.raydium_cpmm_builder import (
+            RaydiumCpmmParams as RcpmmParams,
+            TOKEN_PROGRAM as SPL_TOKEN,
+        )
+
+        base_token_program = _to_pubkey(params.get("base_token_program", params.get("token_program", bytes(32))))
+        quote_token_program = _to_pubkey(params.get("quote_token_program", params.get("token_program", bytes(32))))
+        if base_token_program == Pubkey.default():
+            base_token_program = SPL_TOKEN
+        if quote_token_program == Pubkey.default():
+            quote_token_program = SPL_TOKEN
+
+        return RcpmmParams(
+            pool_state=RaydiumCpmmExecutor._optional_pubkey(params.get("pool_state", bytes(32))),
+            amm_config=_to_pubkey(params["amm_config"]),
+            base_mint=_to_pubkey(params["base_mint"]),
+            quote_mint=_to_pubkey(params["quote_mint"]),
+            base_reserve=int(params.get("base_reserve", 0)),
+            quote_reserve=int(params.get("quote_reserve", 0)),
+            base_vault=RaydiumCpmmExecutor._optional_pubkey(
+                params.get("base_vault", params.get("input_vault", bytes(32)))
+            ),
+            quote_vault=RaydiumCpmmExecutor._optional_pubkey(
+                params.get("quote_vault", params.get("output_vault", bytes(32)))
+            ),
+            base_token_program=base_token_program,
+            quote_token_program=quote_token_program,
+            observation_state=RaydiumCpmmExecutor._optional_pubkey(
+                params.get("observation_state", bytes(32))
+            ),
+        )
+
     async def execute_buy(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute buy on Raydium CPMM"""
-        from ..instruction.raydium_cpmm import RaydiumCpmmInstructionBuilder
+        from ..instruction.raydium_cpmm_builder import build_buy_instructions
 
-        instructions = RaydiumCpmmInstructionBuilder.build_buy_instructions(
-            payer=params["payer"],
-            amm_config=params["amm_config"],
-            pool_state=params["pool_state"],
-            output_mint=params["output_mint"],
-            wsol_mint=params.get("wsol_mint", bytes(32)),
-            input_token_account=params["input_token_account"],
-            output_token_account=params["output_token_account"],
-            input_vault=params["input_vault"],
-            output_vault=params["output_vault"],
-            token_program=params.get("token_program", bytes(32)),
-            amount_in=params["amount_in"],
-            minimum_amount_out=params["minimum_amount_out"],
+        instructions = build_buy_instructions(
+            payer=_to_pubkey(params["payer"]),
+            output_mint=_to_pubkey(params["output_mint"]),
+            input_amount=int(params["amount_in"]),
+            params=self._protocol_params(params),
+            slippage_bps=int(params.get("slippage_basis_points", 100)),
+            create_input_ata=bool(params.get("create_input_mint_ata", False)),
+            create_output_ata=bool(params.get("create_output_mint_ata", False)),
+            close_input_ata=bool(params.get("close_input_mint_ata", False)),
+            fixed_output_amount=params.get("fixed_output_amount"),
         )
 
         return {
@@ -326,21 +362,18 @@ class RaydiumCpmmExecutor(TradeExecutor):
 
     async def execute_sell(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute sell on Raydium CPMM"""
-        from ..instruction.raydium_cpmm import RaydiumCpmmInstructionBuilder
+        from ..instruction.raydium_cpmm_builder import build_sell_instructions
 
-        instructions = RaydiumCpmmInstructionBuilder.build_sell_instructions(
-            payer=params["payer"],
-            amm_config=params["amm_config"],
-            pool_state=params["pool_state"],
-            input_mint=params["input_mint"],
-            wsol_mint=params.get("wsol_mint", bytes(32)),
-            input_token_account=params["input_token_account"],
-            output_token_account=params["output_token_account"],
-            input_vault=params["input_vault"],
-            output_vault=params["output_vault"],
-            token_program=params.get("token_program", bytes(32)),
-            amount_in=params["amount_in"],
-            minimum_amount_out=params["minimum_amount_out"],
+        instructions = build_sell_instructions(
+            payer=_to_pubkey(params["payer"]),
+            input_mint=_to_pubkey(params["input_mint"]),
+            input_amount=int(params["amount_in"]),
+            params=self._protocol_params(params),
+            slippage_bps=int(params.get("slippage_basis_points", 100)),
+            create_output_ata=bool(params.get("create_output_mint_ata", False)),
+            close_output_ata=bool(params.get("close_output_mint_ata", False)),
+            close_input_ata=bool(params.get("close_input_mint_ata", False)),
+            fixed_output_amount=params.get("fixed_output_amount"),
         )
 
         return {

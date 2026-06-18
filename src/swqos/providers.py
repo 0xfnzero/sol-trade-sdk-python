@@ -1,6 +1,9 @@
 """
 SWQoS provider implementations.
-Based on sol-trade-sdk Rust implementation.
+
+The factory exposes the Rust v4.0.21 provider set. Legacy extended RPC client
+classes are kept for source compatibility, but they are not Rust-parity SWQoS
+providers and are not created by the factory.
 """
 
 from enum import Enum, auto
@@ -28,6 +31,7 @@ class SwqosType(Enum):
     SOYAS = "Soyas"
     SPEEDLANDING = "Speedlanding"
     HELIUS = "Helius"
+    SOLAMI = "Solami"
     TRITON = "Triton"
     QUICKNODE = "QuickNode"
     SYNDICA = "Syndica"
@@ -36,16 +40,20 @@ class SwqosType(Enum):
     DEFAULT = "Default"
 
 
+SWQOS_BLACKLISTED_TYPES = {SwqosType.NEXT_BLOCK}
+
+
 class SwqosRegion(Enum):
     """SWQOS service regions"""
     NEW_YORK = "NewYork"
     FRANKFURT = "Frankfurt"
     AMSTERDAM = "Amsterdam"
+    DUBLIN = "Dublin"
     SLC = "SLC"
     TOKYO = "Tokyo"
+    SINGAPORE = "Singapore"
     LONDON = "London"
     LOS_ANGELES = "LosAngeles"
-    SINGAPORE = "Singapore"
     DEFAULT = "Default"
 
 
@@ -94,7 +102,10 @@ class TransactionResult:
     confirmation_status: Optional[str] = None
 
     def __post_init__(self) -> None:
-        if self.signature and self.signature.endswith("_signature_placeholder"):
+        if self.signature and (
+            self.signature.endswith("_signature_placeholder")
+            or self.signature == "jito_bundle_signature"
+        ):
             self.success = False
             self.error = self.error or f"{self.provider or 'SWQOS'} provider is not wired to a live submit endpoint"
             self.signature = None
@@ -718,6 +729,32 @@ class SpeedlandingClient(SwqosClient):
             )
 
 
+class SolamiClient(SwqosClient):
+    """Solami SWQOS provider type; live submit is implemented in swqos.clients."""
+
+    def __init__(self, config: SwqosConfig):
+        super().__init__(config)
+        self.api_url = config.url or "beam.solami.dev:11000"
+
+    async def submit_transaction(
+        self,
+        transaction: bytes,
+        tip: int = 0,
+    ) -> TransactionResult:
+        """Reject placeholder HTTP submit; Solami uses QUIC client-certificate auth."""
+        self._rate_limit_check()
+        start = time.time()
+        latency_ms = int((time.time() - start) * 1000)
+        error = "Solami live submit uses swqos.clients.SolamiClient QUIC path, not HTTP provider API"
+        self.update_stats(False, latency_ms, error)
+        return TransactionResult(
+            success=False,
+            provider="Solami",
+            latency_ms=latency_ms,
+            error=error,
+        )
+
+
 class HeliusClient(SwqosClient):
     """Helius SWQOS client - Enhanced RPC"""
 
@@ -955,7 +992,6 @@ class SwqosClientFactory:
         SwqosType.JITO: JitoClient,
         SwqosType.BLOXROUTE: BloxrouteClient,
         SwqosType.ZERO_SLOT: ZeroSlotClient,
-        SwqosType.NEXT_BLOCK: NextBlockClient,
         SwqosType.TEMPORAL: TemporalClient,
         SwqosType.NODE1: Node1Client,
         SwqosType.FLASH_BLOCK: FlashBlockClient,
@@ -966,17 +1002,17 @@ class SwqosClientFactory:
         SwqosType.SOYAS: SoyasClient,
         SwqosType.SPEEDLANDING: SpeedlandingClient,
         SwqosType.HELIUS: HeliusClient,
-        SwqosType.TRITON: TritonClient,
-        SwqosType.QUICKNODE: QuickNodeClient,
-        SwqosType.SYNDICA: SyndicaClient,
-        SwqosType.FIGMENT: FigmentClient,
-        SwqosType.ALCHEMY: AlchemyClient,
+        SwqosType.SOLAMI: SolamiClient,
     }
 
     @classmethod
     def create_client(cls, config: SwqosConfig) -> SwqosClient:
         """Create SWQOS client based on config type"""
-        client_class = cls._CLIENT_MAP.get(config.swqos_type, SwqosClient)
+        if config.swqos_type in SWQOS_BLACKLISTED_TYPES:
+            raise ValueError(f"SWQOS type is blacklisted by Rust v4.0.21 parity: {config.swqos_type}")
+        client_class = cls._CLIENT_MAP.get(config.swqos_type)
+        if client_class is None:
+            raise ValueError(f"Unsupported SWQOS type for Rust v4.0.21 parity: {config.swqos_type}")
         return client_class(config)
 
     @classmethod

@@ -29,7 +29,13 @@ from ..swqos.clients import (
     SwqosClient,
     ClientFactory,
     SwqosConfig,
+    is_swqos_type_blacklisted,
     TradeError,
+)
+from .confirmation_parity import (
+    extract_hints_from_logs,
+    format_parsed_transaction_error,
+    instruction_error_code_from_meta_err,
 )
 
 
@@ -56,11 +62,16 @@ class TradeConfig:
     parallel_submissions: bool = True
 
     def __post_init__(self) -> None:
-        if self.swqos_configs and not any(c.type == SwqosType.DEFAULT for c in self.swqos_configs):
-            self.swqos_configs = [
-                *self.swqos_configs,
-                SwqosConfig(type=SwqosType.DEFAULT, region=SwqosRegion.DEFAULT),
-            ]
+        out = [c for c in self.swqos_configs if not is_swqos_type_blacklisted(c.type)]
+        if not any(c.type == SwqosType.DEFAULT for c in out):
+            out.append(
+                SwqosConfig(
+                    type=SwqosType.DEFAULT,
+                    region=SwqosRegion.DEFAULT,
+                    custom_url=self.rpc_url or None,
+                )
+            )
+        self.swqos_configs = out
 
 
 @dataclass
@@ -422,6 +433,19 @@ async def poll_for_confirmation(
         "method": "getSignatureStatuses",
         "params": [[signature]],
     }
+    tx_payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTransaction",
+        "params": [
+            signature,
+            {
+                "encoding": "jsonParsed",
+                "maxSupportedTransactionVersion": 0,
+                "commitment": "confirmed",
+            },
+        ],
+    }
 
     async with aiohttp.ClientSession() as session:
         while time.time() - start_time < timeout_sec:
@@ -435,9 +459,27 @@ async def poll_for_confirmation(
 
                 if "result" in data and data["result"]["value"]:
                     status = data["result"]["value"][0]
-                    if status and status.get("confirmationStatus") == "finalized":
+                    if status and status.get("confirmationStatus") in ("confirmed", "finalized"):
                         return True
                     if status and status.get("err"):
+                        meta = {}
+                        try:
+                            async with session.post(
+                                rpc_url,
+                                json=tx_payload,
+                                headers={"Content-Type": "application/json"},
+                            ) as tx_resp:
+                                tx_data = await tx_resp.json()
+                            meta = (tx_data.get("result") or {}).get("meta") or {}
+                        except Exception:
+                            meta = {}
+                        parsed = instruction_error_code_from_meta_err(
+                            meta.get("err", status.get("err"))
+                        )
+                        hints = extract_hints_from_logs(meta.get("logMessages"))
+                        if parsed.code or hints:
+                            # Keep the legacy bool API while matching Rust failure-code/log extraction.
+                            _ = (parsed.code, parsed.instruction_index, hints)
                         return False
 
             except Exception:
@@ -448,6 +490,83 @@ async def poll_for_confirmation(
     return False
 
 
+async def poll_for_confirmation_error(
+    rpc_url: str,
+    signature: str,
+    timeout_ms: int = 30000,
+    poll_interval_ms: int = 1000,
+) -> tuple[bool, Optional[str]]:
+    """
+    Poll for confirmation and return a Rust-parity parsed error message on failure.
+
+    The legacy `poll_for_confirmation` bool API is kept for compatibility.
+    """
+    import aiohttp
+
+    start_time = time.time()
+    timeout_sec = timeout_ms / 1000
+    poll_interval_sec = poll_interval_ms / 1000
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getSignatureStatuses",
+        "params": [[signature]],
+    }
+    tx_payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTransaction",
+        "params": [
+            signature,
+            {
+                "encoding": "jsonParsed",
+                "maxSupportedTransactionVersion": 0,
+                "commitment": "confirmed",
+            },
+        ],
+    }
+
+    async with aiohttp.ClientSession() as session:
+        while time.time() - start_time < timeout_sec:
+            try:
+                async with session.post(
+                    rpc_url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                ) as resp:
+                    data = await resp.json()
+
+                if "result" in data and data["result"]["value"]:
+                    status = data["result"]["value"][0]
+                    if status and status.get("err") is None and status.get("confirmationStatus") in ("confirmed", "finalized"):
+                        return True, None
+                    if status and status.get("err"):
+                        meta = {}
+                        try:
+                            async with session.post(
+                                rpc_url,
+                                json=tx_payload,
+                                headers={"Content-Type": "application/json"},
+                            ) as tx_resp:
+                                tx_data = await tx_resp.json()
+                            meta = (tx_data.get("result") or {}).get("meta") or {}
+                        except Exception:
+                            meta = {}
+                        err_value = meta.get("err", status.get("err"))
+                        return False, format_parsed_transaction_error(
+                            err_value,
+                            meta.get("logMessages"),
+                        )
+
+            except Exception:
+                pass
+
+            await asyncio.sleep(poll_interval_sec)
+
+    return False, f"Transaction confirmation timed out after {timeout_ms}ms"
+
+
 __all__ = [
     "TradeResult",
     "TradeConfig",
@@ -456,4 +575,5 @@ __all__ = [
     "TradeExecutor",
     "create_trade_executor",
     "poll_for_confirmation",
+    "poll_for_confirmation_error",
 ]

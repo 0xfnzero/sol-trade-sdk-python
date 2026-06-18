@@ -91,7 +91,7 @@ def trade_config(**overrides) -> TradeConfig:
         TradeConfig.builder(rpc_url())
         .swqos_configs(overrides.pop("swqos_configs", default_swqos_configs()))
         .use_seed_optimize(overrides.pop("use_seed_optimize", True))
-        .swqos_cores_from_end(overrides.pop("swqos_cores_from_end", True))
+        .swqos_cores_from_end(overrides.pop("swqos_cores_from_end", False))
         .max_swqos_submit_concurrency(overrides.pop("max_swqos_submit_concurrency", 8))
         .log_enabled(overrides.pop("log_enabled", True))
     )
@@ -287,7 +287,7 @@ def example_sell_params(dex_type: DexType, mint: Optional[Pubkey] = None) -> Tra
 
 def describe_dry_run(name: str) -> None:
     print(f"{name} prepared with current SDK types.")
-    print("Set RUN_LIVE_EXAMPLES=1 and replace example params with real parser/RPC data before sending transactions.")
+    print("Set RUN_LIVE_EXAMPLES=1 and replace example params with real RPC or decoded event data before sending transactions.")
 
 
 def log_result(label: str, result: TradeResult) -> None:

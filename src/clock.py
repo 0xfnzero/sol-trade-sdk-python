@@ -2,7 +2,7 @@
 High-performance clock implementation.
 
 Uses monotonic clock + base UTC timestamp to avoid frequent syscalls.
-Aligned with sol-parser-sdk for consistent timing measurements.
+Aligned with external event feeds for consistent timing measurements.
 """
 
 import time

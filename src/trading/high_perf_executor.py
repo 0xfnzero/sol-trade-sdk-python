@@ -12,7 +12,13 @@ import threading
 from enum import Enum
 
 from ..common.types import TradeType, SwqosType, SwqosRegion, GasFeeStrategy, GasFeeStrategyType
-from ..swqos.clients import SwqosClient, ClientFactory, SwqosConfig, TradeError
+from ..swqos.clients import (
+    SwqosClient,
+    ClientFactory,
+    SwqosConfig,
+    TradeError,
+    is_swqos_type_blacklisted,
+)
 from ..cache.cache import LRUCache, TTLCache
 from ..pool.pool import WorkerPool, RateLimiter
 
@@ -73,11 +79,16 @@ class TradeConfig:
     rate_limit_per_second: float = 100.0
 
     def __post_init__(self) -> None:
-        if self.swqos_configs and not any(c.type == SwqosType.DEFAULT for c in self.swqos_configs):
-            self.swqos_configs = [
-                *self.swqos_configs,
-                SwqosConfig(type=SwqosType.DEFAULT, region=SwqosRegion.DEFAULT),
-            ]
+        out = [c for c in self.swqos_configs if not is_swqos_type_blacklisted(c.type)]
+        if not any(c.type == SwqosType.DEFAULT for c in out):
+            out.append(
+                SwqosConfig(
+                    type=SwqosType.DEFAULT,
+                    region=SwqosRegion.DEFAULT,
+                    custom_url=self.rpc_url or None,
+                )
+            )
+        self.swqos_configs = out
 
 
 # ===== High-Performance Trade Executor =====

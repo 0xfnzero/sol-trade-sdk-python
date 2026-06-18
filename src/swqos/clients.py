@@ -19,6 +19,8 @@ from enum import Enum
 from urllib.parse import urlparse
 
 import aiohttp
+import base58
+from solders.keypair import Keypair
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -40,6 +42,14 @@ except ImportError:
 
 from ..common.types import SwqosType, SwqosRegion, TradeType
 
+SWQOS_BLACKLISTED_TYPES = {SwqosType.NEXT_BLOCK}
+
+
+def is_swqos_type_blacklisted(swqos_type: SwqosType) -> bool:
+    return getattr(swqos_type, "value", swqos_type) in {
+        item.value for item in SWQOS_BLACKLISTED_TYPES
+    }
+
 
 # ===== Constants =====
 
@@ -59,7 +69,8 @@ MIN_TIP_LIGHTSPEED = 0.0001
 MIN_TIP_NEXT_BLOCK = 0.001
 MIN_TIP_SOYAS = 0.001
 MIN_TIP_SPEEDLANDING = 0.001
-MIN_TIP_DEFAULT = 0.0
+MIN_TIP_SOLAMI = 0.0001
+MIN_TIP_DEFAULT = 0.00001
 
 
 # ===== Tip Accounts =====
@@ -230,10 +241,32 @@ SPEEDLANDING_TIP_ACCOUNTS = [
     "speede8xCcUq2Tiv1efXeTuE3k9TDNq8TnGKaKSc6J4",
 ]
 
+SOLAMI_TIP_ACCOUNTS = [
+    "15qWd4huAkoxvhDsHMfpUn27TW1YBYMMJJ2jkAkbeam",
+    "9XuGciSwr5wb7dLTQm91JhuBTvj3GG8WjuRDc3obeam",
+    "kiQioJNyFG7pU36ELLsRKXkeT48kFbk3b6rSgrWbeam",
+    "kjmVhW1UzJrW2sU5bY5NtZ79jpvjSStsj37Pzmabeam",
+    "kREnjPWFpt4AHeY5pijPmyXaCrMnbatUQJo7d3Xbeam",
+    "praRZG6N6MdbsT4EFpKgZJWReZGXQhAMFcH68oCbeam",
+    "SqoKQKU5uwBxovq3R7yEBxFwptc4z7vwoghU3M9beam",
+    "sV72TY66T1RfmDSeHPPbwX6wwJ3bBv5hd4ehJ8tbeam",
+    "swf8MyEeLo7gtRUo27UuJj6naCASUrypU7dbteSbeam",
+    "uiuaQsxA47JybQAVN4FTfYuoEDkMiXV1r591Aewbeam",
+]
+
 
 def _random_tip_account(accounts: List[str]) -> str:
     """Randomly select a tip account from the list"""
     return random.choice(accounts)
+
+
+def _signature_from_serialized_transaction(transaction: bytes) -> str:
+    if len(transaction) < 65 or transaction[0] != 1:
+        raise TradeError(
+            code=400,
+            message="Only single-signature versioned transactions are supported for SWQOS submit",
+        )
+    return base58.b58encode(transaction[1:65]).decode("ascii")
 
 
 # ===== Endpoints by Region =====
@@ -242,10 +275,12 @@ JITO_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "https://ny.mainnet.block-engine.jito.wtf",
     SwqosRegion.FRANKFURT:   "https://frankfurt.mainnet.block-engine.jito.wtf",
     SwqosRegion.AMSTERDAM:   "https://amsterdam.mainnet.block-engine.jito.wtf",
+    SwqosRegion.DUBLIN:      "https://dublin.mainnet.block-engine.jito.wtf",
     SwqosRegion.SLC:         "https://slc.mainnet.block-engine.jito.wtf",
     SwqosRegion.TOKYO:       "https://tokyo.mainnet.block-engine.jito.wtf",
+    SwqosRegion.SINGAPORE:   "https://singapore.mainnet.block-engine.jito.wtf",
     SwqosRegion.LONDON:      "https://london.mainnet.block-engine.jito.wtf",
-    SwqosRegion.LOS_ANGELES: "https://ny.mainnet.block-engine.jito.wtf",
+    SwqosRegion.LOS_ANGELES: "https://slc.mainnet.block-engine.jito.wtf",
     SwqosRegion.DEFAULT:     "https://mainnet.block-engine.jito.wtf",
 }
 
@@ -253,8 +288,10 @@ BLOXROUTE_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "https://ny.solana.dex.blxrbdn.com",
     SwqosRegion.FRANKFURT:   "https://germany.solana.dex.blxrbdn.com",
     SwqosRegion.AMSTERDAM:   "https://amsterdam.solana.dex.blxrbdn.com",
-    SwqosRegion.SLC:         "https://ny.solana.dex.blxrbdn.com",
+    SwqosRegion.DUBLIN:      "https://uk.solana.dex.blxrbdn.com",
+    SwqosRegion.SLC:         "https://la.solana.dex.blxrbdn.com",
     SwqosRegion.TOKYO:       "https://tokyo.solana.dex.blxrbdn.com",
+    SwqosRegion.SINGAPORE:   "https://tokyo.solana.dex.blxrbdn.com",
     SwqosRegion.LONDON:      "https://uk.solana.dex.blxrbdn.com",
     SwqosRegion.LOS_ANGELES: "https://la.solana.dex.blxrbdn.com",
     SwqosRegion.DEFAULT:     "https://global.solana.dex.blxrbdn.com",
@@ -264,8 +301,10 @@ ZERO_SLOT_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "http://ny.0slot.trade",
     SwqosRegion.FRANKFURT:   "http://de2.0slot.trade",
     SwqosRegion.AMSTERDAM:   "http://ams.0slot.trade",
-    SwqosRegion.SLC:         "http://ny.0slot.trade",
+    SwqosRegion.DUBLIN:      "http://ams.0slot.trade",
+    SwqosRegion.SLC:         "http://la.0slot.trade",
     SwqosRegion.TOKYO:       "http://jp.0slot.trade",
+    SwqosRegion.SINGAPORE:   "http://jp.0slot.trade",
     SwqosRegion.LONDON:      "http://ams.0slot.trade",
     SwqosRegion.LOS_ANGELES: "http://la.0slot.trade",
     SwqosRegion.DEFAULT:     "http://de2.0slot.trade",
@@ -275,10 +314,12 @@ TEMPORAL_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "http://ewr1.nozomi.temporal.xyz",
     SwqosRegion.FRANKFURT:   "http://fra2.nozomi.temporal.xyz",
     SwqosRegion.AMSTERDAM:   "http://ams1.nozomi.temporal.xyz",
-    SwqosRegion.SLC:         "http://ewr1.nozomi.temporal.xyz",
+    SwqosRegion.DUBLIN:      "http://lon1.nozomi.temporal.xyz",
+    SwqosRegion.SLC:         "http://lax1.nozomi.temporal.xyz",
     SwqosRegion.TOKYO:       "http://tyo1.nozomi.temporal.xyz",
-    SwqosRegion.LONDON:      "http://sgp1.nozomi.temporal.xyz",
-    SwqosRegion.LOS_ANGELES: "http://pit1.nozomi.temporal.xyz",
+    SwqosRegion.SINGAPORE:   "http://sgp1.nozomi.temporal.xyz",
+    SwqosRegion.LONDON:      "http://lon1.nozomi.temporal.xyz",
+    SwqosRegion.LOS_ANGELES: "http://lax1.nozomi.temporal.xyz",
     SwqosRegion.DEFAULT:     "http://fra2.nozomi.temporal.xyz",
 }
 
@@ -286,21 +327,25 @@ FLASH_BLOCK_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "http://ny.flashblock.trade",
     SwqosRegion.FRANKFURT:   "http://fra.flashblock.trade",
     SwqosRegion.AMSTERDAM:   "http://ams.flashblock.trade",
+    SwqosRegion.DUBLIN:      "http://london.flashblock.trade",
     SwqosRegion.SLC:         "http://slc.flashblock.trade",
-    SwqosRegion.TOKYO:       "http://singapore.flashblock.trade",
+    SwqosRegion.TOKYO:       "http://tokyo.flashblock.trade",
+    SwqosRegion.SINGAPORE:   "http://singapore.flashblock.trade",
     SwqosRegion.LONDON:      "http://london.flashblock.trade",
-    SwqosRegion.LOS_ANGELES: "http://ny.flashblock.trade",
-    SwqosRegion.DEFAULT:     "http://ny.flashblock.trade",
+    SwqosRegion.LOS_ANGELES: "http://slc.flashblock.trade",
+    SwqosRegion.DEFAULT:     "http://fra.flashblock.trade",
 }
 
 HELIUS_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "http://ewr-sender.helius-rpc.com/fast",
     SwqosRegion.FRANKFURT:   "http://fra-sender.helius-rpc.com/fast",
     SwqosRegion.AMSTERDAM:   "http://ams-sender.helius-rpc.com/fast",
+    SwqosRegion.DUBLIN:      "http://lon-sender.helius-rpc.com/fast",
     SwqosRegion.SLC:         "http://slc-sender.helius-rpc.com/fast",
     SwqosRegion.TOKYO:       "http://tyo-sender.helius-rpc.com/fast",
+    SwqosRegion.SINGAPORE:   "http://sg-sender.helius-rpc.com/fast",
     SwqosRegion.LONDON:      "http://lon-sender.helius-rpc.com/fast",
-    SwqosRegion.LOS_ANGELES: "http://sg-sender.helius-rpc.com/fast",
+    SwqosRegion.LOS_ANGELES: "http://slc-sender.helius-rpc.com/fast",
     SwqosRegion.DEFAULT:     "https://sender.helius-rpc.com/fast",
 }
 
@@ -308,8 +353,10 @@ NODE1_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "http://ny.node1.me",
     SwqosRegion.FRANKFURT:   "http://fra.node1.me",
     SwqosRegion.AMSTERDAM:   "http://ams.node1.me",
+    SwqosRegion.DUBLIN:      "http://lon.node1.me",
     SwqosRegion.SLC:         "http://ny.node1.me",
     SwqosRegion.TOKYO:       "http://tk.node1.me",
+    SwqosRegion.SINGAPORE:   "http://tk.node1.me",
     SwqosRegion.LONDON:      "http://lon.node1.me",
     SwqosRegion.LOS_ANGELES: "http://ny.node1.me",
     SwqosRegion.DEFAULT:     "http://fra.node1.me",
@@ -319,8 +366,10 @@ BLOCK_RAZOR_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "http://newyork.solana.blockrazor.xyz:443/v2/sendTransaction",
     SwqosRegion.FRANKFURT:   "http://frankfurt.solana.blockrazor.xyz:443/v2/sendTransaction",
     SwqosRegion.AMSTERDAM:   "http://amsterdam.solana.blockrazor.xyz:443/v2/sendTransaction",
+    SwqosRegion.DUBLIN:      "http://london.solana.blockrazor.xyz:443/v2/sendTransaction",
     SwqosRegion.SLC:         "http://newyork.solana.blockrazor.xyz:443/v2/sendTransaction",
     SwqosRegion.TOKYO:       "http://tokyo.solana.blockrazor.xyz:443/v2/sendTransaction",
+    SwqosRegion.SINGAPORE:   "http://tokyo.solana.blockrazor.xyz:443/v2/sendTransaction",
     SwqosRegion.LONDON:      "http://london.solana.blockrazor.xyz:443/v2/sendTransaction",
     SwqosRegion.LOS_ANGELES: "http://newyork.solana.blockrazor.xyz:443/v2/sendTransaction",
     SwqosRegion.DEFAULT:     "http://frankfurt.solana.blockrazor.xyz:443/v2/sendTransaction",
@@ -330,21 +379,25 @@ ASTRALANE_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "http://ny.gateway.astralane.io/irisb",
     SwqosRegion.FRANKFURT:   "http://fr.gateway.astralane.io/irisb",
     SwqosRegion.AMSTERDAM:   "http://ams.gateway.astralane.io/irisb",
-    SwqosRegion.SLC:         "http://ny.gateway.astralane.io/irisb",
+    SwqosRegion.DUBLIN:      "http://ams.gateway.astralane.io/irisb",
+    SwqosRegion.SLC:         "http://la.gateway.astralane.io/irisb",
     SwqosRegion.TOKYO:       "http://jp.gateway.astralane.io/irisb",
-    SwqosRegion.LONDON:      "http://ny.gateway.astralane.io/irisb",
-    SwqosRegion.LOS_ANGELES: "http://lax.gateway.astralane.io/irisb",
-    SwqosRegion.DEFAULT:     "http://lim.gateway.astralane.io/irisb",
+    SwqosRegion.SINGAPORE:   "http://sg.gateway.astralane.io/irisb",
+    SwqosRegion.LONDON:      "http://ams.gateway.astralane.io/irisb",
+    SwqosRegion.LOS_ANGELES: "http://la.gateway.astralane.io/irisb",
+    SwqosRegion.DEFAULT:     "https://edge.astralane.io/irisb",
 }
 
 ASTRALANE_QUIC_HOSTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "ny.gateway.astralane.io",
     SwqosRegion.FRANKFURT:   "fr.gateway.astralane.io",
     SwqosRegion.AMSTERDAM:   "ams.gateway.astralane.io",
-    SwqosRegion.SLC:         "ny.gateway.astralane.io",
+    SwqosRegion.DUBLIN:      "ams.gateway.astralane.io",
+    SwqosRegion.SLC:         "la.gateway.astralane.io",
     SwqosRegion.TOKYO:       "jp.gateway.astralane.io",
+    SwqosRegion.SINGAPORE:   "sg.gateway.astralane.io",
     SwqosRegion.LONDON:      "ams.gateway.astralane.io",
-    SwqosRegion.LOS_ANGELES: "lax.gateway.astralane.io",
+    SwqosRegion.LOS_ANGELES: "la.gateway.astralane.io",
     SwqosRegion.DEFAULT:     "lim.gateway.astralane.io",
 }
 
@@ -352,8 +405,10 @@ STELLIUM_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "http://ewr1.flashrpc.com",
     SwqosRegion.FRANKFURT:   "http://fra1.flashrpc.com",
     SwqosRegion.AMSTERDAM:   "http://ams1.flashrpc.com",
+    SwqosRegion.DUBLIN:      "http://lhr1.flashrpc.com",
     SwqosRegion.SLC:         "http://ewr1.flashrpc.com",
     SwqosRegion.TOKYO:       "http://tyo1.flashrpc.com",
+    SwqosRegion.SINGAPORE:   "http://tyo1.flashrpc.com",
     SwqosRegion.LONDON:      "http://lhr1.flashrpc.com",
     SwqosRegion.LOS_ANGELES: "http://ewr1.flashrpc.com",
     SwqosRegion.DEFAULT:     "http://fra1.flashrpc.com",
@@ -361,21 +416,25 @@ STELLIUM_ENDPOINTS: Dict[SwqosRegion, str] = {
 
 NEXT_BLOCK_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "http://ny.nextblock.io",
-    SwqosRegion.FRANKFURT:   "http://frankfurt.nextblock.io",
-    SwqosRegion.AMSTERDAM:   "http://amsterdam.nextblock.io",
+    SwqosRegion.FRANKFURT:   "http://fra.nextblock.io",
+    SwqosRegion.AMSTERDAM:   "http://ams.nextblock.io",
+    SwqosRegion.DUBLIN:      "http://dublin.nextblock.io",
     SwqosRegion.SLC:         "http://slc.nextblock.io",
     SwqosRegion.TOKYO:       "http://tokyo.nextblock.io",
+    SwqosRegion.SINGAPORE:   "http://sgp.nextblock.io",
     SwqosRegion.LONDON:      "http://london.nextblock.io",
-    SwqosRegion.LOS_ANGELES: "http://singapore.nextblock.io",
-    SwqosRegion.DEFAULT:     "http://frankfurt.nextblock.io",
+    SwqosRegion.LOS_ANGELES: "http://slc.nextblock.io",
+    SwqosRegion.DEFAULT:     "http://fra.nextblock.io",
 }
 
 SOYAS_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "nyc.landing.soyas.xyz:9000",
     SwqosRegion.FRANKFURT:   "fra.landing.soyas.xyz:9000",
     SwqosRegion.AMSTERDAM:   "ams.landing.soyas.xyz:9000",
+    SwqosRegion.DUBLIN:      "lon.landing.soyas.xyz:9000",
     SwqosRegion.SLC:         "nyc.landing.soyas.xyz:9000",
     SwqosRegion.TOKYO:       "tyo.landing.soyas.xyz:9000",
+    SwqosRegion.SINGAPORE:   "tyo.landing.soyas.xyz:9000",
     SwqosRegion.LONDON:      "lon.landing.soyas.xyz:9000",
     SwqosRegion.LOS_ANGELES: "nyc.landing.soyas.xyz:9000",
     SwqosRegion.DEFAULT:     "fra.landing.soyas.xyz:9000",
@@ -385,11 +444,26 @@ SPEEDLANDING_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.NEW_YORK:    "nyc.speedlanding.trade:17778",
     SwqosRegion.FRANKFURT:   "fra.speedlanding.trade:17778",
     SwqosRegion.AMSTERDAM:   "ams.speedlanding.trade:17778",
+    SwqosRegion.DUBLIN:      "ams.speedlanding.trade:17778",
     SwqosRegion.SLC:         "nyc.speedlanding.trade:17778",
     SwqosRegion.TOKYO:       "tyo.speedlanding.trade:17778",
-    SwqosRegion.LONDON:      "fra.speedlanding.trade:17778",
+    SwqosRegion.SINGAPORE:   "sgp.speedlanding.trade:17778",
+    SwqosRegion.LONDON:      "ams.speedlanding.trade:17778",
     SwqosRegion.LOS_ANGELES: "nyc.speedlanding.trade:17778",
     SwqosRegion.DEFAULT:     "fra.speedlanding.trade:17778",
+}
+
+SOLAMI_ENDPOINTS: Dict[SwqosRegion, str] = {
+    SwqosRegion.NEW_YORK:    "beam.solami.dev:11000",
+    SwqosRegion.FRANKFURT:   "beam.solami.dev:11000",
+    SwqosRegion.AMSTERDAM:   "beam.solami.dev:11000",
+    SwqosRegion.DUBLIN:      "beam.solami.dev:11000",
+    SwqosRegion.SLC:         "beam.solami.dev:11000",
+    SwqosRegion.TOKYO:       "beam.solami.dev:11000",
+    SwqosRegion.SINGAPORE:   "beam.solami.dev:11000",
+    SwqosRegion.LONDON:      "beam.solami.dev:11000",
+    SwqosRegion.LOS_ANGELES: "beam.solami.dev:11000",
+    SwqosRegion.DEFAULT:     "beam.solami.dev:11000",
 }
 
 
@@ -1589,15 +1663,36 @@ class NextBlockClient(SwqosClient, HTTPClientMixin):
 
 # ===== QUIC helper =====
 
-def _make_solana_tpu_quic_config(server_name: str) -> "QuicConfiguration":
+def _make_solana_tpu_quic_config(
+    server_name: str,
+    api_key: Optional[str] = None,
+) -> "QuicConfiguration":
     """
     Build a QuicConfiguration with a self-signed Ed25519 cert and ALPN "solana-tpu",
     matching the pattern used by solana-tls-utils / go-solana-tpu.
     """
     from aioquic.quic.configuration import QuicConfiguration
 
-    # Generate ephemeral Ed25519 keypair
-    private_key = Ed25519PrivateKey.generate()
+    if api_key:
+        try:
+            keypair_bytes = base58.b58decode(api_key.strip())
+        except Exception as exc:
+            raise TradeError(
+                code=400,
+                message=f"Solami api_token base58 decode failed: {exc}",
+            ) from exc
+        if len(keypair_bytes) != 64:
+            raise TradeError(
+                code=400,
+                message=(
+                    "Solami api_token must be a base58-encoded 64-byte Solana keypair, "
+                    f"got {len(keypair_bytes)} bytes"
+                ),
+            )
+        keypair = Keypair.from_bytes(keypair_bytes)
+        private_key = Ed25519PrivateKey.from_private_bytes(bytes(keypair.secret()))
+    else:
+        private_key = Ed25519PrivateKey.generate()
     public_key = private_key.public_key()
 
     # Self-signed cert: NotBefore 1975, NotAfter 4096 (same as Rust solana-tls-utils)
@@ -1704,14 +1799,20 @@ class _SolanaTPUProtocol(QuicConnectionProtocol):
         await asyncio.sleep(0.05)
 
 
-async def _send_via_quic(host: str, port: int, server_name: str, tx_bytes: bytes) -> None:
+async def _send_via_quic(
+    host: str,
+    port: int,
+    server_name: str,
+    tx_bytes: bytes,
+    api_key: Optional[str] = None,
+) -> None:
     """Connect via QUIC ALPN=solana-tpu and send raw transaction bytes."""
     if not _QUIC_AVAILABLE:
         raise TradeError(
             code=501,
             message="QUIC not available: install 'aioquic' and 'cryptography' packages.",
         )
-    cfg = _make_solana_tpu_quic_config(server_name)
+    cfg = _make_solana_tpu_quic_config(server_name, api_key)
 
     async with quic_connect(
         host,
@@ -1806,7 +1907,7 @@ class Node1QuicClient(SwqosClient):
         wait_confirmation: bool = False,
     ) -> str:
         await _node1_quic_submit(self.endpoint, self.api_key, transaction)
-        return ""
+        return _signature_from_serialized_transaction(transaction)
 
     async def send_transactions(
         self,
@@ -1844,7 +1945,7 @@ class AstralaneQuicClient(SwqosClient):
         wait_confirmation: bool = False,
     ) -> str:
         await _astralane_quic_submit(self.endpoint, self.api_key, transaction)
-        return ""
+        return _signature_from_serialized_transaction(transaction)
 
     async def send_transactions(
         self,
@@ -1898,7 +1999,7 @@ class SoyasClient(SwqosClient):
         wait_confirmation: bool = False,
     ) -> str:
         await _send_via_quic(self._host, self._port, self._SERVER_NAME, transaction)
-        return ""
+        return _signature_from_serialized_transaction(transaction)
 
     async def send_transactions(
         self,
@@ -1908,7 +2009,7 @@ class SoyasClient(SwqosClient):
     ) -> List[str]:
         for tx in transactions:
             await self.send_transaction(trade_type, tx, wait_confirmation)
-        return [""] * len(transactions)
+        return [_signature_from_serialized_transaction(tx) for tx in transactions]
 
     def get_tip_account(self) -> str:
         return self._tip_account
@@ -1956,7 +2057,7 @@ class SpeedlandingClient(SwqosClient):
         wait_confirmation: bool = False,
     ) -> str:
         await _send_via_quic(self._host, self._port, self._server_name, transaction)
-        return ""
+        return _signature_from_serialized_transaction(transaction)
 
     async def send_transactions(
         self,
@@ -1966,7 +2067,7 @@ class SpeedlandingClient(SwqosClient):
     ) -> List[str]:
         for tx in transactions:
             await self.send_transaction(trade_type, tx, wait_confirmation)
-        return [""] * len(transactions)
+        return [_signature_from_serialized_transaction(tx) for tx in transactions]
 
     def get_tip_account(self) -> str:
         return self._tip_account
@@ -1976,6 +2077,69 @@ class SpeedlandingClient(SwqosClient):
 
     def min_tip_sol(self) -> float:
         return MIN_TIP_SPEEDLANDING
+
+
+# ===== Solami Client =====
+
+class SolamiClient(SwqosClient):
+    """
+    Solami SWQOS client.
+
+    Transport: QUIC with self-signed Ed25519 cert, ALPN "solana-tpu".
+    Endpoint:  host:port (Rust v4.0.21 defaults every region to beam.solami.dev:11000)
+    SNI:       "solami-beam"
+    Requires:  pip install aioquic cryptography
+    """
+
+    _SERVER_NAME = "solami-beam"
+
+    def __init__(self, rpc_url: str, endpoint: str, api_key: Optional[str] = None):
+        self.rpc_url = rpc_url
+        self.endpoint = endpoint
+        self.api_key = api_key
+        self._tip_account = _random_tip_account(SOLAMI_TIP_ACCOUNTS)
+        parts = endpoint.rsplit(":", 1)
+        self._host = parts[0]
+        self._port = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 11000
+
+    async def send_transaction(
+        self,
+        trade_type: TradeType,
+        transaction: bytes,
+        wait_confirmation: bool = False,
+    ) -> str:
+        if not self.api_key:
+            raise TradeError(
+                code=400,
+                message="Solami api_token is required and must be a base58-encoded Solana keypair",
+            )
+        await _send_via_quic(
+            self._host,
+            self._port,
+            self._SERVER_NAME,
+            transaction,
+            self.api_key,
+        )
+        return _signature_from_serialized_transaction(transaction)
+
+    async def send_transactions(
+        self,
+        trade_type: TradeType,
+        transactions: List[bytes],
+        wait_confirmation: bool = False,
+    ) -> List[str]:
+        for tx in transactions:
+            await self.send_transaction(trade_type, tx, wait_confirmation)
+        return [_signature_from_serialized_transaction(tx) for tx in transactions]
+
+    def get_tip_account(self) -> str:
+        return self._tip_account
+
+    def get_swqos_type(self) -> SwqosType:
+        return SwqosType.SOLAMI
+
+    def min_tip_sol(self) -> float:
+        return MIN_TIP_SOLAMI
 
 
 # ===== Client Factory =====
@@ -1988,71 +2152,88 @@ class SwqosConfig:
     custom_url: Optional[str] = None
     api_key: Optional[str] = None
     mev_protection: bool = False
+    transport: Optional[Any] = None
+    astralane_transport: Optional[Any] = None
+    swqos_only: Optional[bool] = None
 
 
 class ClientFactory:
     """Factory for creating SWQOS clients"""
 
     @staticmethod
+    def _normalize_region(region: Any) -> SwqosRegion:
+        if isinstance(region, SwqosRegion):
+            return region
+        value = getattr(region, "value", region)
+        try:
+            return SwqosRegion(value)
+        except ValueError:
+            return SwqosRegion.DEFAULT
+
+    @staticmethod
     def create_client(config: SwqosConfig, rpc_url: str) -> SwqosClient:
         """Create a SWQOS client from configuration"""
+        if is_swqos_type_blacklisted(config.type):
+            raise ValueError(f"SWQOS type is blacklisted by Rust v4.0.21 parity: {config.type}")
+        region = ClientFactory._normalize_region(config.region)
+        swqos_type = getattr(config.type, "value", config.type)
 
-        if config.type == SwqosType.JITO:
+        if swqos_type == SwqosType.JITO.value:
             endpoint = config.custom_url or JITO_ENDPOINTS.get(
-                config.region, JITO_ENDPOINTS[SwqosRegion.DEFAULT]
+                region, JITO_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             return JitoClient(rpc_url, endpoint, config.api_key)
 
-        elif config.type == SwqosType.BLOXROUTE:
+        elif swqos_type == SwqosType.BLOXROUTE.value:
             endpoint = config.custom_url or BLOXROUTE_ENDPOINTS.get(
-                config.region, BLOXROUTE_ENDPOINTS[SwqosRegion.DEFAULT]
+                region, BLOXROUTE_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             return BloxrouteClient(rpc_url, endpoint, config.api_key)
 
-        elif config.type == SwqosType.ZERO_SLOT:
+        elif swqos_type == SwqosType.ZERO_SLOT.value:
             endpoint = config.custom_url or ZERO_SLOT_ENDPOINTS.get(
-                config.region, ZERO_SLOT_ENDPOINTS[SwqosRegion.DEFAULT]
+                region, ZERO_SLOT_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             return ZeroSlotClient(rpc_url, endpoint, config.api_key)
 
-        elif config.type == SwqosType.TEMPORAL:
+        elif swqos_type == SwqosType.TEMPORAL.value:
             endpoint = config.custom_url or TEMPORAL_ENDPOINTS.get(
-                config.region, TEMPORAL_ENDPOINTS[SwqosRegion.DEFAULT]
+                region, TEMPORAL_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             return TemporalClient(rpc_url, endpoint, config.api_key)
 
-        elif config.type == SwqosType.FLASH_BLOCK:
+        elif swqos_type == SwqosType.FLASH_BLOCK.value:
             endpoint = config.custom_url or FLASH_BLOCK_ENDPOINTS.get(
-                config.region, FLASH_BLOCK_ENDPOINTS[SwqosRegion.DEFAULT]
+                region, FLASH_BLOCK_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             return FlashBlockClient(rpc_url, endpoint, config.api_key)
 
-        elif config.type == SwqosType.HELIUS:
+        elif swqos_type == SwqosType.HELIUS.value:
             endpoint = config.custom_url or HELIUS_ENDPOINTS.get(
-                config.region, HELIUS_ENDPOINTS[SwqosRegion.DEFAULT]
+                region, HELIUS_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             return HeliusClient(rpc_url, endpoint, config.api_key, swqos_only=bool(config.swqos_only))
 
-        elif config.type == SwqosType.NODE1:
+        elif swqos_type == SwqosType.NODE1.value:
             transport = getattr(getattr(config, "transport", None), "value", getattr(config, "transport", None))
             endpoint = config.custom_url or NODE1_ENDPOINTS.get(
-                config.region, NODE1_ENDPOINTS[SwqosRegion.DEFAULT]
+                region, NODE1_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             if transport == "Quic":
                 return Node1QuicClient(rpc_url, f"{_host_port_from_http(endpoint, 16666)[0]}:16666", config.api_key)
             return Node1Client(rpc_url, endpoint, config.api_key)
 
-        elif config.type == SwqosType.BLOCK_RAZOR:
+        elif swqos_type == SwqosType.BLOCK_RAZOR.value:
             endpoint = config.custom_url or BLOCK_RAZOR_ENDPOINTS.get(
-                config.region, BLOCK_RAZOR_ENDPOINTS[SwqosRegion.DEFAULT]
+                region, BLOCK_RAZOR_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             return BlockRazorClient(
                 rpc_url, endpoint, config.api_key, mev_protection=config.mev_protection
             )
 
-        elif config.type == SwqosType.ASTRALANE:
+        elif swqos_type == SwqosType.ASTRALANE.value:
             endpoint = config.custom_url or ASTRALANE_ENDPOINTS.get(
-                config.region, ASTRALANE_ENDPOINTS[SwqosRegion.DEFAULT]
+                region, ASTRALANE_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             mode = getattr(
                 getattr(config, "astralane_transport", None),
@@ -2069,41 +2250,47 @@ class ClientFactory:
                     else:
                         endpoint = config.custom_url
                 else:
-                    host = ASTRALANE_QUIC_HOSTS.get(config.region, ASTRALANE_QUIC_HOSTS[SwqosRegion.DEFAULT])
+                    host = ASTRALANE_QUIC_HOSTS.get(region, ASTRALANE_QUIC_HOSTS[SwqosRegion.DEFAULT])
                     endpoint = f"{host}:{9000 if config.mev_protection else 7000}"
                 return AstralaneQuicClient(rpc_url, endpoint, config.api_key)
             return AstralaneClient(rpc_url, endpoint, config.api_key)
 
-        elif config.type == SwqosType.STELLIUM:
+        elif swqos_type == SwqosType.STELLIUM.value:
             endpoint = config.custom_url or STELLIUM_ENDPOINTS.get(
-                config.region, STELLIUM_ENDPOINTS[SwqosRegion.DEFAULT]
+                region, STELLIUM_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             return StelliumClient(rpc_url, endpoint, config.api_key)
 
-        elif config.type == SwqosType.LIGHTSPEED:
+        elif swqos_type == SwqosType.LIGHTSPEED.value:
             # Lightspeed requires custom_url with api_key embedded
             endpoint = config.custom_url or ""
             return LightspeedClient(rpc_url, endpoint, config.api_key)
 
-        elif config.type == SwqosType.NEXT_BLOCK:
+        elif swqos_type == SwqosType.NEXT_BLOCK.value:
             endpoint = config.custom_url or NEXT_BLOCK_ENDPOINTS.get(
-                config.region, NEXT_BLOCK_ENDPOINTS[SwqosRegion.DEFAULT]
+                region, NEXT_BLOCK_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             return NextBlockClient(rpc_url, endpoint, config.api_key)
 
-        elif config.type == SwqosType.SOYAS:
+        elif swqos_type == SwqosType.SOYAS.value:
             endpoint = config.custom_url or SOYAS_ENDPOINTS.get(
-                config.region, SOYAS_ENDPOINTS[SwqosRegion.DEFAULT]
+                region, SOYAS_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             return SoyasClient(rpc_url, endpoint, config.api_key)
 
-        elif config.type == SwqosType.SPEEDLANDING:
+        elif swqos_type == SwqosType.SPEEDLANDING.value:
             endpoint = config.custom_url or SPEEDLANDING_ENDPOINTS.get(
-                config.region, SPEEDLANDING_ENDPOINTS[SwqosRegion.DEFAULT]
+                region, SPEEDLANDING_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             return SpeedlandingClient(rpc_url, endpoint, config.api_key)
 
-        elif config.type == SwqosType.DEFAULT:
+        elif swqos_type == SwqosType.SOLAMI.value:
+            endpoint = config.custom_url or SOLAMI_ENDPOINTS.get(
+                region, SOLAMI_ENDPOINTS[SwqosRegion.DEFAULT]
+            )
+            return SolamiClient(rpc_url, endpoint, config.api_key)
+
+        elif swqos_type == SwqosType.DEFAULT.value:
             return DefaultClient(rpc_url)
 
         else:

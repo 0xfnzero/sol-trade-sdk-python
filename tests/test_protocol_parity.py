@@ -19,11 +19,14 @@ from src.instruction.raydium_cpmm_builder import (
     RaydiumCpmmParams,
     build_buy_instructions as build_raydium_cpmm_buy_instructions,
 )
+from src.instruction import InstructionBuilderFactory
+from src import DexType as RootDexType
 from src.instruction.pumpfun_builder import (
     BUY_V2_DISCRIMINATOR,
     PumpFunParams,
     build_buy_instructions as build_pumpfun_buy_instructions,
 )
+from src.trading.factory import RaydiumCpmmExecutor
 
 
 def pk(seed: int) -> Pubkey:
@@ -62,6 +65,61 @@ def test_raydium_cpmm_uses_swap_base_out_for_fixed_output_buy():
         ),
     )
     data = bytes(ixs[-1].data)
+
+    assert data[:8] == CPMM_SWAP_BASE_OUT_DISCRIMINATOR
+    assert int.from_bytes(data[8:16], "little") == 100_000
+    assert int.from_bytes(data[16:24], "little") == 42
+
+
+@pytest.mark.asyncio
+async def test_public_raydium_cpmm_builder_wires_fixed_output_buy():
+    builder = InstructionBuilderFactory.create(RootDexType.RAYDIUM_CPMM)
+    ixs = await builder.build_buy_instructions(
+        payer=pk(99),
+        input_mint=WSOL_TOKEN_ACCOUNT,
+        output_mint=pk(2),
+        input_amount=100_000,
+        slippage_basis_points=300,
+        protocol_params=RaydiumCpmmParams(
+            amm_config=pk(1),
+            base_mint=WSOL_TOKEN_ACCOUNT,
+            quote_mint=pk(2),
+            base_token_program=TOKEN_PROGRAM,
+            quote_token_program=TOKEN_PROGRAM,
+            base_reserve=1_000_000_000,
+            quote_reserve=2_000_000_000,
+        ),
+        create_input_ata=False,
+        create_output_ata=False,
+        fixed_output_amount=42,
+    )
+    data = bytes(ixs[-1].data)
+
+    assert data[:8] == CPMM_SWAP_BASE_OUT_DISCRIMINATOR
+    assert int.from_bytes(data[8:16], "little") == 100_000
+    assert int.from_bytes(data[16:24], "little") == 42
+
+
+@pytest.mark.asyncio
+async def test_trading_factory_raydium_cpmm_wires_fixed_output_buy():
+    result = await RaydiumCpmmExecutor().execute_buy(
+        {
+            "payer": pk(99),
+            "output_mint": pk(2),
+            "amount_in": 100_000,
+            "fixed_output_amount": 42,
+            "amm_config": pk(1),
+            "base_mint": WSOL_TOKEN_ACCOUNT,
+            "quote_mint": pk(2),
+            "base_reserve": 1_000_000_000,
+            "quote_reserve": 2_000_000_000,
+            "base_token_program": TOKEN_PROGRAM,
+            "quote_token_program": TOKEN_PROGRAM,
+            "create_input_mint_ata": False,
+            "create_output_mint_ata": False,
+        }
+    )
+    data = bytes(result["instructions"][-1].data)
 
     assert data[:8] == CPMM_SWAP_BASE_OUT_DISCRIMINATOR
     assert int.from_bytes(data[8:16], "little") == 100_000

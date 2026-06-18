@@ -18,9 +18,11 @@ from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.signature import Signature
 from solders.transaction import Transaction
-from solders.message import Message
+from solders.message import Message, MessageV0
 from solders.instruction import Instruction, AccountMeta
 from solders.hash import Hash as Blockhash
+from solders import compute_budget, system_program
+from solders.transaction import VersionedTransaction
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Commitment, Confirmed
 
@@ -45,6 +47,15 @@ class TradeTokenType(Enum):
     WSOL = "WSOL"
     USD1 = "USD1"
     USDC = "USDC"
+
+
+class AccountPolicy(Enum):
+    """Account lifecycle policy for high-level trade requests."""
+
+    AUTO = "Auto"
+    HOT_PATH_MINIMAL = "HotPathMinimal"
+    CREATE_MISSING = "CreateMissing"
+    ASSUME_PREPARED = "AssumePrepared"
 
 
 class TradeType(Enum):
@@ -91,6 +102,7 @@ class SwqosType(Enum):
     LIGHTSPEED = "Lightspeed"
     SOYAS = "Soyas"
     SPEEDLANDING = "Speedlanding"
+    SOLAMI = "Solami"
 
 
 class SwqosTransport(Enum):
@@ -145,6 +157,7 @@ DEFAULT_SLIPPAGE = 500  # 5%
 DEFAULT_COMPUTE_UNITS = 200000
 DEFAULT_PRIORITY_FEE = 100000
 DEFAULT_TIP_LAMPORTS = 100000
+PACKET_DATA_SIZE = 1232
 
 
 # ============== Data Classes ==============
@@ -175,7 +188,7 @@ class SwqosConfig:
 
     type: SwqosType
     region: SwqosRegion
-    api_key: str
+    api_key: str = ""
     custom_url: Optional[str] = None
     mev_protection: Optional[bool] = None
     transport: Optional[SwqosTransport] = None
@@ -183,22 +196,27 @@ class SwqosConfig:
     swqos_only: Optional[bool] = None
 
 
+SWQOS_BLACKLISTED_VALUES = {"NextBlock"}
+
+
+def is_swqos_type_blacklisted(swqos_type: SwqosType) -> bool:
+    return getattr(swqos_type, "value", swqos_type) in SWQOS_BLACKLISTED_VALUES
+
+
 def _normalize_swqos_configs(rpc_url: str, configs: List[SwqosConfig]) -> List[SwqosConfig]:
-    if not configs or any(c.type == SwqosType.DEFAULT for c in configs):
-        return configs
-    return [
-        *configs,
-        SwqosConfig(
+    out = list(configs)
+    if not any(getattr(c.type, "value", c.type) == "Default" for c in out):
+        out.append(SwqosConfig(
             type=SwqosType.DEFAULT,
             region=SwqosRegion.DEFAULT,
             api_key="",
             custom_url=rpc_url,
-        ),
-    ]
+        ))
+    return [c for c in out if not is_swqos_type_blacklisted(c.type)]
 
 
 @dataclass
-class GasFeeStrategy:
+class _FlatGasFeeStrategy:
     """Gas fee strategy configuration"""
 
     buy_priority_fee: int = 100000
@@ -261,6 +279,57 @@ class TradeResult:
     signatures: List[str]
     error: Optional[str] = None
     timings: List[Dict[str, Any]] = field(default_factory=list)
+    simulation: Optional[Dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class BuyAmount:
+    """High-level buy sizing intent."""
+
+    kind: str
+    amount: int
+    output_amount: Optional[int] = None
+    max_input_amount: Optional[int] = None
+
+    @classmethod
+    def exact_input(cls, amount: int) -> "BuyAmount":
+        return cls("ExactInput", amount)
+
+    @classmethod
+    def exact_output(cls, output_amount: int, max_input_amount: int) -> "BuyAmount":
+        return cls(
+            "ExactOutput",
+            max_input_amount,
+            output_amount=output_amount,
+            max_input_amount=max_input_amount,
+        )
+
+    @classmethod
+    def with_max_input(cls, quote_amount: int) -> "BuyAmount":
+        return cls("WithMaxInput", quote_amount)
+
+
+@dataclass(frozen=True)
+class SellAmount:
+    """High-level sell sizing intent."""
+
+    kind: str
+    amount: int
+    output_amount: Optional[int] = None
+    max_input_amount: Optional[int] = None
+
+    @classmethod
+    def exact_input(cls, amount: int) -> "SellAmount":
+        return cls("ExactInput", amount)
+
+    @classmethod
+    def exact_output(cls, output_amount: int, max_input_amount: int) -> "SellAmount":
+        return cls(
+            "ExactOutput",
+            max_input_amount,
+            output_amount=output_amount,
+            max_input_amount=max_input_amount,
+        )
 
 
 # ============== Protocol Params ==============
@@ -356,7 +425,7 @@ class PumpFunParams:
         is_cashback_coin: bool,
         mayhem_mode: Optional[bool],
     ) -> "PumpFunParams":
-        """Build PumpFun params from sol-parser-sdk trade event fields."""
+        """Build PumpFun params from already-decoded trade event fields."""
         return cls(
             bonding_curve=BondingCurveAccount(
                 discriminator=0,
@@ -386,7 +455,7 @@ class PumpFunParams:
         event: Any,
         close_token_account_when_sell: Optional[bool] = None,
     ) -> "PumpFunParams":
-        """Build params directly from sol-parser-sdk PumpFunTradeEvent dataclass/dict."""
+        """Build params from an already-decoded PumpFun trade event object or dict."""
         quote_mint = _pubkey_from_parser(_parser_value(event, "quote_mint"))
         legacy_sol_quote = quote_mint == Pubkey.default() or quote_mint == SOL_TOKEN_ACCOUNT
         missing = object()
@@ -441,7 +510,7 @@ class PumpSwapParams:
 
     @classmethod
     def from_parser_event(cls, event: Any) -> "PumpSwapParams":
-        """Build params directly from sol-parser-sdk PumpSwapBuyEvent/PumpSwapSellEvent."""
+        """Build params from an already-decoded PumpSwap trade event object or dict."""
         return cls(
             pool=_pubkey_from_parser(_parser_value(event, "pool")),
             base_mint=_pubkey_from_parser(_parser_value(event, "base_mint")),
@@ -564,13 +633,14 @@ class TradeBuyParams:
     slippage_basis_points: Optional[int] = None
     recent_blockhash: Optional[str] = None
     address_lookup_table_account: Optional[Any] = None
-    wait_tx_confirmed: bool = True
+    wait_tx_confirmed: bool = False
+    wait_for_all_submits: bool = False
     create_input_token_ata: bool = True
     close_input_token_ata: bool = False
     create_mint_ata: bool = True
     durable_nonce: Optional[DurableNonceInfo] = None
     fixed_output_token_amount: Optional[int] = None
-    gas_fee_strategy: Optional[GasFeeStrategy] = None
+    gas_fee_strategy: Optional[Any] = None
     simulate: bool = False
     use_exact_sol_amount: Optional[bool] = None
     grpc_recv_us: Optional[int] = None
@@ -589,15 +659,203 @@ class TradeSellParams:
     recent_blockhash: Optional[str] = None
     with_tip: bool = True
     address_lookup_table_account: Optional[Any] = None
-    wait_tx_confirmed: bool = True
+    wait_tx_confirmed: bool = False
+    wait_for_all_submits: bool = False
     create_output_token_ata: bool = False
     close_output_token_ata: bool = False
     close_mint_token_ata: bool = False
     durable_nonce: Optional[DurableNonceInfo] = None
     fixed_output_token_amount: Optional[int] = None
-    gas_fee_strategy: Optional[GasFeeStrategy] = None
+    gas_fee_strategy: Optional[Any] = None
     simulate: bool = False
     grpc_recv_us: Optional[int] = None
+
+
+@dataclass
+class SimpleBuyParams:
+    """Simple buy request that describes trade intent instead of low-level ATA flags."""
+
+    dex_type: DexType
+    pay_with: TradeTokenType
+    mint: Pubkey
+    amount: BuyAmount
+    extension_params: DexParamEnum
+    recent_blockhash: Optional[str] = None
+    gas_fee_strategy: Optional[Any] = None
+    slippage_basis_points: Optional[int] = None
+    account_policy: AccountPolicy = AccountPolicy.AUTO
+    address_lookup_table_account: Optional[Any] = None
+    wait_tx_confirmed: bool = False
+    wait_for_all_submits: bool = False
+    durable_nonce: Optional[DurableNonceInfo] = None
+    simulate: bool = False
+    grpc_recv_us: Optional[int] = None
+
+    @classmethod
+    def new(
+        cls,
+        dex_type: DexType,
+        pay_with: TradeTokenType,
+        mint: Pubkey,
+        amount: BuyAmount,
+        extension_params: DexParamEnum,
+        recent_blockhash: str,
+        gas_fee_strategy: Optional[Any] = None,
+    ) -> "SimpleBuyParams":
+        return cls(
+            dex_type=dex_type,
+            pay_with=pay_with,
+            mint=mint,
+            amount=amount,
+            extension_params=extension_params,
+            recent_blockhash=recent_blockhash,
+            gas_fee_strategy=gas_fee_strategy,
+            account_policy=AccountPolicy.AUTO,
+            wait_tx_confirmed=False,
+            wait_for_all_submits=False,
+            simulate=False,
+        )
+
+    @classmethod
+    def with_durable_nonce(
+        cls,
+        dex_type: DexType,
+        pay_with: TradeTokenType,
+        mint: Pubkey,
+        amount: BuyAmount,
+        extension_params: DexParamEnum,
+        durable_nonce: DurableNonceInfo,
+        gas_fee_strategy: Optional[Any] = None,
+    ) -> "SimpleBuyParams":
+        return cls.new(
+            dex_type=dex_type,
+            pay_with=pay_with,
+            mint=mint,
+            amount=amount,
+            extension_params=extension_params,
+            recent_blockhash="",
+            gas_fee_strategy=gas_fee_strategy,
+        ).set_durable_nonce(durable_nonce)
+
+    def set_slippage_basis_points(self, value: int) -> "SimpleBuyParams":
+        return replace(self, slippage_basis_points=value)
+
+    def set_account_policy(self, value: AccountPolicy) -> "SimpleBuyParams":
+        return replace(self, account_policy=value)
+
+    def set_address_lookup_table_account(self, value: Any) -> "SimpleBuyParams":
+        return replace(self, address_lookup_table_account=value)
+
+    def set_durable_nonce(self, value: DurableNonceInfo) -> "SimpleBuyParams":
+        return replace(self, durable_nonce=value, recent_blockhash=None)
+
+    def set_wait_tx_confirmed(self, value: bool) -> "SimpleBuyParams":
+        return replace(self, wait_tx_confirmed=value)
+
+    def set_wait_for_all_submits(self, value: bool) -> "SimpleBuyParams":
+        return replace(self, wait_for_all_submits=value)
+
+    def set_simulate(self, value: bool) -> "SimpleBuyParams":
+        return replace(self, simulate=value)
+
+    def set_grpc_recv_us(self, value: int) -> "SimpleBuyParams":
+        return replace(self, grpc_recv_us=value)
+
+
+@dataclass
+class SimpleSellParams:
+    """Simple sell request that describes trade intent instead of low-level ATA flags."""
+
+    dex_type: DexType
+    receive_as: TradeTokenType
+    mint: Pubkey
+    amount: SellAmount
+    extension_params: DexParamEnum
+    recent_blockhash: Optional[str] = None
+    gas_fee_strategy: Optional[Any] = None
+    slippage_basis_points: Optional[int] = None
+    account_policy: AccountPolicy = AccountPolicy.AUTO
+    address_lookup_table_account: Optional[Any] = None
+    wait_tx_confirmed: bool = False
+    wait_for_all_submits: bool = False
+    durable_nonce: Optional[DurableNonceInfo] = None
+    simulate: bool = False
+    with_tip: bool = True
+    grpc_recv_us: Optional[int] = None
+
+    @classmethod
+    def new(
+        cls,
+        dex_type: DexType,
+        receive_as: TradeTokenType,
+        mint: Pubkey,
+        amount: SellAmount,
+        extension_params: DexParamEnum,
+        recent_blockhash: str,
+        gas_fee_strategy: Optional[Any] = None,
+    ) -> "SimpleSellParams":
+        return cls(
+            dex_type=dex_type,
+            receive_as=receive_as,
+            mint=mint,
+            amount=amount,
+            extension_params=extension_params,
+            recent_blockhash=recent_blockhash,
+            gas_fee_strategy=gas_fee_strategy,
+            account_policy=AccountPolicy.AUTO,
+            wait_tx_confirmed=False,
+            wait_for_all_submits=False,
+            simulate=False,
+            with_tip=True,
+        )
+
+    @classmethod
+    def with_durable_nonce(
+        cls,
+        dex_type: DexType,
+        receive_as: TradeTokenType,
+        mint: Pubkey,
+        amount: SellAmount,
+        extension_params: DexParamEnum,
+        durable_nonce: DurableNonceInfo,
+        gas_fee_strategy: Optional[Any] = None,
+    ) -> "SimpleSellParams":
+        return cls.new(
+            dex_type=dex_type,
+            receive_as=receive_as,
+            mint=mint,
+            amount=amount,
+            extension_params=extension_params,
+            recent_blockhash="",
+            gas_fee_strategy=gas_fee_strategy,
+        ).set_durable_nonce(durable_nonce)
+
+    def set_slippage_basis_points(self, value: int) -> "SimpleSellParams":
+        return replace(self, slippage_basis_points=value)
+
+    def set_account_policy(self, value: AccountPolicy) -> "SimpleSellParams":
+        return replace(self, account_policy=value)
+
+    def set_address_lookup_table_account(self, value: Any) -> "SimpleSellParams":
+        return replace(self, address_lookup_table_account=value)
+
+    def set_durable_nonce(self, value: DurableNonceInfo) -> "SimpleSellParams":
+        return replace(self, durable_nonce=value, recent_blockhash=None)
+
+    def set_wait_tx_confirmed(self, value: bool) -> "SimpleSellParams":
+        return replace(self, wait_tx_confirmed=value)
+
+    def set_wait_for_all_submits(self, value: bool) -> "SimpleSellParams":
+        return replace(self, wait_for_all_submits=value)
+
+    def set_simulate(self, value: bool) -> "SimpleSellParams":
+        return replace(self, simulate=value)
+
+    def set_with_tip(self, value: bool) -> "SimpleSellParams":
+        return replace(self, with_tip=value)
+
+    def set_grpc_recv_us(self, value: int) -> "SimpleSellParams":
+        return replace(self, grpc_recv_us=value)
 
 
 # ============== Main Client ==============
@@ -616,9 +874,10 @@ class TradeConfig:
     # Astralane uses port 9000 (MEV-protected QUIC endpoint)
     mev_protection: bool = False
     use_seed_optimize: bool = True
-    create_wsol_ata_on_startup: bool = False
-    swqos_cores_from_end: bool = True
+    create_wsol_ata_on_startup: bool = True
+    swqos_cores_from_end: bool = False
     max_swqos_submit_concurrency: Optional[int] = None
+    middleware_manager: Optional[Any] = None
 
     def __post_init__(self) -> None:
         self.swqos_configs = _normalize_swqos_configs(self.rpc_url, self.swqos_configs)
@@ -656,9 +915,10 @@ class TradeConfigBuilder:
         self._check_min_tip: bool = False
         self._mev_protection: bool = False
         self._use_seed_optimize: bool = True
-        self._create_wsol_ata_on_startup: bool = False
-        self._swqos_cores_from_end: bool = True
+        self._create_wsol_ata_on_startup: bool = True
+        self._swqos_cores_from_end: bool = False
         self._max_swqos_submit_concurrency: Optional[int] = None
+        self._middleware_manager: Optional[Any] = None
 
     def swqos_configs(self, configs: List[SwqosConfig]) -> "TradeConfigBuilder":
         """Set SWQOS provider configurations."""
@@ -710,6 +970,11 @@ class TradeConfigBuilder:
         self._max_swqos_submit_concurrency = limit
         return self
 
+    def middleware_manager(self, manager: Any) -> "TradeConfigBuilder":
+        """Set a Rust-style middleware manager."""
+        self._middleware_manager = manager
+        return self
+
     def build(self) -> "TradeConfig":
         """Build and return the TradeConfig."""
         return TradeConfig(
@@ -723,6 +988,7 @@ class TradeConfigBuilder:
             create_wsol_ata_on_startup=self._create_wsol_ata_on_startup,
             swqos_cores_from_end=self._swqos_cores_from_end,
             max_swqos_submit_concurrency=self._max_swqos_submit_concurrency,
+            middleware_manager=self._middleware_manager,
         )
 
 
@@ -735,10 +1001,103 @@ def recommended_sender_thread_core_indices(
     cores = available_cores or os.cpu_count() or 0
     if swqos_count <= 0 or cores <= 0:
         return []
-    count = min(swqos_count, cores)
+    count = min(swqos_count, max(cores * 2 // 3, 1), cores)
     if from_end:
         return list(range(cores - count, cores))
     return list(range(count))
+
+
+def _buy_account_flags(policy: AccountPolicy) -> tuple[bool, bool, bool]:
+    if policy in (AccountPolicy.HOT_PATH_MINIMAL, AccountPolicy.ASSUME_PREPARED):
+        return False, False, False
+    if policy == AccountPolicy.CREATE_MISSING:
+        return True, True, False
+    return False, True, False
+
+
+def _sell_account_flags(policy: AccountPolicy, receive_as: TradeTokenType) -> tuple[bool, bool, bool]:
+    if policy in (AccountPolicy.HOT_PATH_MINIMAL, AccountPolicy.ASSUME_PREPARED):
+        return False, False, False
+    if policy == AccountPolicy.CREATE_MISSING:
+        return True, False, False
+    return receive_as != TradeTokenType.SOL, False, False
+
+
+def simple_buy_params_to_trade_buy_params(params: SimpleBuyParams) -> TradeBuyParams:
+    """Convert high-level SimpleBuyParams to legacy TradeBuyParams."""
+    fixed_output_token_amount: Optional[int] = None
+    if params.amount.kind == "ExactInput":
+        input_token_amount = params.amount.amount
+        use_exact_sol_amount = True
+    elif params.amount.kind == "ExactOutput":
+        input_token_amount = params.amount.max_input_amount or params.amount.amount
+        fixed_output_token_amount = params.amount.output_amount
+        use_exact_sol_amount = True
+    elif params.amount.kind == "WithMaxInput":
+        input_token_amount = params.amount.amount
+        use_exact_sol_amount = False
+    else:
+        raise ValueError(f"unsupported BuyAmount kind: {params.amount.kind}")
+
+    create_input, create_mint, close_input = _buy_account_flags(params.account_policy)
+    return TradeBuyParams(
+        dex_type=params.dex_type,
+        input_token_type=params.pay_with,
+        mint=params.mint,
+        input_token_amount=input_token_amount,
+        extension_params=params.extension_params,
+        slippage_basis_points=params.slippage_basis_points,
+        recent_blockhash=None if params.durable_nonce else params.recent_blockhash,
+        address_lookup_table_account=params.address_lookup_table_account,
+        wait_tx_confirmed=params.wait_tx_confirmed,
+        wait_for_all_submits=params.wait_for_all_submits,
+        create_input_token_ata=create_input,
+        close_input_token_ata=close_input,
+        create_mint_ata=create_mint,
+        durable_nonce=params.durable_nonce,
+        fixed_output_token_amount=fixed_output_token_amount,
+        gas_fee_strategy=params.gas_fee_strategy,
+        simulate=params.simulate,
+        use_exact_sol_amount=use_exact_sol_amount,
+        grpc_recv_us=params.grpc_recv_us,
+    )
+
+
+def simple_sell_params_to_trade_sell_params(params: SimpleSellParams) -> TradeSellParams:
+    """Convert high-level SimpleSellParams to legacy TradeSellParams."""
+    fixed_output_token_amount: Optional[int] = None
+    if params.amount.kind == "ExactInput":
+        input_token_amount = params.amount.amount
+    elif params.amount.kind == "ExactOutput":
+        input_token_amount = params.amount.max_input_amount or params.amount.amount
+        fixed_output_token_amount = params.amount.output_amount
+    else:
+        raise ValueError(f"unsupported SellAmount kind: {params.amount.kind}")
+
+    create_output, close_output, close_mint = _sell_account_flags(
+        params.account_policy, params.receive_as
+    )
+    return TradeSellParams(
+        dex_type=params.dex_type,
+        output_token_type=params.receive_as,
+        mint=params.mint,
+        input_token_amount=input_token_amount,
+        extension_params=params.extension_params,
+        slippage_basis_points=params.slippage_basis_points,
+        recent_blockhash=None if params.durable_nonce else params.recent_blockhash,
+        with_tip=params.with_tip,
+        address_lookup_table_account=params.address_lookup_table_account,
+        wait_tx_confirmed=params.wait_tx_confirmed,
+        wait_for_all_submits=params.wait_for_all_submits,
+        create_output_token_ata=create_output,
+        close_output_token_ata=close_output,
+        close_mint_token_ata=close_mint,
+        durable_nonce=params.durable_nonce,
+        fixed_output_token_amount=fixed_output_token_amount,
+        gas_fee_strategy=params.gas_fee_strategy,
+        simulate=params.simulate,
+        grpc_recv_us=params.grpc_recv_us,
+    )
 
 
 class TradingClient:
@@ -757,6 +1116,7 @@ class TradingClient:
         self.client = AsyncClient(config.rpc_url, commitment=config.commitment)
         self.middlewares: List[Any] = []
         self.log_enabled = config.log_enabled
+        self.middleware_manager = config.middleware_manager
 
     async def close(self) -> None:
         """Close the client connection"""
@@ -776,6 +1136,148 @@ class TradingClient:
         """Add middleware to the chain"""
         self.middlewares.append(middleware)
         return self
+
+    def with_middleware_manager(self, middleware_manager: Any) -> "TradingClient":
+        """Attach a Rust-style middleware manager to this client."""
+        self.middleware_manager = middleware_manager
+        return self
+
+    def _apply_protocol_middlewares(
+        self,
+        instructions: List[Instruction],
+        dex_type: DexType,
+        is_buy: bool,
+    ) -> List[Instruction]:
+        if self.middleware_manager is not None:
+            instructions = self.middleware_manager.apply_middlewares_process_protocol_instructions(
+                instructions,
+                dex_type.value,
+                is_buy,
+            )
+        return instructions
+
+    def _apply_full_middlewares(
+        self,
+        instructions: List[Instruction],
+        trade_type: TradeType,
+        dex_type: Optional[DexType] = None,
+    ) -> List[Instruction]:
+        if self.middleware_manager is not None and dex_type is not None:
+            instructions = self.middleware_manager.apply_middlewares_process_full_instructions(
+                instructions,
+                dex_type.value,
+                getattr(trade_type, "value", trade_type) == "Buy",
+            )
+        return instructions
+
+    def _gas_for_trade(
+        self,
+        trade_type: TradeType,
+        gas_fee_strategy: Optional[Any],
+    ) -> tuple[int, int, int]:
+        gas = gas_fee_strategy or _FlatGasFeeStrategy()
+        trade_value = getattr(trade_type, "value", trade_type)
+        if hasattr(gas, "buy_priority_fee"):
+            if trade_value == "Buy":
+                return gas.buy_priority_fee, gas.buy_compute_units, gas.buy_tip_lamports
+            return gas.sell_priority_fee, gas.sell_compute_units, gas.sell_tip_lamports
+
+        try:
+            from .common.types import (
+                GasFeeStrategyType as CommonGasFeeStrategyType,
+                SwqosType as CommonSwqosType,
+                TradeType as CommonTradeType,
+            )
+
+            common_trade_type = (
+                CommonTradeType.BUY if trade_value == "Buy" else CommonTradeType.SELL
+            )
+            value = gas.get(
+                CommonSwqosType.DEFAULT,
+                common_trade_type,
+                CommonGasFeeStrategyType.NORMAL,
+            )
+            if value is not None:
+                return value.cu_price, value.cu_limit, int(value.tip * 1_000_000_000)
+        except Exception:
+            pass
+
+        if trade_value == "Buy":
+            return gas.buy_priority_fee, gas.buy_compute_units, gas.buy_tip_lamports
+        return gas.sell_priority_fee, gas.sell_compute_units, gas.sell_tip_lamports
+
+    def _build_wired_instructions(
+        self,
+        instructions: List[Instruction],
+        trade_type: TradeType,
+        gas_fee_strategy: Optional[Any],
+        with_tip: bool,
+        durable_nonce: Optional[DurableNonceInfo],
+        dex_type: Optional[DexType] = None,
+        tip_recipient: Optional[Pubkey] = None,
+    ) -> List[Instruction]:
+        out: List[Instruction] = []
+        if durable_nonce:
+            out.append(system_program.advance_nonce_account(
+                system_program.AdvanceNonceAccountParams(
+                    nonce_pubkey=durable_nonce.nonce_account,
+                    authorized_pubkey=durable_nonce.authority,
+                )
+            ))
+
+        unit_price, unit_limit, tip_lamports = self._gas_for_trade(trade_type, gas_fee_strategy)
+        if with_tip and tip_recipient is not None and tip_lamports > 0:
+            out.append(system_program.transfer(
+                system_program.TransferParams(
+                    from_pubkey=self.payer.pubkey(),
+                    to_pubkey=tip_recipient,
+                    lamports=tip_lamports,
+                )
+            ))
+
+        if unit_price > 0:
+            out.append(compute_budget.set_compute_unit_price(unit_price))
+        if unit_limit > 0:
+            out.append(compute_budget.set_compute_unit_limit(unit_limit))
+        out.extend(instructions)
+        return self._apply_full_middlewares(out, trade_type, dex_type)
+
+    def _build_transaction(
+        self,
+        instructions: List[Instruction],
+        blockhash: str,
+        address_lookup_table_account: Optional[Any],
+    ) -> Union[Transaction, VersionedTransaction]:
+        parsed_blockhash = Blockhash.from_string(blockhash)
+        lookup_tables = []
+        if address_lookup_table_account is not None:
+            lookup_tables = [address_lookup_table_account]
+        if lookup_tables:
+            message = MessageV0.try_compile(
+                self.payer.pubkey(),
+                instructions,
+                lookup_tables,
+                parsed_blockhash,
+            )
+            transaction = VersionedTransaction(message, [self.payer])
+            serialized_len = len(bytes(transaction))
+            if serialized_len > PACKET_DATA_SIZE:
+                raise ValueError(
+                    f"transaction too large: {serialized_len} > {PACKET_DATA_SIZE}; SDK did not remove compute budget or relay tip because that changes transaction priority semantics. Use an address lookup table or pre-create token ATAs before submitting"
+                )
+            return transaction
+
+        message = Message.new_with_blockhash(
+            instructions, self.payer.pubkey(), parsed_blockhash
+        )
+        transaction = Transaction.new_unsigned(message)
+        transaction.sign([self.payer], parsed_blockhash)
+        serialized_len = len(bytes(transaction))
+        if serialized_len > PACKET_DATA_SIZE:
+            raise ValueError(
+                f"transaction too large: {serialized_len} > {PACKET_DATA_SIZE}; SDK did not remove compute budget or relay tip because that changes transaction priority semantics. Use an address lookup table or pre-create token ATAs before submitting"
+            )
+        return transaction
 
     async def get_latest_blockhash(self) -> Blockhash:
         """Get latest blockhash"""
@@ -821,12 +1323,21 @@ class TradingClient:
                 if params.use_exact_sol_amount is not None
                 else True,
             )
-        elif params.dex_type in (DexType.RAYDIUM_AMM_V4, DexType.METEORA_DAMM_V2):
+        elif params.dex_type in (
+            DexType.RAYDIUM_CPMM,
+            DexType.RAYDIUM_AMM_V4,
+            DexType.METEORA_DAMM_V2,
+        ):
             buy_kwargs.update(
                 create_input_ata=params.create_input_token_ata,
                 fixed_output_amount=params.fixed_output_token_amount,
             )
         instructions = await builder.build_buy_instructions(**buy_kwargs)
+        instructions = self._apply_protocol_middlewares(
+            instructions,
+            params.dex_type,
+            True,
+        )
 
         # Process middlewares
         for middleware in self.middlewares:
@@ -834,8 +1345,22 @@ class TradingClient:
 
         # Execute transaction
         return await self._execute_transaction(
-            instructions, params.recent_blockhash, params.wait_tx_confirmed
+            instructions,
+            params.recent_blockhash,
+            params.wait_tx_confirmed,
+            trade_type=TradeType.BUY,
+            address_lookup_table_account=params.address_lookup_table_account,
+            durable_nonce=params.durable_nonce,
+            gas_fee_strategy=params.gas_fee_strategy,
+            simulate=params.simulate,
+            with_tip=True,
+            dex_type=params.dex_type,
+            wait_for_all_submits=params.wait_for_all_submits,
         )
+
+    async def buy_simple(self, params: SimpleBuyParams) -> TradeResult:
+        """Execute a high-level buy request."""
+        return await self.buy(simple_buy_params_to_trade_buy_params(params))
 
     async def sell(self, params: TradeSellParams) -> TradeResult:
         """
@@ -872,18 +1397,41 @@ class TradingClient:
             sell_kwargs.update(
                 fixed_output_amount=params.fixed_output_token_amount,
             )
-        elif params.dex_type in (DexType.RAYDIUM_AMM_V4, DexType.METEORA_DAMM_V2):
+        elif params.dex_type in (
+            DexType.RAYDIUM_CPMM,
+            DexType.RAYDIUM_AMM_V4,
+            DexType.METEORA_DAMM_V2,
+        ):
             sell_kwargs.update(
                 fixed_output_amount=params.fixed_output_token_amount,
             )
         instructions = await builder.build_sell_instructions(**sell_kwargs)
+        instructions = self._apply_protocol_middlewares(
+            instructions,
+            params.dex_type,
+            False,
+        )
 
         for middleware in self.middlewares:
             instructions = await middleware.process(instructions)
 
         return await self._execute_transaction(
-            instructions, params.recent_blockhash, params.wait_tx_confirmed
+            instructions,
+            params.recent_blockhash,
+            params.wait_tx_confirmed,
+            trade_type=TradeType.SELL,
+            address_lookup_table_account=params.address_lookup_table_account,
+            durable_nonce=params.durable_nonce,
+            gas_fee_strategy=params.gas_fee_strategy,
+            simulate=params.simulate,
+            with_tip=params.with_tip,
+            dex_type=params.dex_type,
+            wait_for_all_submits=params.wait_for_all_submits,
         )
+
+    async def sell_simple(self, params: SimpleSellParams) -> TradeResult:
+        """Execute a high-level sell request."""
+        return await self.sell(simple_sell_params_to_trade_sell_params(params))
 
     async def sell_by_percent(
         self, params: TradeSellParams, total_amount: int, percent: int
@@ -936,7 +1484,8 @@ class TradingClient:
         instructions: List[Instruction],
         operation: str,
     ) -> str:
-        result = await self._execute_transaction(instructions, None, True)
+        blockhash = str(await self.get_latest_blockhash())
+        result = await self._execute_transaction(instructions, blockhash, False)
         if not result.success or not result.signatures:
             raise RuntimeError(result.error or f"{operation} failed")
         return result.signatures[0]
@@ -967,28 +1516,173 @@ class TradingClient:
         instructions: List[Instruction],
         blockhash: Optional[str],
         wait_confirmed: bool,
+        trade_type: TradeType = TradeType.BUY,
+        address_lookup_table_account: Optional[Any] = None,
+        durable_nonce: Optional[DurableNonceInfo] = None,
+        gas_fee_strategy: Optional[Any] = None,
+        simulate: bool = False,
+        with_tip: bool = False,
+        dex_type: Optional[DexType] = None,
+        tip_recipient: Optional[Pubkey] = None,
+        wait_for_all_submits: bool = False,
     ) -> TradeResult:
         """Execute transaction with instructions"""
         try:
-            if blockhash is None:
+            effective_blockhash = (durable_nonce.nonce_hash if durable_nonce else None) or blockhash
+            if effective_blockhash is None:
                 return TradeResult(
                     success=False,
                     signatures=[],
-                    error="recent_blockhash is required; trade execution hot path does not query RPC for blockhash",
+                    error="recent_blockhash or durable_nonce.nonce_hash is required; trade execution hot path does not query RPC for blockhash",
                 )
 
-            message = Message.new_with_blockhash(
-                instructions, self.payer.pubkey(), Pubkey.from_string(blockhash)
+            wired_instructions = self._build_wired_instructions(
+                instructions,
+                trade_type,
+                gas_fee_strategy,
+                with_tip,
+                durable_nonce,
+                dex_type,
+                tip_recipient,
+            )
+            transaction = self._build_transaction(
+                wired_instructions,
+                effective_blockhash,
+                address_lookup_table_account,
             )
 
-            transaction = Transaction.new_unsigned(message)
-            transaction.sign([self.payer], Pubkey.from_string(blockhash))
+            if simulate:
+                sim = await self.client.simulate_transaction(
+                    transaction,
+                    sig_verify=False,
+                    commitment=Commitment("processed"),
+                )
+                value = sim.value
+                err = value.err
+                return TradeResult(
+                    success=err is None,
+                    signatures=[],
+                    error=f"Simulation failed: {err}" if err is not None else None,
+                    simulation={
+                        "units_consumed": value.units_consumed,
+                        "logs": value.logs,
+                    },
+                )
+
+            configured_swqos = self.config.swqos_configs or []
+            has_non_default_swqos = any(
+                getattr(cfg.type, "value", cfg.type) != "Default"
+                for cfg in configured_swqos
+            )
+            swqos_configs = configured_swqos if has_non_default_swqos else []
+            if swqos_configs:
+                from .swqos.clients import ClientFactory as SwqosClientFactory, SwqosConfig as SenderSwqosConfig
+
+                if (
+                    getattr(trade_type, "value", trade_type) == "Buy"
+                    and len(swqos_configs) > 1
+                    and durable_nonce is None
+                ):
+                    return TradeResult(
+                        success=False,
+                        signatures=[],
+                        error="Multiple SWQOS transactions require durable_nonce to be set",
+                    )
+
+                submit_results: List[str] = []
+                errors: List[str] = []
+                tasks = []
+                for cfg in swqos_configs:
+                    sender_cfg = SenderSwqosConfig(
+                        type=cfg.type,
+                        region=cfg.region,
+                        custom_url=cfg.custom_url,
+                        api_key=cfg.api_key,
+                        mev_protection=cfg.mev_protection,
+                        transport=cfg.transport,
+                        astralane_transport=cfg.astralane_transport,
+                        swqos_only=cfg.swqos_only,
+                    )
+                    client = SwqosClientFactory.create_client(sender_cfg, self.config.rpc_url)
+                    tip_recipient_for_client: Optional[Pubkey] = None
+                    if with_tip and getattr(cfg.type, "value", cfg.type) != "Default":
+                        tip_account = client.get_tip_account()
+                        if tip_account:
+                            tip_recipient_for_client = Pubkey.from_string(tip_account)
+                    tx_for_client = self._build_transaction(
+                        self._build_wired_instructions(
+                            instructions,
+                            trade_type,
+                            gas_fee_strategy,
+                            with_tip,
+                            durable_nonce,
+                            dex_type,
+                            tip_recipient_for_client,
+                        ),
+                        effective_blockhash,
+                        address_lookup_table_account,
+                    )
+                    tasks.append(client.send_transaction(trade_type, bytes(tx_for_client), wait_confirmed))
+
+                if not wait_confirmed and not wait_for_all_submits:
+                    for pending in asyncio.as_completed(tasks):
+                        try:
+                            signature = await pending
+                            submit_results.append(str(signature))
+                            break
+                        except Exception as exc:
+                            errors.append(str(exc))
+                else:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for item in results:
+                        if isinstance(item, Exception):
+                            errors.append(str(item))
+                        else:
+                            submit_results.append(str(item))
+
+                if not submit_results:
+                    return TradeResult(
+                        success=False,
+                        signatures=[],
+                        error="; ".join(errors) or "All SWQOS submissions failed",
+                    )
+
+                if wait_confirmed:
+                    from .trading.executor import poll_for_confirmation_error
+
+                    confirmed = False
+                    last_confirm_error: Optional[str] = None
+                    for signature in submit_results:
+                        ok, confirm_error = await poll_for_confirmation_error(self.config.rpc_url, signature)
+                        if ok:
+                            confirmed = True
+                            break
+                        last_confirm_error = confirm_error
+                    if not confirmed:
+                        return TradeResult(
+                            success=False,
+                            signatures=submit_results,
+                            error=last_confirm_error or "transaction confirmation failed",
+                        )
+
+                return TradeResult(
+                    success=True,
+                    signatures=submit_results,
+                )
 
             sig = await self.client.send_raw_transaction(bytes(transaction))
             signature = sig.value
 
             if wait_confirmed:
-                await self.client.confirm_transaction(signature)
+                from .trading.executor import poll_for_confirmation_error
+
+                ok, confirm_error = await poll_for_confirmation_error(self.config.rpc_url, str(signature))
+                if not ok:
+                    return TradeResult(
+                        success=False,
+                        signatures=[str(signature)],
+                        error=confirm_error or "transaction confirmation failed",
+                    )
 
             return TradeResult(
                 success=True,
@@ -1005,9 +1699,9 @@ class TradingClient:
 # ============== Helper Functions ==============
 
 
-def create_gas_fee_strategy() -> GasFeeStrategy:
+def create_flat_gas_fee_strategy() -> _FlatGasFeeStrategy:
     """Create a new gas fee strategy with defaults"""
-    return GasFeeStrategy()
+    return _FlatGasFeeStrategy()
 
 
 def create_trade_config(
@@ -1051,7 +1745,6 @@ from .common.types import (
     TradeType,
     SwqosType,
     BondingCurveAccount,
-    DurableNonceInfo,
     NonceCache,
 )
 from .common.gas_fee_strategy import create_gas_fee_strategy
@@ -1139,6 +1832,9 @@ __all__ = [
     # Enums
     "DexType",
     "TradeTokenType",
+    "AccountPolicy",
+    "BuyAmount",
+    "SellAmount",
     "TradeType",
     "SwqosRegion",
     "SwqosType",
@@ -1163,6 +1859,8 @@ __all__ = [
     # Trade Params
     "TradeBuyParams",
     "TradeSellParams",
+    "SimpleBuyParams",
+    "SimpleSellParams",
     # Client
     "TradeConfig",
     "TradeConfigBuilder",
@@ -1171,6 +1869,8 @@ __all__ = [
     "create_gas_fee_strategy",
     "create_trade_config",
     "recommended_sender_thread_core_indices",
+    "simple_buy_params_to_trade_buy_params",
+    "simple_sell_params_to_trade_sell_params",
     "compute_fee",
     "ceil_div",
     "calculate_with_slippage_buy",
