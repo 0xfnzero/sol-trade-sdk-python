@@ -71,6 +71,17 @@
 | **Python** | [sol-trade-sdk-python](https://github.com/0xfnzero/sol-trade-sdk-python) | 原生 async/await 支持 |
 | **Go** | [sol-trade-sdk-golang](https://github.com/0xfnzero/sol-trade-sdk-golang) | 并发安全，goroutine 支持 |
 
+## 这个 SDK 适合什么场景
+
+`sol-trade-sdk-python` 将 FnZero Solana 交易 SDK 带到 Python 生态，适合异步交易机器人、跟单管道、狙击机器人、研究自动化和后端服务，在保持 Rust SDK 行为对齐的同时提供低延迟 Solana DEX 交易构建能力。
+
+| 方向 | 覆盖范围 |
+|------|----------|
+| DEX 协议 | PumpFun、PumpSwap、Bonk、Meteora DAMM v2、Raydium AMM v4、Raydium CPMM |
+| 提交通道 | 默认 Solana RPC，以及 Jito、Nextblock、ZeroSlot、Temporal、Bloxroute、FlashBlock、BlockRazor、Node1、Astralane、Solami 等 SWQoS 服务 |
+| 交易流程 | `buy_simple` / `sell_simple`、旧版 buy/sell 参数、跟单交易、狙击交易、地址查找表、durable nonce、中间件、共享基础设施 |
+| 运行环境 | Python 3.9+、异步服务、研究脚本和低延迟 Bot 基础设施 |
+
 ## 🔖 当前版本
 
 **PyPI package:** `sol-trade-sdk==0.1.2`

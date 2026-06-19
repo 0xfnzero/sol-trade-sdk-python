@@ -71,6 +71,17 @@ This SDK is available in multiple languages:
 | **Python** | [sol-trade-sdk-python](https://github.com/0xfnzero/sol-trade-sdk-python) | Async/await native support |
 | **Go** | [sol-trade-sdk-golang](https://github.com/0xfnzero/sol-trade-sdk-golang) | Concurrent-safe with goroutine support |
 
+## What This SDK Is For
+
+`sol-trade-sdk-python` brings the FnZero Solana trading SDK to Python. It is built for async trading bots, copy-trading pipelines, sniper bots, research automation, and backend services that need low-latency Solana DEX trade construction with Rust SDK behavior parity.
+
+| Area | Coverage |
+|------|----------|
+| DEX protocols | PumpFun, PumpSwap, Bonk, Meteora DAMM v2, Raydium AMM v4, Raydium CPMM |
+| Submit lanes | Default Solana RPC plus Jito, Nextblock, ZeroSlot, Temporal, Bloxroute, FlashBlock, BlockRazor, Node1, Astralane, Solami, and other SWQoS providers |
+| Trading workflows | `buy_simple` / `sell_simple`, legacy buy/sell params, copy trading, sniper trading, address lookup tables, durable nonce, middleware, shared infrastructure |
+| Runtime | Python 3.9+, async services, research scripts, and latency-sensitive bot infrastructure |
+
 ## 🔖 Current Release
 
 **PyPI package:** `sol-trade-sdk==0.1.2`
