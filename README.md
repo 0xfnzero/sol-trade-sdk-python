@@ -84,7 +84,7 @@ This SDK is available in multiple languages:
 
 ## 🔖 Current Release
 
-**PyPI package:** `sol-trade-sdk==0.1.2`
+**PyPI package:** `sol-trade-sdk==0.1.3`
 
 This release refreshes PumpFun V2 and USDC quote-pool handling, keeps the default RPC submit lane active alongside SWQoS lanes, and aligns Raydium CPMM fixed-output swaps with the on-chain `swap_base_out` instruction. Trade execution requires a caller-supplied `recent_blockhash` or durable nonce; hot-path execution does not query RPC for blockhash, account, or balance data.
 
@@ -143,7 +143,7 @@ dependencies = [
 ### Use PyPI
 
 ```bash
-pip install sol-trade-sdk==0.1.2
+pip install sol-trade-sdk==0.1.3
 ```
 
 ## 🛠️ Usage Examples
