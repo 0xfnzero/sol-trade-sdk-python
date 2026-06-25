@@ -76,6 +76,10 @@ from .providers import (
     SwqosManager,
 )
 
+# SwqosClientFactory.get_supported_types() is the Rust v4.0.21 parity provider
+# surface. NextBlock is still Rust-blacklisted; Triton/QuickNode/Syndica/
+# Figment/Alchemy remain source-compatible legacy classes, not parity trading
+# providers.
 __all__ = [
     # Core clients (from clients.py)
     "SwqosClient",

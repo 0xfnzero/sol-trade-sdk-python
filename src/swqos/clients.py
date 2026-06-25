@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from enum import Enum
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import aiohttp
 import base58
@@ -480,6 +480,33 @@ class TradeError(Exception):
         return f"TradeError(code={self.code}, message={self.message})"
 
 
+def _raise_for_http_status(resp: Any, body: Any = None) -> None:
+    status = getattr(resp, "status", 200)
+    if 200 <= status < 300:
+        return
+    message = ""
+    if isinstance(body, dict):
+        err = body.get("error") or body.get("reason") or body.get("message")
+        if isinstance(err, dict):
+            message = str(err.get("message") or err)
+        elif err:
+            message = str(err)
+    elif body is not None:
+        message = str(body)
+    message = message.strip() or getattr(resp, "reason", "") or "HTTP error"
+    raise TradeError(code=status, message=f"HTTP error: {message}")
+
+
+def _extract_signature(data: Any) -> str:
+    if isinstance(data, dict):
+        value = data.get("signature", data.get("result"))
+        if isinstance(value, str) and value:
+            return value
+    elif isinstance(data, str) and data:
+        return data
+    raise TradeError(code=500, message="missing transaction signature in submit response")
+
+
 # ===== Interfaces =====
 
 class SwqosClient(ABC):
@@ -619,13 +646,14 @@ class JitoClient(SwqosClient, HTTPClientMixin):
         async with session.post(url, json=payload, headers=headers) as resp:
             data = await resp.json()
 
+        _raise_for_http_status(resp, data)
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500),
                 message=data["error"].get("message", "Unknown error"),
             )
 
-        return data["result"]
+        return _extract_signature(data)
 
     async def send_transactions(
         self,
@@ -653,13 +681,14 @@ class JitoClient(SwqosClient, HTTPClientMixin):
         async with session.post(url, json=payload, headers=headers) as resp:
             data = await resp.json()
 
+        _raise_for_http_status(resp, data)
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500),
                 message=data["error"].get("message", "Unknown error"),
             )
 
-        bundle_id = data["result"]
+        bundle_id = _extract_signature(data)
         # Return bundle_id for each transaction as placeholder
         return [bundle_id] * len(transactions)
 
@@ -720,10 +749,11 @@ class BloxrouteClient(SwqosClient, HTTPClientMixin):
         async with session.post(url, json=payload, headers=headers) as resp:
             data = await resp.json()
 
+        _raise_for_http_status(resp, data)
         if "reason" in data and data.get("reason"):
             raise TradeError(code=500, message=data["reason"])
 
-        return data.get("signature", data.get("result", ""))
+        return _extract_signature(data)
 
     async def send_transactions(
         self,
@@ -801,13 +831,14 @@ class ZeroSlotClient(SwqosClient, HTTPClientMixin):
         async with session.post(url, json=payload, headers=headers) as resp:
             data = await resp.json()
 
+        _raise_for_http_status(resp, data)
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
                 message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
             )
 
-        return data["result"]
+        return _extract_signature(data)
 
     async def send_transactions(
         self,
@@ -882,13 +913,14 @@ class TemporalClient(SwqosClient, HTTPClientMixin):
         async with session.post(url, json=payload, headers=headers) as resp:
             data = await resp.json()
 
+        _raise_for_http_status(resp, data)
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
                 message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
             )
 
-        return data["result"]
+        return _extract_signature(data)
 
     async def send_transactions(
         self,
@@ -955,6 +987,7 @@ class FlashBlockClient(SwqosClient, HTTPClientMixin):
         async with session.post(url, json=payload, headers=headers) as resp:
             data = await resp.json()
 
+        _raise_for_http_status(resp, data)
         if isinstance(data, dict) and "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
@@ -967,10 +1000,10 @@ class FlashBlockClient(SwqosClient, HTTPClientMixin):
             if isinstance(item, dict):
                 if "error" in item:
                     raise TradeError(code=500, message=str(item["error"]))
-                return item.get("signature", item.get("result", ""))
+                return _extract_signature(item)
         if isinstance(data, dict):
-            return data.get("signature", data.get("result", ""))
-        return str(data)
+            return _extract_signature(data)
+        return _extract_signature(str(data))
 
     async def send_transactions(
         self,
@@ -994,15 +1027,16 @@ class FlashBlockClient(SwqosClient, HTTPClientMixin):
         async with session.post(url, json=payload, headers=headers) as resp:
             data = await resp.json()
 
+        _raise_for_http_status(resp, data)
         if isinstance(data, list):
             results = []
             for item in data:
                 if isinstance(item, dict):
                     if "error" in item:
                         raise TradeError(code=500, message=str(item["error"]))
-                    results.append(item.get("signature", item.get("result", "")))
+                    results.append(_extract_signature(item))
                 else:
-                    results.append(str(item))
+                    results.append(_extract_signature(str(item)))
             return results
 
         if isinstance(data, dict) and "error" in data:
@@ -1045,9 +1079,15 @@ class HeliusClient(SwqosClient, HTTPClientMixin):
         self._tip_account = _random_tip_account(HELIUS_TIP_ACCOUNTS)
 
     def _build_url(self) -> str:
+        params = {}
         if self.api_key:
-            return f"{self.endpoint}?api-key={self.api_key}"
-        return self.endpoint
+            params["api-key"] = self.api_key
+        if self.swqos_only:
+            params["swqos_only"] = "true"
+        if not params:
+            return self.endpoint
+        separator = "&" if "?" in self.endpoint else "?"
+        return f"{self.endpoint}{separator}{urlencode(params)}"
 
     async def send_transaction(
         self,
@@ -1078,13 +1118,14 @@ class HeliusClient(SwqosClient, HTTPClientMixin):
         async with session.post(url, json=payload, headers=headers) as resp:
             data = await resp.json()
 
+        _raise_for_http_status(resp, data)
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
                 message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
             )
 
-        return data["result"]
+        return _extract_signature(data)
 
     async def send_transactions(
         self,
@@ -1142,13 +1183,14 @@ class DefaultClient(SwqosClient, HTTPClientMixin):
         async with session.post(self.rpc_url, json=payload, headers=headers) as resp:
             data = await resp.json()
 
+        _raise_for_http_status(resp, data)
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
                 message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
             )
 
-        return data["result"]
+        return _extract_signature(data)
 
     async def send_transactions(
         self,
@@ -1220,13 +1262,14 @@ class Node1Client(SwqosClient, HTTPClientMixin):
         async with session.post(self.endpoint, json=payload, headers=headers) as resp:
             data = await resp.json()
 
+        _raise_for_http_status(resp, data)
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
                 message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
             )
 
-        return data["result"]
+        return _extract_signature(data)
 
     async def send_transactions(
         self,
@@ -1299,17 +1342,21 @@ class BlockRazorClient(SwqosClient, HTTPClientMixin):
         async with session.post(url, data=encoded, headers=headers) as resp:
             text = await resp.text()
 
+        if resp.status < 200 or resp.status >= 300:
+            message = text.strip() or getattr(resp, "reason", "") or "HTTP error"
+            raise TradeError(code=resp.status, message=f"HTTP error: {message}")
+
         # BlockRazor returns the signature as plain text or JSON
         try:
             data = json.loads(text)
             if isinstance(data, dict):
                 if "error" in data:
                     raise TradeError(code=500, message=str(data["error"]))
-                return data.get("signature", data.get("result", text))
+                return _extract_signature(data)
         except (json.JSONDecodeError, ValueError):
             pass
 
-        return text.strip()
+        return _extract_signature(text.strip())
 
     async def send_transactions(
         self,
@@ -1339,11 +1386,8 @@ class AstralaneClient(SwqosClient, HTTPClientMixin):
     """
     Astralane SWQOS client implementation.
 
-    Note: Rust SDK uses bincode serialization (octet-stream).
-    Python fallback uses JSON-RPC format (simplified implementation).
-
     URL:    {endpoint}?api-key={token}&method=sendTransaction
-    Body:   JSON-RPC sendTransaction (base64 encoding)
+    Body:   raw serialized transaction bytes (application/octet-stream)
     """
 
     def __init__(
@@ -1358,11 +1402,12 @@ class AstralaneClient(SwqosClient, HTTPClientMixin):
         self._tip_account = _random_tip_account(ASTRALANE_TIP_ACCOUNTS)
 
     def _build_url(self) -> str:
-        params = []
+        params = {}
         if self.auth_token:
-            params.append(f"api-key={self.auth_token}")
-        params.append("method=sendTransaction")
-        return f"{self.endpoint}?{'&'.join(params)}"
+            params["api-key"] = self.auth_token
+        params["method"] = "sendTransaction"
+        separator = "&" if "?" in self.endpoint else "?"
+        return f"{self.endpoint}{separator}{urlencode(params)}"
 
     async def send_transaction(
         self,
@@ -1370,33 +1415,34 @@ class AstralaneClient(SwqosClient, HTTPClientMixin):
         transaction: bytes,
         wait_confirmation: bool = False,
     ) -> str:
-        encoded = base64.b64encode(transaction).decode()
-
-        # Simplified JSON-RPC fallback (Rust SDK uses bincode/octet-stream)
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "sendTransaction",
-            "params": [
-                encoded,
-                {"encoding": "base64"},
-            ],
-        }
-
         session = await self.get_session()
         url = self._build_url()
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/octet-stream"}
 
-        async with session.post(url, json=payload, headers=headers) as resp:
-            data = await resp.json()
+        async with session.post(url, data=transaction, headers=headers) as resp:
+            text = await resp.text()
 
-        if "error" in data:
-            raise TradeError(
-                code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
-                message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
-            )
+        if resp.status < 200 or resp.status >= 300:
+            message = text.strip() or getattr(resp, "reason", "") or "HTTP error"
+            raise TradeError(code=resp.status, message=f"HTTP error: {message}")
 
-        return data["result"]
+        if text:
+            try:
+                data = json.loads(text)
+                if isinstance(data, dict):
+                    if "error" in data:
+                        raise TradeError(
+                            code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
+                            message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
+                        )
+                    if isinstance(data.get("result"), str):
+                        return data["result"]
+                    if isinstance(data.get("signature"), str):
+                        return data["signature"]
+            except json.JSONDecodeError:
+                return text.strip()
+
+        return _signature_from_serialized_transaction(transaction)
 
     async def send_transactions(
         self,
@@ -1471,13 +1517,14 @@ class StelliumClient(SwqosClient, HTTPClientMixin):
         async with session.post(url, json=payload, headers=headers) as resp:
             data = await resp.json()
 
+        _raise_for_http_status(resp, data)
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
                 message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
             )
 
-        return data["result"]
+        return _extract_signature(data)
 
     async def send_transactions(
         self,
@@ -1552,13 +1599,14 @@ class LightspeedClient(SwqosClient, HTTPClientMixin):
         async with session.post(self.endpoint, json=payload, headers=headers) as resp:
             data = await resp.json()
 
+        _raise_for_http_status(resp, data)
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
                 message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
             )
 
-        return data["result"]
+        return _extract_signature(data)
 
     async def send_transactions(
         self,
@@ -1627,6 +1675,7 @@ class NextBlockClient(SwqosClient, HTTPClientMixin):
         async with session.post(url, json=payload, headers=headers) as resp:
             data = await resp.json()
 
+        _raise_for_http_status(resp, data)
         if isinstance(data, dict) and "reason" in data and data.get("reason"):
             raise TradeError(code=500, message=data["reason"])
         if isinstance(data, dict) and "error" in data:
@@ -1636,8 +1685,8 @@ class NextBlockClient(SwqosClient, HTTPClientMixin):
             )
 
         if isinstance(data, dict):
-            return data.get("signature", data.get("result", ""))
-        return str(data)
+            return _extract_signature(data)
+        return _extract_signature(str(data))
 
     async def send_transactions(
         self,
@@ -2029,8 +2078,7 @@ class SpeedlandingClient(SwqosClient):
 
     Transport: QUIC with self-signed Ed25519 cert, ALPN "solana-tpu".
     Endpoint:  host:port (e.g. nyc.speedlanding.trade:17778)
-    SNI:       derived from hostname (e.g. "nyc.speedlanding.trade"),
-               falls back to "speed-landing" for bare IPs (matches Rust SDK).
+    SNI:       fixed "speed-landing" to match Rust SDK.
     Requires:  pip install aioquic cryptography
     """
 
@@ -2043,12 +2091,7 @@ class SpeedlandingClient(SwqosClient):
         parts = endpoint.rsplit(":", 1)
         self._host = parts[0]
         self._port = int(parts[1]) if len(parts) == 2 else 17778
-        # Derive SNI: use hostname unless it's a bare IP
-        try:
-            ipaddress.ip_address(self._host)
-            self._server_name = "speed-landing"
-        except ValueError:
-            self._server_name = self._host
+        self._server_name = "speed-landing"
 
     async def send_transaction(
         self,

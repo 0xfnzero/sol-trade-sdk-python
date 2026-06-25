@@ -1574,15 +1574,23 @@ class TradingClient:
                 getattr(cfg.type, "value", cfg.type) != "Default"
                 for cfg in configured_swqos
             )
-            swqos_configs = configured_swqos if has_non_default_swqos else []
+            if has_non_default_swqos and not with_tip:
+                swqos_configs = [
+                    cfg
+                    for cfg in configured_swqos
+                    if getattr(cfg.type, "value", cfg.type) == "Default"
+                ]
+            else:
+                swqos_configs = configured_swqos if has_non_default_swqos else []
             if swqos_configs:
                 from .swqos.clients import ClientFactory as SwqosClientFactory, SwqosConfig as SenderSwqosConfig
 
-                if (
-                    getattr(trade_type, "value", trade_type) == "Buy"
-                    and len(swqos_configs) > 1
-                    and durable_nonce is None
-                ):
+                non_default_count = sum(
+                    1
+                    for cfg in swqos_configs
+                    if getattr(cfg.type, "value", cfg.type) != "Default"
+                )
+                if non_default_count > 1 and durable_nonce is None:
                     return TradeResult(
                         success=False,
                         signatures=[],

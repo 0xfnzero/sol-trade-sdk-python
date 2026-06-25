@@ -3,6 +3,7 @@ Tests for Sol Trade SDK - Python
 """
 
 import asyncio
+import base64
 from types import SimpleNamespace
 import pytest
 from solders.pubkey import Pubkey
@@ -45,8 +46,11 @@ from sol_trade_sdk import (
 from sol_trade_sdk.swqos.clients import (
     ASTRALANE_ENDPOINTS,
     ASTRALANE_QUIC_HOSTS,
+    AstralaneClient as SenderAstralaneClient,
     BLOXROUTE_ENDPOINTS,
+    BloxrouteClient as SenderBloxrouteClient,
     BLOCK_RAZOR_ENDPOINTS,
+    BlockRazorClient as SenderBlockRazorClient,
     ClientFactory as SenderClientFactory,
     MIN_TIP_DEFAULT,
     MIN_TIP_SOLAMI,
@@ -54,11 +58,16 @@ from sol_trade_sdk.swqos.clients import (
     SOYAS_ENDPOINTS,
     SolamiClient,
     SPEEDLANDING_ENDPOINTS,
+    SpeedlandingClient as SenderSpeedlandingClient,
     STELLIUM_ENDPOINTS,
     SwqosConfig as SenderSwqosConfig,
     SwqosRegion as SenderSwqosRegion,
     SwqosType as SenderSwqosType,
     _signature_from_serialized_transaction,
+)
+from sol_trade_sdk.swqos.advanced_clients import (
+    ClientFactory as AdvancedClientFactory,
+    SwqosConfig as AdvancedSwqosConfig,
 )
 from sol_trade_sdk.trading.executor import (
     TradeConfig as ExecutorTradeConfig,
@@ -80,6 +89,7 @@ from sol_trade_sdk.trading.core.async_executor import (
 from sol_trade_sdk.swqos.providers import (
     SwqosConfig as ProviderSwqosConfig,
     SwqosManager,
+    SwqosRegion as ProviderSwqosRegion,
     SwqosType as ProviderSwqosType,
     TransactionResult,
 )
@@ -97,6 +107,9 @@ class _FakeSwqosClient:
             raise RuntimeError("submit failed")
         return self.signature
 
+    def get_tip_account(self):
+        return ""
+
 
 class _FakeProviderClient:
     def __init__(self, swqos_type: ProviderSwqosType, signature: str, delay: float = 0.0):
@@ -113,6 +126,37 @@ class _FakeProviderClient:
             signature=self.signature,
             provider=self.config.swqos_type.value,
         )
+
+
+class _MockPostResponse:
+    def __init__(self, text: str, status: int = 200, reason: str = "OK"):
+        self._text = text
+        self.status = status
+        self.reason = reason
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def text(self):
+        return self._text
+
+    async def json(self):
+        return {} if self._text == "" else __import__("json").loads(self._text)
+
+
+class _MockSession:
+    def __init__(self, response_text: str = "", status: int = 200, reason: str = "OK"):
+        self.response_text = response_text
+        self.status = status
+        self.reason = reason
+        self.calls = []
+
+    def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return _MockPostResponse(self.response_text, self.status, self.reason)
 
 
 class _FakeSimValue:
@@ -762,6 +806,7 @@ class TestRootTradingClientExecution:
                 rpc_url="https://rpc.example",
                 swqos_configs=[
                     RootSwqosConfig(type=RootSwqosType.JITO, region=RootSwqosRegion.FRANKFURT),
+                    RootSwqosConfig(type=RootSwqosType.BLOXROUTE, region=RootSwqosRegion.FRANKFURT),
                 ],
             ),
         )
@@ -787,9 +832,20 @@ class TestRootTradingClientExecution:
             blockhash,
             False,
             trade_type=TradeType.BUY,
+            with_tip=True,
         )
         assert missing_nonce.success is False
         assert "durable_nonce" in missing_nonce.error
+
+        missing_sell_nonce = await client._execute_transaction(
+            [Instruction(Pubkey.default(), b"abc", [])],
+            blockhash,
+            False,
+            trade_type=TradeType.SELL,
+            with_tip=True,
+        )
+        assert missing_sell_nonce.success is False
+        assert "durable_nonce" in missing_sell_nonce.error
 
         nonce = RootDurableNonceInfo(
             nonce_account=Pubkey.from_bytes(bytes([6]) * 32),
@@ -805,6 +861,7 @@ class TestRootTradingClientExecution:
             False,
             trade_type=TradeType.BUY,
             durable_nonce=nonce,
+            with_tip=True,
         )
         assert first.signatures == ["sig-fast"]
 
@@ -815,9 +872,100 @@ class TestRootTradingClientExecution:
             False,
             trade_type=TradeType.BUY,
             durable_nonce=nonce,
+            with_tip=True,
             wait_for_all_submits=True,
         )
-        assert all_submits.signatures == ["sig-fast", "sig-slow"]
+        assert all_submits.signatures == ["sig-fast", "sig-slow", "sig-slow"]
+
+    @pytest.mark.asyncio
+    async def test_single_non_default_swqos_keeps_rpc_fallback_without_nonce(self, monkeypatch):
+        payer = Keypair()
+        blockhash = str(Hash.from_bytes(bytes([5]) * 32))
+        client = TradingClient(
+            payer,
+            RootTradeConfig(
+                rpc_url="https://rpc.example",
+                swqos_configs=[
+                    RootSwqosConfig(type=RootSwqosType.JITO, region=RootSwqosRegion.FRANKFURT),
+                ],
+            ),
+        )
+        client.client = _FakeRootRpcClient()
+
+        class FakeSenderFactory:
+            calls = 0
+
+            @staticmethod
+            def create_client(config, rpc_url):
+                FakeSenderFactory.calls += 1
+                if getattr(config.type, "value", config.type) == "Default":
+                    return _FakeSwqosClient("sig-rpc", 0.01)
+                return _FakeSwqosClient("sig-swqos", 0.0)
+
+        import sol_trade_sdk.swqos.clients as swqos_clients
+
+        monkeypatch.setattr(swqos_clients, "ClientFactory", FakeSenderFactory)
+
+        first = await client._execute_transaction(
+            [Instruction(Pubkey.default(), b"abc", [])],
+            blockhash,
+            False,
+            trade_type=TradeType.BUY,
+            with_tip=True,
+        )
+        assert first.success is True
+        assert first.signatures == ["sig-swqos"]
+
+        FakeSenderFactory.calls = 0
+        all_submits = await client._execute_transaction(
+            [Instruction(Pubkey.default(), b"abc", [])],
+            blockhash,
+            False,
+            trade_type=TradeType.SELL,
+            with_tip=True,
+            wait_for_all_submits=True,
+        )
+        assert all_submits.success is True
+        assert all_submits.signatures == ["sig-swqos", "sig-rpc"]
+
+    @pytest.mark.asyncio
+    async def test_sell_without_tip_uses_only_default_rpc_swqos(self, monkeypatch):
+        payer = Keypair()
+        blockhash = str(Hash.from_bytes(bytes([5]) * 32))
+        client = TradingClient(
+            payer,
+            RootTradeConfig(
+                rpc_url="https://rpc.example",
+                swqos_configs=[
+                    RootSwqosConfig(type=RootSwqosType.JITO, region=RootSwqosRegion.FRANKFURT),
+                ],
+            ),
+        )
+        client.client = _FakeRootRpcClient()
+        seen_types = []
+
+        class FakeSenderFactory:
+            @staticmethod
+            def create_client(config, rpc_url):
+                seen_types.append(getattr(config.type, "value", config.type))
+                return _FakeSwqosClient("sig-rpc", 0.0)
+
+        import sol_trade_sdk.swqos.clients as swqos_clients
+
+        monkeypatch.setattr(swqos_clients, "ClientFactory", FakeSenderFactory)
+
+        result = await client._execute_transaction(
+            [Instruction(Pubkey.default(), b"abc", [])],
+            blockhash,
+            False,
+            trade_type=TradeType.SELL,
+            with_tip=False,
+            wait_for_all_submits=True,
+        )
+
+        assert result.success is True
+        assert result.signatures == ["sig-rpc"]
+        assert seen_types == ["Default"]
 
 
 class TestSwqosSolami:
@@ -840,14 +988,13 @@ class TestSwqosSolami:
 
     def test_provider_factory_exposes_solami(self):
         from sol_trade_sdk.swqos.providers import (
-            SolamiClient as ProviderSolamiClient,
             SwqosClientFactory,
         )
 
         cfg = ProviderSwqosConfig(swqos_type=ProviderSwqosType.SOLAMI)
         client = SwqosClientFactory.create_client(cfg)
 
-        assert isinstance(client, ProviderSolamiClient)
+        assert client.config.swqos_type is ProviderSwqosType.SOLAMI
         assert ProviderSwqosType.TRITON not in SwqosClientFactory.get_supported_types()
         assert ProviderSwqosType.QUICKNODE not in SwqosClientFactory.get_supported_types()
         assert ProviderSwqosType.SYNDICA not in SwqosClientFactory.get_supported_types()
@@ -879,7 +1026,92 @@ class TestSwqosSolami:
         result = await client.submit_transaction(bytes([1] + [0] * 64))
 
         assert result.success is False
-        assert "QUIC path" in result.error
+        assert "Solami api_token is required" in result.error
+
+    @pytest.mark.asyncio
+    async def test_provider_blockrazor_delegates_to_rust_parity_sender(self, monkeypatch):
+        from sol_trade_sdk.swqos import providers
+
+        signature = "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3BbeqPevr5E1iCbpTjqHuTFLtfxTTD5ekfVuZFzQyEQf8"
+        session = _MockSession(signature)
+
+        async def get_session(self):
+            return session
+
+        monkeypatch.setattr(SenderBlockRazorClient, "get_session", get_session)
+        client = providers.SwqosClientFactory.create_client(
+            ProviderSwqosConfig(
+                swqos_type=ProviderSwqosType.BLOCK_RAZOR,
+                api_key="token",
+                url="http://blockrazor/v2/sendTransaction",
+            )
+        )
+        tx = bytes([1] + [7] * 64)
+
+        result = await client.submit_transaction(tx)
+
+        assert result.success is True
+        assert result.signature == signature
+        url, kwargs = session.calls[0]
+        assert "/v2/sendTransaction" in url
+        assert "/api/v1/submit" not in url
+        assert kwargs["headers"]["Content-Type"] == "text/plain"
+        assert kwargs["data"] == base64.b64encode(tx).decode()
+        assert "mode=fast" in url
+
+    @pytest.mark.asyncio
+    async def test_provider_blockrazor_defaults_to_no_mev_protection(self, monkeypatch):
+        from sol_trade_sdk.swqos import providers
+
+        signature = "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3BbeqPevr5E1iCbpTjqHuTFLtfxTTD5ekfVuZFzQyEQf8"
+        session = _MockSession(signature)
+
+        async def get_session(self):
+            return session
+
+        monkeypatch.setattr(SenderBlockRazorClient, "get_session", get_session)
+        client = providers.SwqosClientFactory.create_client(
+            ProviderSwqosConfig(
+                swqos_type=ProviderSwqosType.BLOCK_RAZOR,
+                api_key="token",
+                url="http://blockrazor/v2/sendTransaction",
+            )
+        )
+
+        result = await client.submit_transaction(bytes([1] + [7] * 64))
+
+        assert result.success is True
+        url, _ = session.calls[0]
+        assert "mode=fast" in url
+        assert "sandwichMitigation" not in url
+
+    @pytest.mark.asyncio
+    async def test_provider_astralane_delegates_to_rust_parity_sender(self, monkeypatch):
+        from sol_trade_sdk.swqos import providers
+
+        session = _MockSession("")
+
+        async def get_session(self):
+            return session
+
+        monkeypatch.setattr(SenderAstralaneClient, "get_session", get_session)
+        client = providers.SwqosClientFactory.create_client(
+            ProviderSwqosConfig(
+                swqos_type=ProviderSwqosType.ASTRALANE,
+                api_key="token",
+                url="http://astralane/irisb",
+            )
+        )
+        tx = bytes([1] + [7] * 64)
+
+        result = await client.submit_transaction(tx)
+
+        assert result.success is True
+        assert result.signature == _signature_from_serialized_transaction(tx)
+        url, kwargs = session.calls[0]
+        assert url == "http://astralane/irisb?api-key=token&method=sendTransaction"
+        assert kwargs["headers"]["Content-Type"] == "application/octet-stream"
+        assert kwargs["data"] == tx
 
     def test_nextblock_is_blacklisted_by_rust_parity_factories(self):
         with pytest.raises(ValueError, match="blacklisted"):
@@ -894,6 +1126,73 @@ class TestSwqosSolami:
             SwqosClientFactory.create_client(
                 ProviderSwqosConfig(swqos_type=ProviderSwqosType.NEXT_BLOCK)
             )
+
+    def test_advanced_factory_delegates_to_rust_parity_sender_factory(self):
+        blockrazor = AdvancedClientFactory.create_client(
+            AdvancedSwqosConfig(type=SwqosType.BLOCK_RAZOR, region="singapore"),
+            "https://rpc.example",
+        )
+        solami = AdvancedClientFactory.create_client(
+            AdvancedSwqosConfig(type=SwqosType.SOLAMI, region="tokyo"),
+            "https://rpc.example",
+        )
+
+        assert blockrazor.get_swqos_type() == SwqosType.BLOCK_RAZOR
+        assert solami.get_swqos_type() == SwqosType.SOLAMI
+
+    @pytest.mark.asyncio
+    async def test_provider_bloxroute_preserves_region_through_sender_factory(self, monkeypatch):
+        from sol_trade_sdk.swqos import providers
+
+        signature = "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3BbeqPevr5E1iCbpTjqHuTFLtfxTTD5ekfVuZFzQyEQf8"
+        session = _MockSession(f'{{"signature":"{signature}"}}')
+
+        async def get_session(self):
+            return session
+
+        monkeypatch.setattr(SenderBloxrouteClient, "get_session", get_session)
+        client = providers.SwqosClientFactory.create_client(
+            ProviderSwqosConfig(
+                swqos_type=ProviderSwqosType.BLOXROUTE,
+                region=ProviderSwqosRegion.SINGAPORE,
+                api_key="token",
+            )
+        )
+
+        result = await client.submit_transaction(bytes([1] + [7] * 64))
+
+        assert result.success is True
+        assert result.signature == signature
+        url, kwargs = session.calls[0]
+        assert url == "https://tokyo.solana.dex.blxrbdn.com/api/v2/submit"
+        assert kwargs["headers"]["Authorization"] == "token"
+
+    @pytest.mark.asyncio
+    async def test_provider_helius_preserves_swqos_only_through_sender_factory(self, monkeypatch):
+        from sol_trade_sdk.swqos import providers
+
+        signature = "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3BbeqPevr5E1iCbpTjqHuTFLtfxTTD5ekfVuZFzQyEQf8"
+        session = _MockSession(f'{{"result":"{signature}"}}')
+
+        from sol_trade_sdk.swqos.clients import HeliusClient as SenderHeliusClient
+
+        async def get_session(self):
+            return session
+
+        monkeypatch.setattr(SenderHeliusClient, "get_session", get_session)
+        client = providers.SwqosClientFactory.create_client(
+            ProviderSwqosConfig(
+                swqos_type=ProviderSwqosType.HELIUS,
+                api_key="token",
+                swqos_only=True,
+            )
+        )
+
+        result = await client.submit_transaction(bytes([1] + [7] * 64))
+
+        assert result.success is True
+        url, _ = session.calls[0]
+        assert "swqos_only=true" in url
 
 
 class TestSwqosEndpointParity:
@@ -921,6 +1220,81 @@ class TestSwqosEndpointParity:
             _signature_from_serialized_transaction(tx)
             == "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3BbeqPevr5E1iCbpTjqHuTFLtfxTTD5ekfVuZFzQyEQf8"
         )
+
+    @pytest.mark.asyncio
+    async def test_blockrazor_http_accepts_plain_text_signature(self):
+        signature = "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3BbeqPevr5E1iCbpTjqHuTFLtfxTTD5ekfVuZFzQyEQf8"
+        session = _MockSession(signature)
+        client = SenderBlockRazorClient("https://rpc.example", "http://blockrazor/v2/sendTransaction", "token")
+        async def get_session():
+            return session
+        client.get_session = get_session  # type: ignore[method-assign]
+        tx = bytes([1] + [7] * 64)
+
+        result = await client.send_transaction(TradeType.BUY, tx)
+
+        assert result == signature
+        url, kwargs = session.calls[0]
+        assert url == "http://blockrazor/v2/sendTransaction?auth=token&mode=fast"
+        assert kwargs["headers"]["Content-Type"] == "text/plain"
+        assert kwargs["data"] == base64.b64encode(tx).decode()
+
+    @pytest.mark.asyncio
+    async def test_blockrazor_http_error_does_not_fallback_to_signature(self):
+        session = _MockSession("", status=400, reason="Bad Request")
+        client = SenderBlockRazorClient("https://rpc.example", "http://blockrazor/v2/sendTransaction", "token")
+        async def get_session():
+            return session
+        client.get_session = get_session  # type: ignore[method-assign]
+        tx = bytes([1] + [7] * 64)
+
+        with pytest.raises(Exception, match="HTTP error"):
+            await client.send_transaction(TradeType.BUY, tx)
+
+    @pytest.mark.asyncio
+    async def test_blockrazor_http_success_without_signature_is_error(self):
+        session = _MockSession("")
+        client = SenderBlockRazorClient("https://rpc.example", "http://blockrazor/v2/sendTransaction", "token")
+        async def get_session():
+            return session
+        client.get_session = get_session  # type: ignore[method-assign]
+
+        with pytest.raises(Exception, match="missing transaction signature"):
+            await client.send_transaction(TradeType.BUY, bytes([1] + [7] * 64))
+
+    @pytest.mark.asyncio
+    async def test_astralane_binary_http_sends_raw_bytes(self):
+        session = _MockSession("")
+        client = SenderAstralaneClient("https://rpc.example", "http://astralane/irisb", "token")
+        async def get_session():
+            return session
+        client.get_session = get_session  # type: ignore[method-assign]
+        tx = bytes([1] + [7] * 64)
+
+        result = await client.send_transaction(TradeType.BUY, tx)
+
+        assert result == _signature_from_serialized_transaction(tx)
+        url, kwargs = session.calls[0]
+        assert url == "http://astralane/irisb?api-key=token&method=sendTransaction"
+        assert kwargs["headers"]["Content-Type"] == "application/octet-stream"
+        assert kwargs["data"] == tx
+
+    @pytest.mark.asyncio
+    async def test_astralane_http_error_does_not_fallback_to_signature(self):
+        session = _MockSession("", status=400, reason="Bad Request")
+        client = SenderAstralaneClient("https://rpc.example", "http://astralane/irisb", "token")
+        async def get_session():
+            return session
+        client.get_session = get_session  # type: ignore[method-assign]
+        tx = bytes([1] + [7] * 64)
+
+        with pytest.raises(Exception, match="HTTP error"):
+            await client.send_transaction(TradeType.BUY, tx)
+
+    def test_speedlanding_uses_fixed_rust_sni(self):
+        client = SenderSpeedlandingClient("https://rpc.example", "nyc.speedlanding.trade:17778")
+
+        assert client._server_name == "speed-landing"
 
 
 class TestConfirmationParsing:

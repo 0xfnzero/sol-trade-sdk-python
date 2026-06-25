@@ -28,20 +28,20 @@ except ImportError:
 
 import aiohttp
 
-from ..common.types import SwqosType, TradeType
+from ..common.types import SwqosType, SwqosRegion, TradeType
 
 
 # ===== Constants =====
 
 # Minimum tips in SOL
-MIN_TIP_JITO = 0.001
-MIN_TIP_BLOXROUTE = 0.0003
+MIN_TIP_JITO = 0.00001
+MIN_TIP_BLOXROUTE = 0.0001
 MIN_TIP_ZERO_SLOT = 0.0001
 MIN_TIP_TEMPORAL = 0.0001
 MIN_TIP_FLASH_BLOCK = 0.0001
 MIN_TIP_BLOCK_RAZOR = 0.0001
 MIN_TIP_NODE1 = 0.0001
-MIN_TIP_ASTRALANE = 0.0001
+MIN_TIP_ASTRALANE = 0.00001
 MIN_TIP_HELIUS = 0.000005
 MIN_TIP_DEFAULT = 0.00001
 
@@ -598,48 +598,39 @@ class SwqosConfig:
 
 
 class ClientFactory:
-    """Factory for creating SWQOS clients"""
+    """Backward-compatible factory that delegates to the Rust-parity clients."""
+
+    @staticmethod
+    def _normalize_region(region: str) -> SwqosRegion:
+        mapping = {
+            "ny": SwqosRegion.NEW_YORK,
+            "new_york": SwqosRegion.NEW_YORK,
+            "newyork": SwqosRegion.NEW_YORK,
+            "frankfurt": SwqosRegion.FRANKFURT,
+            "amsterdam": SwqosRegion.AMSTERDAM,
+            "dublin": SwqosRegion.DUBLIN,
+            "slc": SwqosRegion.SLC,
+            "tokyo": SwqosRegion.TOKYO,
+            "singapore": SwqosRegion.SINGAPORE,
+            "london": SwqosRegion.LONDON,
+            "los_angeles": SwqosRegion.LOS_ANGELES,
+            "losangeles": SwqosRegion.LOS_ANGELES,
+            "default": SwqosRegion.DEFAULT,
+        }
+        return mapping.get(str(region).lower(), SwqosRegion.DEFAULT)
 
     @staticmethod
     def create_client(config: SwqosConfig, rpc_url: str) -> SwqosClient:
-        """Create a SWQOS client from configuration"""
-        
-        if config.type == SwqosType.JITO:
-            endpoint = config.custom_url or HTTP_JITO_ENDPOINTS.get(
-                config.region, HTTP_JITO_ENDPOINTS["amsterdam"]
-            )
-            return JitoClient(
-                rpc_url, endpoint, config.api_key,
-                region=config.region, use_grpc=config.use_grpc
-            )
+        """Create a SWQOS client from legacy advanced configuration."""
+        from .clients import ClientFactory as SenderClientFactory, SwqosConfig as SenderSwqosConfig
 
-        elif config.type == SwqosType.BLOXROUTE:
-            return BloxrouteClient(
-                rpc_url,
-                config.custom_url or "api.bloxroute.com",
-                config.api_key,
-            )
-
-        elif config.type == SwqosType.ZERO_SLOT:
-            return ZeroSlotClient(
-                rpc_url,
-                config.custom_url or "api.zeroslot.com",
-                config.api_key,
-            )
-
-        elif config.type == SwqosType.HELIUS:
-            return HeliusClient(
-                rpc_url,
-                config.custom_url or rpc_url,
-                config.api_key,
-            )
-
-        elif config.type == SwqosType.DEFAULT:
-            return DefaultClient(rpc_url)
-
-        else:
-            # Fallback to default
-            return DefaultClient(rpc_url)
+        sender_config = SenderSwqosConfig(
+            type=config.type,
+            region=ClientFactory._normalize_region(config.region),
+            custom_url=config.custom_url,
+            api_key=config.api_key,
+        )
+        return SenderClientFactory.create_client(sender_config, rpc_url)
 
 
 # ===== Convenience Function =====

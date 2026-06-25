@@ -12,6 +12,19 @@ from typing import Optional, Dict, Any, List, Callable, Union
 import time
 import logging
 
+try:
+    from ..common.types import TradeType
+    from .clients import (
+        ClientFactory as SenderClientFactory,
+        SwqosConfig as SenderSwqosConfig,
+    )
+except ImportError:  # pragma: no cover - legacy direct module import compatibility
+    from sol_trade_sdk.common.types import TradeType
+    from sol_trade_sdk.swqos.clients import (
+        ClientFactory as SenderClientFactory,
+        SwqosConfig as SenderSwqosConfig,
+    )
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,7 +89,10 @@ class SwqosConfig:
     max_retries: int = 3
     enabled: bool = True
     priority_fee_multiplier: float = 1.0
-    mev_protection: MevProtectionLevel = MevProtectionLevel.ENHANCED
+    mev_protection: MevProtectionLevel = MevProtectionLevel.NONE
+    transport: Optional[Any] = None
+    astralane_transport: Optional[Any] = None
+    swqos_only: Optional[bool] = None
     custom_headers: Dict[str, str] = field(default_factory=dict)
     rate_limit_rps: int = 100
 
@@ -186,6 +202,68 @@ class SwqosClient:
             time.sleep(self._rate_limit_delay - elapsed)
 
         self._last_request_time = time.time()
+
+
+async def _submit_via_sender_client(
+    provider: str,
+    start: float,
+    submit,
+    update_stats,
+) -> TransactionResult:
+    try:
+        signature = await submit()
+        latency_ms = int((time.time() - start) * 1000)
+        update_stats(True, latency_ms)
+        return TransactionResult(
+            success=True,
+            signature=signature,
+            provider=provider,
+            latency_ms=latency_ms,
+        )
+    except Exception as e:
+        latency_ms = int((time.time() - start) * 1000)
+        error = str(e)
+        update_stats(False, latency_ms, error)
+        return TransactionResult(
+            success=False,
+            provider=provider,
+            latency_ms=latency_ms,
+            error=error,
+        )
+
+
+class _SenderBackedProviderClient(SwqosClient):
+    """Stats/rate-limit wrapper around the Rust-parity sender clients."""
+
+    def __init__(self, config: SwqosConfig):
+        super().__init__(config)
+        self._sender = SenderClientFactory.create_client(
+            SenderSwqosConfig(
+                type=config.swqos_type,
+                region=config.region,
+                custom_url=config.url,
+                api_key=config.api_key,
+                mev_protection=config.mev_protection is not MevProtectionLevel.NONE,
+                transport=config.transport,
+                astralane_transport=config.astralane_transport,
+                swqos_only=config.swqos_only,
+            ),
+            "",
+        )
+
+    async def submit_transaction(
+        self,
+        transaction: bytes,
+        tip: int = 0,
+    ) -> TransactionResult:
+        self._rate_limit_check()
+        start = time.time()
+        return await _submit_via_sender_client(
+            self.config.swqos_type.value,
+            start,
+            lambda: self._sender.send_transaction(TradeType.BUY, transaction, False),
+            self.update_stats,
+        )
 
 
 class JitoClient(SwqosClient):
@@ -512,7 +590,7 @@ class BlockRazorClient(SwqosClient):
 
     def __init__(self, config: SwqosConfig):
         super().__init__(config)
-        self.api_url = config.url or "https://api.blockrazor.io"
+        self.api_url = config.url or "http://ny.solana.blockrazor.xyz:443/v2/sendTransaction"
 
     async def submit_transaction(
         self,
@@ -523,25 +601,13 @@ class BlockRazorClient(SwqosClient):
         self._rate_limit_check()
         start = time.time()
 
-        try:
-            latency_ms = int((time.time() - start) * 1000)
-            self.update_stats(True, latency_ms)
-
-            return TransactionResult(
-                success=True,
-                signature="blockrazor_signature_placeholder",
-                provider="BlockRazor",
-                latency_ms=latency_ms
-            )
-        except Exception as e:
-            latency_ms = int((time.time() - start) * 1000)
-            self.update_stats(False, latency_ms, str(e))
-            return TransactionResult(
-                success=False,
-                provider="BlockRazor",
-                latency_ms=latency_ms,
-                error=str(e)
-            )
+        client = SenderBlockRazorClient("", self.api_url, self.config.api_key)
+        return await _submit_via_sender_client(
+            "BlockRazor",
+            start,
+            lambda: client.send_transaction(TradeType.BUY, transaction, False),
+            self.update_stats,
+        )
 
 
 class AstralaneClient(SwqosClient):
@@ -549,7 +615,7 @@ class AstralaneClient(SwqosClient):
 
     def __init__(self, config: SwqosConfig):
         super().__init__(config)
-        self.api_url = config.url or "https://api.astralane.io"
+        self.api_url = config.url or "http://ny.gateway.astralane.io/irisb"
 
     async def submit_transaction(
         self,
@@ -560,25 +626,13 @@ class AstralaneClient(SwqosClient):
         self._rate_limit_check()
         start = time.time()
 
-        try:
-            latency_ms = int((time.time() - start) * 1000)
-            self.update_stats(True, latency_ms)
-
-            return TransactionResult(
-                success=True,
-                signature="astralane_signature_placeholder",
-                provider="Astralane",
-                latency_ms=latency_ms
-            )
-        except Exception as e:
-            latency_ms = int((time.time() - start) * 1000)
-            self.update_stats(False, latency_ms, str(e))
-            return TransactionResult(
-                success=False,
-                provider="Astralane",
-                latency_ms=latency_ms,
-                error=str(e)
-            )
+        client = SenderAstralaneClient("", self.api_url, self.config.api_key)
+        return await _submit_via_sender_client(
+            "Astralane",
+            start,
+            lambda: client.send_transaction(TradeType.BUY, transaction, False),
+            self.update_stats,
+        )
 
 
 class StelliumClient(SwqosClient):
@@ -697,7 +751,7 @@ class SpeedlandingClient(SwqosClient):
 
     def __init__(self, config: SwqosConfig):
         super().__init__(config)
-        self.api_url = config.url or "https://api.speedlanding.io"
+        self.api_url = config.url or "nyc.speedlanding.trade:17778"
 
     async def submit_transaction(
         self,
@@ -708,25 +762,13 @@ class SpeedlandingClient(SwqosClient):
         self._rate_limit_check()
         start = time.time()
 
-        try:
-            latency_ms = int((time.time() - start) * 1000)
-            self.update_stats(True, latency_ms)
-
-            return TransactionResult(
-                success=True,
-                signature="speedlanding_signature_placeholder",
-                provider="Speedlanding",
-                latency_ms=latency_ms
-            )
-        except Exception as e:
-            latency_ms = int((time.time() - start) * 1000)
-            self.update_stats(False, latency_ms, str(e))
-            return TransactionResult(
-                success=False,
-                provider="Speedlanding",
-                latency_ms=latency_ms,
-                error=str(e)
-            )
+        client = SenderSpeedlandingClient("", self.api_url, self.config.api_key)
+        return await _submit_via_sender_client(
+            "Speedlanding",
+            start,
+            lambda: client.send_transaction(TradeType.BUY, transaction, False),
+            self.update_stats,
+        )
 
 
 class SolamiClient(SwqosClient):
@@ -741,17 +783,15 @@ class SolamiClient(SwqosClient):
         transaction: bytes,
         tip: int = 0,
     ) -> TransactionResult:
-        """Reject placeholder HTTP submit; Solami uses QUIC client-certificate auth."""
+        """Submit through the Rust-parity QUIC sender path."""
         self._rate_limit_check()
         start = time.time()
-        latency_ms = int((time.time() - start) * 1000)
-        error = "Solami live submit uses swqos.clients.SolamiClient QUIC path, not HTTP provider API"
-        self.update_stats(False, latency_ms, error)
-        return TransactionResult(
-            success=False,
-            provider="Solami",
-            latency_ms=latency_ms,
-            error=error,
+        client = SenderSolamiClient("", self.api_url, self.config.api_key)
+        return await _submit_via_sender_client(
+            "Solami",
+            start,
+            lambda: client.send_transaction(TradeType.BUY, transaction, False),
+            self.update_stats,
         )
 
 
@@ -989,20 +1029,20 @@ class SwqosClientFactory:
     """Factory for creating SWQOS clients"""
 
     _CLIENT_MAP = {
-        SwqosType.JITO: JitoClient,
-        SwqosType.BLOXROUTE: BloxrouteClient,
-        SwqosType.ZERO_SLOT: ZeroSlotClient,
-        SwqosType.TEMPORAL: TemporalClient,
-        SwqosType.NODE1: Node1Client,
-        SwqosType.FLASH_BLOCK: FlashBlockClient,
-        SwqosType.BLOCK_RAZOR: BlockRazorClient,
-        SwqosType.ASTRALANE: AstralaneClient,
-        SwqosType.STELLIUM: StelliumClient,
-        SwqosType.LIGHTSPEED: LightspeedClient,
-        SwqosType.SOYAS: SoyasClient,
-        SwqosType.SPEEDLANDING: SpeedlandingClient,
-        SwqosType.HELIUS: HeliusClient,
-        SwqosType.SOLAMI: SolamiClient,
+        SwqosType.JITO: _SenderBackedProviderClient,
+        SwqosType.BLOXROUTE: _SenderBackedProviderClient,
+        SwqosType.ZERO_SLOT: _SenderBackedProviderClient,
+        SwqosType.TEMPORAL: _SenderBackedProviderClient,
+        SwqosType.NODE1: _SenderBackedProviderClient,
+        SwqosType.FLASH_BLOCK: _SenderBackedProviderClient,
+        SwqosType.BLOCK_RAZOR: _SenderBackedProviderClient,
+        SwqosType.ASTRALANE: _SenderBackedProviderClient,
+        SwqosType.STELLIUM: _SenderBackedProviderClient,
+        SwqosType.LIGHTSPEED: _SenderBackedProviderClient,
+        SwqosType.SOYAS: _SenderBackedProviderClient,
+        SwqosType.SPEEDLANDING: _SenderBackedProviderClient,
+        SwqosType.HELIUS: _SenderBackedProviderClient,
+        SwqosType.SOLAMI: _SenderBackedProviderClient,
     }
 
     @classmethod
