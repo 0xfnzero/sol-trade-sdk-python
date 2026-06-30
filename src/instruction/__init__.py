@@ -322,9 +322,20 @@ class PumpSwapInstructionBuilder(InstructionBuilder):
             build_buy_instructions,
             BuildBuyParams,
             PumpSwapParams as BuilderParams,
+            PumpSwapFeeBasisPoints as BuilderFeeBasisPoints,
         )
         
         # Convert to builder params
+        fee_basis_points = getattr(protocol_params, "fee_basis_points", None)
+        builder_fee_basis_points = (
+            BuilderFeeBasisPoints(
+                fee_basis_points.lp_fee_basis_points,
+                fee_basis_points.protocol_fee_basis_points,
+                fee_basis_points.coin_creator_fee_basis_points,
+            )
+            if fee_basis_points is not None
+            else None
+        )
         builder_params = BuildBuyParams(
             payer=payer,
             input_amount=input_amount,
@@ -343,6 +354,13 @@ class PumpSwapInstructionBuilder(InstructionBuilder):
                 quote_token_program=protocol_params.quote_token_program,
                 is_mayhem_mode=protocol_params.is_mayhem_mode,
                 is_cashback_coin=protocol_params.is_cashback_coin,
+                coin_creator=getattr(protocol_params, "coin_creator", None),
+                cashback_fee_basis_points=getattr(
+                    protocol_params, "cashback_fee_basis_points", 0
+                ),
+                fee_basis_points=builder_fee_basis_points,
+                pool_creator=getattr(protocol_params, "pool_creator", None),
+                base_mint_supply=getattr(protocol_params, "base_mint_supply", None),
             ),
             create_output_mint_ata=create_output_ata,
             close_input_mint_ata=close_input_ata,
@@ -368,9 +386,20 @@ class PumpSwapInstructionBuilder(InstructionBuilder):
             build_sell_instructions,
             BuildSellParams,
             PumpSwapParams as BuilderParams,
+            PumpSwapFeeBasisPoints as BuilderFeeBasisPoints,
         )
         
         # Convert to builder params
+        fee_basis_points = getattr(protocol_params, "fee_basis_points", None)
+        builder_fee_basis_points = (
+            BuilderFeeBasisPoints(
+                fee_basis_points.lp_fee_basis_points,
+                fee_basis_points.protocol_fee_basis_points,
+                fee_basis_points.coin_creator_fee_basis_points,
+            )
+            if fee_basis_points is not None
+            else None
+        )
         builder_params = BuildSellParams(
             payer=payer,
             input_amount=input_amount,
@@ -389,6 +418,13 @@ class PumpSwapInstructionBuilder(InstructionBuilder):
                 quote_token_program=protocol_params.quote_token_program,
                 is_mayhem_mode=protocol_params.is_mayhem_mode,
                 is_cashback_coin=protocol_params.is_cashback_coin,
+                coin_creator=getattr(protocol_params, "coin_creator", None),
+                cashback_fee_basis_points=getattr(
+                    protocol_params, "cashback_fee_basis_points", 0
+                ),
+                fee_basis_points=builder_fee_basis_points,
+                pool_creator=getattr(protocol_params, "pool_creator", None),
+                base_mint_supply=getattr(protocol_params, "base_mint_supply", None),
             ),
             create_output_mint_ata=create_output_ata,
             close_output_mint_ata=close_output_ata,

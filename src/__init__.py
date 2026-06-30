@@ -491,6 +491,15 @@ class PumpFunParams:
 
 
 @dataclass
+class PumpSwapFeeBasisPoints:
+    """PumpSwap fee basis points for parser/RPC-provided params."""
+
+    lp_fee_basis_points: int = 25
+    protocol_fee_basis_points: int = 5
+    coin_creator_fee_basis_points: int = 5
+
+
+@dataclass
 class PumpSwapParams:
     """PumpSwap protocol parameters"""
 
@@ -505,12 +514,133 @@ class PumpSwapParams:
     coin_creator_vault_authority: Pubkey
     base_token_program: Pubkey
     quote_token_program: Pubkey
-    is_mayhem_mode: bool
-    is_cashback_coin: bool
+    is_mayhem_mode: bool = False
+    is_cashback_coin: bool = False
+    pool_creator: Pubkey = field(default_factory=Pubkey.default)
+    coin_creator: Pubkey = field(default_factory=Pubkey.default)
+    cashback_fee_basis_points: int = 0
+    fee_basis_points: Optional[PumpSwapFeeBasisPoints] = None
+    base_mint_supply: Optional[int] = None
+
+    @staticmethod
+    def _from_builder_params(params: Any) -> "PumpSwapParams":
+        fee_basis_points = getattr(params, "fee_basis_points", None)
+        root_fee_basis_points = (
+            PumpSwapFeeBasisPoints(
+                fee_basis_points.lp_fee_basis_points,
+                fee_basis_points.protocol_fee_basis_points,
+                fee_basis_points.coin_creator_fee_basis_points,
+            )
+            if fee_basis_points is not None
+            else None
+        )
+        return PumpSwapParams(
+            pool=params.pool,
+            base_mint=params.base_mint,
+            quote_mint=params.quote_mint,
+            pool_base_token_account=params.pool_base_token_account,
+            pool_quote_token_account=params.pool_quote_token_account,
+            pool_base_token_reserves=params.pool_base_token_reserves,
+            pool_quote_token_reserves=params.pool_quote_token_reserves,
+            coin_creator_vault_ata=params.coin_creator_vault_ata,
+            coin_creator_vault_authority=params.coin_creator_vault_authority,
+            base_token_program=params.base_token_program,
+            quote_token_program=params.quote_token_program,
+            is_mayhem_mode=params.is_mayhem_mode,
+            is_cashback_coin=params.is_cashback_coin,
+            pool_creator=params.pool_creator or Pubkey.default(),
+            coin_creator=params.coin_creator or Pubkey.default(),
+            cashback_fee_basis_points=params.cashback_fee_basis_points,
+            fee_basis_points=root_fee_basis_points,
+            base_mint_supply=params.base_mint_supply,
+        )
+
+    @classmethod
+    async def from_pool_address_by_rpc(
+        cls,
+        fetcher: Any,
+        pool_address: Pubkey,
+        fee_basis_points: Optional[PumpSwapFeeBasisPoints] = None,
+        cashback_fee_basis_points: int = 0,
+    ) -> "PumpSwapParams":
+        """Build params from a pool address using explicit cold-path RPC reads.
+
+        `fee_basis_points` is optional. If provided, it is preserved; otherwise
+        the helper fetches PumpSwap FeeConfig and mint supply before trading.
+        """
+        from .instruction.pumpswap_builder import (
+            PumpSwapFeeBasisPoints as BuilderFeeBasisPoints,
+            params_from_pool_address,
+        )
+
+        builder_fee_basis_points = (
+            BuilderFeeBasisPoints(
+                fee_basis_points.lp_fee_basis_points,
+                fee_basis_points.protocol_fee_basis_points,
+                fee_basis_points.coin_creator_fee_basis_points,
+            )
+            if fee_basis_points is not None
+            else None
+        )
+        params = await params_from_pool_address(
+            fetcher,
+            pool_address,
+            fee_basis_points=builder_fee_basis_points,
+            cashback_fee_basis_points=cashback_fee_basis_points,
+        )
+        return cls._from_builder_params(params)
+
+    @classmethod
+    async def from_mint_by_rpc(
+        cls,
+        fetcher: Any,
+        mint: Pubkey,
+        fee_basis_points: Optional[PumpSwapFeeBasisPoints] = None,
+        cashback_fee_basis_points: int = 0,
+    ) -> "PumpSwapParams":
+        """Build params from a mint using explicit cold-path RPC reads."""
+        from .instruction.pumpswap_builder import (
+            PumpSwapFeeBasisPoints as BuilderFeeBasisPoints,
+            params_from_mint,
+        )
+
+        builder_fee_basis_points = (
+            BuilderFeeBasisPoints(
+                fee_basis_points.lp_fee_basis_points,
+                fee_basis_points.protocol_fee_basis_points,
+                fee_basis_points.coin_creator_fee_basis_points,
+            )
+            if fee_basis_points is not None
+            else None
+        )
+        params = await params_from_mint(
+            fetcher,
+            mint,
+            fee_basis_points=builder_fee_basis_points,
+            cashback_fee_basis_points=cashback_fee_basis_points,
+        )
+        return cls._from_builder_params(params)
 
     @classmethod
     def from_parser_event(cls, event: Any) -> "PumpSwapParams":
         """Build params from an already-decoded PumpSwap trade event object or dict."""
+        has_fee_basis_points = any(
+            _parser_value(event, name, None) is not None
+            for name in (
+                "lp_fee_basis_points",
+                "protocol_fee_basis_points",
+                "coin_creator_fee_basis_points",
+            )
+        )
+        fee_basis_points = (
+            PumpSwapFeeBasisPoints(
+                int(_parser_value(event, "lp_fee_basis_points", 0) or 0),
+                int(_parser_value(event, "protocol_fee_basis_points", 0) or 0),
+                int(_parser_value(event, "coin_creator_fee_basis_points", 0) or 0),
+            )
+            if has_fee_basis_points
+            else None
+        )
         return cls(
             pool=_pubkey_from_parser(_parser_value(event, "pool")),
             base_mint=_pubkey_from_parser(_parser_value(event, "base_mint")),
@@ -533,6 +663,14 @@ class PumpSwapParams:
             quote_token_program=_pubkey_from_parser(_parser_value(event, "quote_token_program")),
             is_mayhem_mode=bool(_parser_value(event, "is_mayhem_mode", False)),
             is_cashback_coin=bool(_parser_value(event, "is_cashback_coin", False)),
+            pool_creator=_pubkey_from_parser(_parser_value(event, "pool_creator")),
+            coin_creator=_pubkey_from_parser(
+                _parser_value(event, "coin_creator", _parser_value(event, "creator"))
+            ),
+            cashback_fee_basis_points=int(
+                _parser_value(event, "cashback_fee_basis_points", 0) or 0
+            ),
+            fee_basis_points=fee_basis_points,
         )
 
 
@@ -1859,6 +1997,7 @@ __all__ = [
     "TradeResult",
     # Protocol Params
     "PumpFunParams",
+    "PumpSwapFeeBasisPoints",
     "PumpSwapParams",
     "BonkParams",
     "RaydiumCpmmParams",

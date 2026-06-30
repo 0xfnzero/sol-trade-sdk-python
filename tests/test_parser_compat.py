@@ -101,3 +101,34 @@ def test_pumpswap_params_from_parser_event_uses_creator_vault_accounts():
 
     assert params.coin_creator_vault_ata == vault
     assert params.coin_creator_vault_authority == authority
+
+
+def test_pumpswap_params_from_parser_event_uses_fee_basis_points():
+    creator = Pubkey.new_unique()
+    event = {
+        "pool": str(Pubkey.new_unique()),
+        "base_mint": str(Pubkey.new_unique()),
+        "quote_mint": str(USDC_TOKEN_ACCOUNT),
+        "pool_base_token_account": str(Pubkey.new_unique()),
+        "pool_quote_token_account": str(Pubkey.new_unique()),
+        "pool_base_token_reserves": 10,
+        "pool_quote_token_reserves": 20,
+        "coin_creator_vault_ata": str(Pubkey.new_unique()),
+        "coin_creator_vault_authority": str(Pubkey.new_unique()),
+        "base_token_program": str(TOKEN_PROGRAM),
+        "quote_token_program": str(TOKEN_PROGRAM),
+        "coin_creator": str(creator),
+        "cashback_fee_basis_points": 4,
+        "lp_fee_basis_points": 20,
+        "protocol_fee_basis_points": 5,
+        "coin_creator_fee_basis_points": 75,
+    }
+
+    params = PumpSwapParams.from_parser_event(event)
+
+    assert params.coin_creator == creator
+    assert params.cashback_fee_basis_points == 4
+    assert params.fee_basis_points is not None
+    assert params.fee_basis_points.lp_fee_basis_points == 20
+    assert params.fee_basis_points.protocol_fee_basis_points == 5
+    assert params.fee_basis_points.coin_creator_fee_basis_points == 75

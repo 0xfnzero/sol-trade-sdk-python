@@ -143,6 +143,14 @@ class PumpFunParams:
 
 
 @dataclass
+class PumpSwapFeeBasisPoints:
+    """PumpSwap fee basis points for parser/RPC-provided params."""
+    lp_fee_basis_points: int = 25
+    protocol_fee_basis_points: int = 5
+    coin_creator_fee_basis_points: int = 5
+
+
+@dataclass
 class PumpSwapParams:
     """PumpSwap protocol specific parameters"""
     pool: bytes = field(default_factory=lambda: bytes(32))
@@ -158,6 +166,114 @@ class PumpSwapParams:
     quote_token_program: bytes = field(default_factory=lambda: bytes(32))
     is_mayhem_mode: bool = False
     is_cashback_coin: bool = False
+    pool_creator: bytes = field(default_factory=lambda: bytes(32))
+    coin_creator: bytes = field(default_factory=lambda: bytes(32))
+    cashback_fee_basis_points: int = 0
+    fee_basis_points: PumpSwapFeeBasisPoints | None = None
+    base_mint_supply: int | None = None
+
+    @staticmethod
+    def _bytes_to_pubkey(value: bytes):
+        from solders.pubkey import Pubkey
+
+        return value if isinstance(value, Pubkey) else Pubkey.from_bytes(bytes(value))
+
+    @staticmethod
+    def _pubkey_to_bytes(value: Any) -> bytes:
+        return bytes(value)
+
+    @classmethod
+    def _from_builder_params(cls, params: Any) -> "PumpSwapParams":
+        fee_basis_points = getattr(params, "fee_basis_points", None)
+        root_fee_basis_points = (
+            PumpSwapFeeBasisPoints(
+                fee_basis_points.lp_fee_basis_points,
+                fee_basis_points.protocol_fee_basis_points,
+                fee_basis_points.coin_creator_fee_basis_points,
+            )
+            if fee_basis_points is not None
+            else None
+        )
+        return cls(
+            pool=cls._pubkey_to_bytes(params.pool),
+            base_mint=cls._pubkey_to_bytes(params.base_mint),
+            quote_mint=cls._pubkey_to_bytes(params.quote_mint),
+            pool_base_token_account=cls._pubkey_to_bytes(params.pool_base_token_account),
+            pool_quote_token_account=cls._pubkey_to_bytes(params.pool_quote_token_account),
+            pool_base_token_reserves=params.pool_base_token_reserves,
+            pool_quote_token_reserves=params.pool_quote_token_reserves,
+            coin_creator_vault_ata=cls._pubkey_to_bytes(params.coin_creator_vault_ata),
+            coin_creator_vault_authority=cls._pubkey_to_bytes(params.coin_creator_vault_authority),
+            base_token_program=cls._pubkey_to_bytes(params.base_token_program),
+            quote_token_program=cls._pubkey_to_bytes(params.quote_token_program),
+            is_mayhem_mode=params.is_mayhem_mode,
+            is_cashback_coin=params.is_cashback_coin,
+            pool_creator=cls._pubkey_to_bytes(params.pool_creator),
+            coin_creator=cls._pubkey_to_bytes(params.coin_creator),
+            cashback_fee_basis_points=params.cashback_fee_basis_points,
+            fee_basis_points=root_fee_basis_points,
+            base_mint_supply=params.base_mint_supply,
+        )
+
+    @classmethod
+    async def from_pool_address_by_rpc(
+        cls,
+        fetcher: Any,
+        pool_address: bytes,
+        fee_basis_points: PumpSwapFeeBasisPoints | None = None,
+        cashback_fee_basis_points: int = 0,
+    ) -> "PumpSwapParams":
+        from ..instruction.pumpswap_builder import (
+            PumpSwapFeeBasisPoints as BuilderFeeBasisPoints,
+            params_from_pool_address,
+        )
+
+        builder_fee_basis_points = (
+            BuilderFeeBasisPoints(
+                fee_basis_points.lp_fee_basis_points,
+                fee_basis_points.protocol_fee_basis_points,
+                fee_basis_points.coin_creator_fee_basis_points,
+            )
+            if fee_basis_points is not None
+            else None
+        )
+        params = await params_from_pool_address(
+            fetcher,
+            cls._bytes_to_pubkey(pool_address),
+            fee_basis_points=builder_fee_basis_points,
+            cashback_fee_basis_points=cashback_fee_basis_points,
+        )
+        return cls._from_builder_params(params)
+
+    @classmethod
+    async def from_mint_by_rpc(
+        cls,
+        fetcher: Any,
+        mint: bytes,
+        fee_basis_points: PumpSwapFeeBasisPoints | None = None,
+        cashback_fee_basis_points: int = 0,
+    ) -> "PumpSwapParams":
+        from ..instruction.pumpswap_builder import (
+            PumpSwapFeeBasisPoints as BuilderFeeBasisPoints,
+            params_from_mint,
+        )
+
+        builder_fee_basis_points = (
+            BuilderFeeBasisPoints(
+                fee_basis_points.lp_fee_basis_points,
+                fee_basis_points.protocol_fee_basis_points,
+                fee_basis_points.coin_creator_fee_basis_points,
+            )
+            if fee_basis_points is not None
+            else None
+        )
+        params = await params_from_mint(
+            fetcher,
+            cls._bytes_to_pubkey(mint),
+            fee_basis_points=builder_fee_basis_points,
+            cashback_fee_basis_points=cashback_fee_basis_points,
+        )
+        return cls._from_builder_params(params)
 
     @classmethod
     def new(
@@ -174,7 +290,10 @@ class PumpSwapParams:
         base_token_program: bytes,
         quote_token_program: bytes,
         fee_recipient: bytes,
+        coin_creator: bytes = bytes(32),
         is_cashback_coin: bool = False,
+        cashback_fee_basis_points: int = 0,
+        fee_basis_points: PumpSwapFeeBasisPoints | None = None,
     ) -> "PumpSwapParams":
         """Create new PumpSwapParams"""
         from ..instruction.pumpswap_builder import MAYHEM_FEE_RECIPIENTS
@@ -194,6 +313,9 @@ class PumpSwapParams:
             quote_token_program=quote_token_program,
             is_mayhem_mode=is_mayhem_mode,
             is_cashback_coin=is_cashback_coin,
+            coin_creator=coin_creator,
+            cashback_fee_basis_points=cashback_fee_basis_points,
+            fee_basis_points=fee_basis_points,
         )
 
     @classmethod
@@ -211,7 +333,10 @@ class PumpSwapParams:
         base_token_program: bytes,
         quote_token_program: bytes,
         fee_recipient: bytes,
+        coin_creator: bytes = bytes(32),
         is_cashback_coin: bool = False,
+        cashback_fee_basis_points: int = 0,
+        fee_basis_points: PumpSwapFeeBasisPoints | None = None,
     ) -> "PumpSwapParams":
         """Create from trade data"""
         return cls.new(
@@ -227,7 +352,10 @@ class PumpSwapParams:
             base_token_program,
             quote_token_program,
             fee_recipient,
+            coin_creator,
             is_cashback_coin,
+            cashback_fee_basis_points,
+            fee_basis_points,
         )
 
 

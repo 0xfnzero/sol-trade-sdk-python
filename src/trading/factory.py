@@ -38,6 +38,28 @@ def _to_pubkey(value: Any) -> Pubkey:
     raise TypeError(f"无法解析为 Pubkey: {type(value)!r}")
 
 
+def _pumpswap_fee_basis_points(params: Dict[str, Any], fee_cls: Any) -> Any:
+    fee = params.get("fee_basis_points")
+    if fee is not None:
+        get_value = fee.get if isinstance(fee, dict) else lambda key, default=0: getattr(fee, key, default)
+        return fee_cls(
+            int(get_value("lp_fee_basis_points", 0)),
+            int(get_value("protocol_fee_basis_points", 0)),
+            int(get_value("coin_creator_fee_basis_points", 0)),
+        )
+    if (
+        "lp_fee_basis_points" in params
+        or "protocol_fee_basis_points" in params
+        or "coin_creator_fee_basis_points" in params
+    ):
+        return fee_cls(
+            int(params.get("lp_fee_basis_points", 0)),
+            int(params.get("protocol_fee_basis_points", 0)),
+            int(params.get("coin_creator_fee_basis_points", 0)),
+        )
+    return None
+
+
 def _pumpfun_bonding_to_builder_params(
     bonding_curve: Any,
     creator_vault: Any,
@@ -198,6 +220,7 @@ class PumpSwapExecutor(TradeExecutor):
         from ..instruction.pumpswap_builder import (
             build_buy_instructions as psb_buy,
             BuildBuyParams,
+            PumpSwapFeeBasisPoints as PsbFeeBasisPoints,
             PumpSwapParams as PsbParams,
             TOKEN_PROGRAM as SPL_TOKEN,
         )
@@ -223,6 +246,11 @@ class PumpSwapExecutor(TradeExecutor):
             quote_token_program=qtp,
             is_mayhem_mode=bool(params.get("is_mayhem_mode", False)),
             is_cashback_coin=bool(params.get("is_cashback_coin", False)),
+            coin_creator=_to_pubkey(params.get("coin_creator", bytes(32))),
+            cashback_fee_basis_points=int(params.get("cashback_fee_basis_points", 0)),
+            fee_basis_points=_pumpswap_fee_basis_points(params, PsbFeeBasisPoints),
+            pool_creator=_to_pubkey(params.get("pool_creator", bytes(32))),
+            base_mint_supply=params.get("base_mint_supply"),
         )
         builder_params = BuildBuyParams(
             payer=_to_pubkey(params["payer"]),
@@ -249,6 +277,7 @@ class PumpSwapExecutor(TradeExecutor):
         from ..instruction.pumpswap_builder import (
             build_sell_instructions as psb_sell,
             BuildSellParams,
+            PumpSwapFeeBasisPoints as PsbFeeBasisPoints,
             PumpSwapParams as PsbParams,
             TOKEN_PROGRAM as SPL_TOKEN,
         )
@@ -274,6 +303,11 @@ class PumpSwapExecutor(TradeExecutor):
             quote_token_program=qtp,
             is_mayhem_mode=bool(params.get("is_mayhem_mode", False)),
             is_cashback_coin=bool(params.get("is_cashback_coin", False)),
+            coin_creator=_to_pubkey(params.get("coin_creator", bytes(32))),
+            cashback_fee_basis_points=int(params.get("cashback_fee_basis_points", 0)),
+            fee_basis_points=_pumpswap_fee_basis_points(params, PsbFeeBasisPoints),
+            pool_creator=_to_pubkey(params.get("pool_creator", bytes(32))),
+            base_mint_supply=params.get("base_mint_supply"),
         )
         builder_params = BuildSellParams(
             payer=_to_pubkey(params["payer"]),

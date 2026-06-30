@@ -3,8 +3,11 @@ PumpSwap instruction builder - Production-grade implementation.
 100% port from Rust sol-trade-sdk (src/instruction/pumpswap.rs).
 """
 
+from __future__ import annotations
+
 import struct
 import secrets
+import base64
 from typing import List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -74,6 +77,9 @@ GLOBAL_VOLUME_ACCUMULATOR_SEED = b"global_volume_accumulator"
 LP_FEE_BASIS_POINTS = 25
 PROTOCOL_FEE_BASIS_POINTS = 5
 COIN_CREATOR_FEE_BASIS_POINTS = 5
+SPL_MINT_SUPPLY_OFFSET = 36
+SPL_MINT_SUPPLY_LEN = 8
+FEE_TIER_LEN = 16 + 8 * 3
 
 
 # ===== PDA Derivation Functions - 100% from Rust =====
@@ -81,6 +87,11 @@ COIN_CREATOR_FEE_BASIS_POINTS = 5
 def get_mayhem_fee_recipient_random() -> Pubkey:
     """Get cryptographically secure random Mayhem fee recipient."""
     return secrets.choice(MAYHEM_FEE_RECIPIENTS)
+
+
+def get_protocol_fee_recipient_random() -> Pubkey:
+    """Protocol fee recipient fallback. Rust may use cached GlobalConfig when warmed."""
+    return FEE_RECIPIENT
 
 
 def get_protocol_extra_fee_recipient_random() -> Pubkey:
@@ -126,6 +137,12 @@ def get_coin_creator_vault_authority(coin_creator: Pubkey) -> Pubkey:
     return pda
 
 
+def get_coin_creator_vault_ata(coin_creator: Pubkey, quote_mint: Pubkey) -> Pubkey:
+    """Get coin creator vault ATA for the quote mint."""
+    authority = get_coin_creator_vault_authority(coin_creator)
+    return get_associated_token_address(authority, quote_mint, TOKEN_PROGRAM)
+
+
 def get_user_volume_accumulator_pda(user: Pubkey) -> Pubkey:
     """Get user volume accumulator PDA (seeds: ["user_volume_accumulator", user])"""
     pda, _ = Pubkey.find_program_address(
@@ -159,6 +176,34 @@ def get_user_volume_accumulator_quote_ata(user: Pubkey, quote_mint: Pubkey, quot
 # ===== Params Dataclasses =====
 
 @dataclass
+class PumpSwapFeeBasisPoints:
+    lp_fee_basis_points: int = LP_FEE_BASIS_POINTS
+    protocol_fee_basis_points: int = PROTOCOL_FEE_BASIS_POINTS
+    coin_creator_fee_basis_points: int = COIN_CREATOR_FEE_BASIS_POINTS
+
+
+@dataclass
+class PumpSwapFeeTier:
+    market_cap_lamports_threshold: int
+    fees: PumpSwapFeeBasisPoints
+
+
+@dataclass
+class PumpSwapFeeConfig:
+    flat_fees: PumpSwapFeeBasisPoints
+    fee_tiers: list[PumpSwapFeeTier]
+    stable_fee_tiers: list[PumpSwapFeeTier]
+
+
+def legacy_fee_basis_points(has_coin_creator: bool) -> PumpSwapFeeBasisPoints:
+    return PumpSwapFeeBasisPoints(
+        LP_FEE_BASIS_POINTS,
+        PROTOCOL_FEE_BASIS_POINTS,
+        COIN_CREATOR_FEE_BASIS_POINTS if has_coin_creator else 0,
+    )
+
+
+@dataclass
 class PumpSwapParams:
     """Parameters for PumpSwap operations"""
     pool: Pubkey
@@ -174,6 +219,11 @@ class PumpSwapParams:
     quote_token_program: Pubkey
     is_mayhem_mode: bool = False
     is_cashback_coin: bool = False
+    coin_creator: Pubkey | None = None
+    cashback_fee_basis_points: int = 0
+    fee_basis_points: PumpSwapFeeBasisPoints | None = None
+    pool_creator: Pubkey | None = None
+    base_mint_supply: int | None = None
 
 
 @dataclass
@@ -238,6 +288,12 @@ def handle_wsol(owner: Pubkey, amount: int) -> List[Instruction]:
     return instructions
 
 
+def handle_wsol_for_mint(owner: Pubkey, mint: Pubkey, token_program: Pubkey, amount: int) -> List[Instruction]:
+    if mint == WSOL_TOKEN_ACCOUNT:
+        return handle_wsol(owner, amount)
+    return [create_associated_token_account_idempotent(owner, owner, mint, token_program)]
+
+
 def close_wsol(owner: Pubkey) -> Instruction:
     """Close WSOL ATA and reclaim rent"""
     wsol_ata = get_associated_token_address(owner, WSOL_TOKEN_ACCOUNT, TOKEN_PROGRAM)
@@ -249,6 +305,21 @@ def close_wsol(owner: Pubkey) -> Instruction:
             AccountMeta(owner, False, True),
             AccountMeta(owner, True, False),
         ]
+    )
+
+
+def close_wsol_for_mint(owner: Pubkey, mint: Pubkey, token_program: Pubkey) -> Instruction | None:
+    if mint != WSOL_TOKEN_ACCOUNT:
+        return None
+    ata = get_associated_token_address(owner, mint, token_program)
+    return Instruction(
+        token_program,
+        bytes([9]) + bytes(8),
+        [
+            AccountMeta(ata, False, True),
+            AccountMeta(owner, False, True),
+            AccountMeta(owner, True, False),
+        ],
     )
 
 
@@ -276,12 +347,215 @@ def create_associated_token_account_idempotent(
 
 # ===== Instruction Builders - 100% from Rust =====
 
+def _effective_fee_basis_points(pp: PumpSwapParams) -> PumpSwapFeeBasisPoints:
+    has_coin_creator = (
+        pp.coin_creator != Pubkey.default()
+        if pp.coin_creator is not None
+        else pp.coin_creator_vault_authority != DEFAULT_COIN_CREATOR_VAULT_AUTHORITY
+    )
+    base = pp.fee_basis_points or legacy_fee_basis_points(has_coin_creator)
+    return PumpSwapFeeBasisPoints(
+        base.lp_fee_basis_points,
+        base.protocol_fee_basis_points,
+        (base.coin_creator_fee_basis_points if has_coin_creator else 0)
+        + pp.cashback_fee_basis_points,
+    )
+
+
+def _should_add_pool_v2(pp: PumpSwapParams) -> bool:
+    return pp.coin_creator is None or pp.coin_creator != Pubkey.default()
+
+
+def decode_mint_supply(data: bytes) -> int | None:
+    """Decode SPL mint supply from a mint account."""
+    end = SPL_MINT_SUPPLY_OFFSET + SPL_MINT_SUPPLY_LEN
+    if len(data) < end:
+        return None
+    return int.from_bytes(data[SPL_MINT_SUPPLY_OFFSET:end], "little")
+
+
+def _decode_fees(data: bytes, offset: int) -> PumpSwapFeeBasisPoints | None:
+    if len(data) < offset + 24:
+        return None
+    return PumpSwapFeeBasisPoints(
+        int.from_bytes(data[offset:offset + 8], "little"),
+        int.from_bytes(data[offset + 8:offset + 16], "little"),
+        int.from_bytes(data[offset + 16:offset + 24], "little"),
+    )
+
+
+def _decode_fee_tiers(data: bytes, offset: int) -> tuple[list[PumpSwapFeeTier], int] | None:
+    if len(data) < offset + 4:
+        return None
+    length = int.from_bytes(data[offset:offset + 4], "little")
+    offset += 4
+    byte_len = length * FEE_TIER_LEN
+    if len(data) < offset + byte_len:
+        return None
+
+    tiers: list[PumpSwapFeeTier] = []
+    for _ in range(length):
+        threshold = int.from_bytes(data[offset:offset + 16], "little")
+        offset += 16
+        fees = _decode_fees(data, offset)
+        if fees is None:
+            return None
+        offset += 24
+        tiers.append(PumpSwapFeeTier(threshold, fees))
+    return tiers, offset
+
+
+def decode_fee_config(data: bytes) -> PumpSwapFeeConfig | None:
+    """Decode PumpSwap FeeConfig account data."""
+    try:
+        offset = 8  # discriminator
+        offset += 1  # bump
+        offset += 32  # admin
+        flat_fees = _decode_fees(data, offset)
+        if flat_fees is None:
+            return None
+        offset += 24
+
+        decoded_fee_tiers = _decode_fee_tiers(data, offset)
+        if decoded_fee_tiers is None:
+            return None
+        fee_tiers, offset = decoded_fee_tiers
+
+        decoded_stable_fee_tiers = _decode_fee_tiers(data, offset)
+        if decoded_stable_fee_tiers is None:
+            return None
+        stable_fee_tiers, _ = decoded_stable_fee_tiers
+
+        return PumpSwapFeeConfig(flat_fees, fee_tiers, stable_fee_tiers)
+    except Exception:
+        return None
+
+
+async def fetch_fee_config(fetcher: PoolFetcher) -> PumpSwapFeeConfig | None:
+    data = await _fetch_account_data(fetcher, FEE_CONFIG)
+    if data is None:
+        return None
+    return decode_fee_config(data)
+
+
+def is_canonical_pump_pool(base_mint: Pubkey, pool_creator: Pubkey) -> bool:
+    return get_pump_pool_authority_pda(base_mint) == pool_creator
+
+
+def pool_market_cap_lamports(
+    base_mint_supply: int,
+    base_reserve: int,
+    quote_reserve: int,
+) -> int | None:
+    if base_reserve == 0:
+        return None
+    return (quote_reserve * base_mint_supply) // base_reserve
+
+
+def calculate_fee_tier(
+    fee_tiers: list[PumpSwapFeeTier],
+    market_cap_lamports: int,
+) -> PumpSwapFeeBasisPoints | None:
+    if not fee_tiers:
+        return None
+    first = fee_tiers[0]
+    if market_cap_lamports < first.market_cap_lamports_threshold:
+        return first.fees
+    for tier in reversed(fee_tiers):
+        if market_cap_lamports >= tier.market_cap_lamports_threshold:
+            return tier.fees
+    return first.fees
+
+
+def compute_pumpswap_fee_basis_points(
+    fee_config: PumpSwapFeeConfig | None,
+    pool_creator: Pubkey,
+    base_mint: Pubkey,
+    base_mint_supply: int | None,
+    base_reserve: int,
+    quote_reserve: int,
+) -> PumpSwapFeeBasisPoints:
+    if fee_config is None:
+        return legacy_fee_basis_points(True)
+
+    if not is_canonical_pump_pool(base_mint, pool_creator):
+        return fee_config.flat_fees
+
+    if base_mint_supply is None:
+        return legacy_fee_basis_points(True)
+
+    market_cap = pool_market_cap_lamports(base_mint_supply, base_reserve, quote_reserve)
+    if market_cap is None:
+        return legacy_fee_basis_points(True)
+
+    return calculate_fee_tier(fee_config.fee_tiers, market_cap) or fee_config.flat_fees
+
+
+def _extract_account_data(value) -> bytes | None:
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value)
+    data = getattr(value, "data", None)
+    if data is not None:
+        return _extract_account_data(data)
+    inner = getattr(value, "value", None)
+    if inner is not None:
+        return _extract_account_data(inner)
+    if isinstance(value, dict):
+        if "data" in value:
+            return _extract_account_data(value["data"])
+        if "value" in value:
+            return _extract_account_data(value["value"])
+    if isinstance(value, (list, tuple)) and value:
+        first = value[0]
+        if isinstance(first, str):
+            try:
+                return base64.b64decode(first)
+            except Exception:
+                return first.encode()
+        return _extract_account_data(first)
+    return None
+
+
+def _extract_token_amount(value) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    amount = getattr(value, "amount", None)
+    if amount is not None:
+        return int(amount)
+    inner = getattr(value, "value", None)
+    if inner is not None:
+        return _extract_token_amount(inner)
+    if isinstance(value, dict):
+        if "amount" in value:
+            return int(value["amount"])
+        if "value" in value:
+            return _extract_token_amount(value["value"])
+    return None
+
+
+async def _fetch_account_data(fetcher: PoolFetcher, pubkey: Pubkey) -> bytes | None:
+    return _extract_account_data(await fetcher.get_account_info(pubkey))
+
+
+async def _fetch_token_balance(fetcher: PoolFetcher, pubkey: Pubkey) -> int | None:
+    return _extract_token_amount(await fetcher.get_token_account_balance(pubkey))
+
+
 def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
     """
     Build buy instructions for PumpSwap.
     100% port from Rust: src/instruction/pumpswap.rs build_buy_instructions
     """
-    from ..calc.pumpswap import buy_quote_input_internal, calculate_with_slippage_sell
+    from ..calc.pumpswap import (
+        PumpSwapFeeBasisPoints as CalcPumpSwapFeeBasisPoints,
+        buy_quote_input_internal_with_fees,
+        calculate_with_slippage_sell,
+        sell_base_input_internal_with_fees,
+    )
     
     if params.input_amount == 0:
         raise ValueError("Amount cannot be zero")
@@ -295,23 +569,42 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
         raise ValueError("Pool must contain WSOL or USDC")
     
     quote_is_wsol_or_usdc = pp.quote_mint == WSOL_TOKEN_ACCOUNT or pp.quote_mint == USDC_TOKEN_ACCOUNT
+    input_stable_mint = pp.quote_mint if quote_is_wsol_or_usdc else pp.base_mint
+    input_stable_token_program = pp.quote_token_program if quote_is_wsol_or_usdc else pp.base_token_program
+    output_trade_mint = pp.base_mint if quote_is_wsol_or_usdc else pp.quote_mint
+    output_trade_token_program = pp.base_token_program if quote_is_wsol_or_usdc else pp.quote_token_program
     
-    # Determine if has coin creator
-    has_coin_creator = pp.coin_creator_vault_authority != DEFAULT_COIN_CREATOR_VAULT_AUTHORITY
+    fee_basis_points = _effective_fee_basis_points(pp)
     
     # Calculate trade amounts
     if quote_is_wsol_or_usdc:
-        result = buy_quote_input_internal(
+        result = buy_quote_input_internal_with_fees(
             params.input_amount,
             params.slippage_basis_points,
             pp.pool_base_token_reserves,
             pp.pool_quote_token_reserves,
-            has_coin_creator,
+            CalcPumpSwapFeeBasisPoints(
+                fee_basis_points.lp_fee_basis_points,
+                fee_basis_points.protocol_fee_basis_points,
+                fee_basis_points.coin_creator_fee_basis_points,
+            ),
         )
         token_amount = result["base"]
         sol_amount = result["max_quote"]
     else:
-        raise ValueError("Invalid configuration for operation")
+        result = sell_base_input_internal_with_fees(
+            params.input_amount,
+            params.slippage_basis_points,
+            pp.pool_base_token_reserves,
+            pp.pool_quote_token_reserves,
+            CalcPumpSwapFeeBasisPoints(
+                fee_basis_points.lp_fee_basis_points,
+                fee_basis_points.protocol_fee_basis_points,
+                fee_basis_points.coin_creator_fee_basis_points,
+            ),
+        )
+        token_amount = result["min_quote"]
+        sol_amount = params.input_amount
     
     # Override token amount if fixed output is specified
     if params.fixed_output_amount is not None:
@@ -325,7 +618,7 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
     if pp.is_mayhem_mode:
         fee_recipient = get_mayhem_fee_recipient_random()
     else:
-        fee_recipient = FEE_RECIPIENT
+        fee_recipient = get_protocol_fee_recipient_random()
     fee_recipient_ata = get_associated_token_address(fee_recipient, pp.quote_mint, TOKEN_PROGRAM)
     
     # Build instructions
@@ -334,16 +627,16 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
     # Handle WSOL wrapping if needed
     # CRITICAL FIX: Use input_amount when use_exact_quote_amount=true (buy_exact_quote_in mode)
     # to avoid "insufficient funds" when buying MAX
-    if params.create_input_mint_ata and quote_is_wsol_or_usdc:
+    if params.create_input_mint_ata:
         wrap_amount = params.input_amount
         if not params.use_exact_quote_amount:
             wrap_amount = sol_amount
-        instructions.extend(handle_wsol(params.payer, wrap_amount))
+        instructions.extend(handle_wsol_for_mint(params.payer, input_stable_mint, input_stable_token_program, wrap_amount))
     
     # Create output token ATA if needed
     if params.create_output_mint_ata:
         instructions.append(create_associated_token_account_idempotent(
-            params.payer, params.payer, pp.base_mint, pp.base_token_program
+            params.payer, params.payer, output_trade_mint, output_trade_token_program
         ))
     
     # Build accounts array
@@ -386,9 +679,9 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
         wsol_ata = get_user_volume_accumulator_wsol_ata(params.payer)
         accounts.append(AccountMeta(wsol_ata, False, True))
     
-    # Add pool v2 PDA
-    pool_v2 = get_pool_v2_pda(pp.base_mint)
-    accounts.append(AccountMeta(pool_v2, False, False))
+    if _should_add_pool_v2(pp):
+        pool_v2 = get_pool_v2_pda(pp.base_mint)
+        accounts.append(AccountMeta(pool_v2, False, False))
     protocol_extra = get_protocol_extra_fee_recipient_random()
     accounts.append(AccountMeta(protocol_extra, False, False))
     accounts.append(
@@ -396,15 +689,18 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
     )
 
     # Build instruction data
-    if params.use_exact_quote_amount:
+    track_volume = 1 if pp.is_cashback_coin else 0
+    if params.fixed_output_amount is not None:
+        data = BUY_DISCRIMINATOR + struct.pack("<Q", token_amount) + struct.pack("<Q", sol_amount) + bytes([track_volume])
+    elif quote_is_wsol_or_usdc and params.use_exact_quote_amount:
         # buy_exact_quote_in(spendable_quote_in, min_base_amount_out, track_volume)
         min_base_amount_out = calculate_with_slippage_sell(token_amount, params.slippage_basis_points)
-        track_volume = bytes([1, 1]) if pp.is_cashback_coin else bytes([1, 0])
-        data = BUY_EXACT_QUOTE_IN_DISCRIMINATOR + struct.pack("<Q", params.input_amount) + struct.pack("<Q", min_base_amount_out) + track_volume
-    else:
+        data = BUY_EXACT_QUOTE_IN_DISCRIMINATOR + struct.pack("<Q", params.input_amount) + struct.pack("<Q", min_base_amount_out) + bytes([track_volume])
+    elif quote_is_wsol_or_usdc:
         # buy(token_amount, max_quote, track_volume)
-        track_volume = bytes([1, 1]) if pp.is_cashback_coin else bytes([1, 0])
-        data = BUY_DISCRIMINATOR + struct.pack("<Q", token_amount) + struct.pack("<Q", sol_amount) + track_volume
+        data = BUY_DISCRIMINATOR + struct.pack("<Q", token_amount) + struct.pack("<Q", sol_amount) + bytes([track_volume])
+    else:
+        data = SELL_DISCRIMINATOR + struct.pack("<Q", sol_amount) + struct.pack("<Q", token_amount)
     
     instructions.append(Instruction(PUMPSWAP_PROGRAM, data, accounts))
     
@@ -420,7 +716,11 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
     Build sell instructions for PumpSwap.
     100% port from Rust: src/instruction/pumpswap.rs build_sell_instructions
     """
-    from ..calc.pumpswap import sell_base_input_internal
+    from ..calc.pumpswap import (
+        PumpSwapFeeBasisPoints as CalcPumpSwapFeeBasisPoints,
+        buy_quote_input_internal_with_fees,
+        sell_base_input_internal_with_fees,
+    )
     
     if params.input_amount == 0:
         raise ValueError("Amount cannot be zero")
@@ -434,23 +734,42 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
         raise ValueError("Pool must contain WSOL or USDC")
     
     quote_is_wsol_or_usdc = pp.quote_mint == WSOL_TOKEN_ACCOUNT or pp.quote_mint == USDC_TOKEN_ACCOUNT
+    output_stable_mint = pp.quote_mint if quote_is_wsol_or_usdc else pp.base_mint
+    output_stable_token_program = pp.quote_token_program if quote_is_wsol_or_usdc else pp.base_token_program
     
-    # Determine if has coin creator
-    has_coin_creator = pp.coin_creator_vault_authority != DEFAULT_COIN_CREATOR_VAULT_AUTHORITY
+    fee_basis_points = _effective_fee_basis_points(pp)
     
     # Calculate trade amounts
     token_amount = params.input_amount
     sol_amount = 0
     
     if quote_is_wsol_or_usdc:
-        result = sell_base_input_internal(
+        result = sell_base_input_internal_with_fees(
             params.input_amount,
             params.slippage_basis_points,
             pp.pool_base_token_reserves,
             pp.pool_quote_token_reserves,
-            has_coin_creator,
+            CalcPumpSwapFeeBasisPoints(
+                fee_basis_points.lp_fee_basis_points,
+                fee_basis_points.protocol_fee_basis_points,
+                fee_basis_points.coin_creator_fee_basis_points,
+            ),
         )
         sol_amount = result["min_quote"]
+    else:
+        result = buy_quote_input_internal_with_fees(
+            params.input_amount,
+            params.slippage_basis_points,
+            pp.pool_base_token_reserves,
+            pp.pool_quote_token_reserves,
+            CalcPumpSwapFeeBasisPoints(
+                fee_basis_points.lp_fee_basis_points,
+                fee_basis_points.protocol_fee_basis_points,
+                fee_basis_points.coin_creator_fee_basis_points,
+            ),
+        )
+        token_amount = result["max_quote"]
+        sol_amount = result["base"]
     
     # Override sol amount if fixed output is specified
     if params.fixed_output_amount is not None:
@@ -464,16 +783,16 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
     if pp.is_mayhem_mode:
         fee_recipient = get_mayhem_fee_recipient_random()
     else:
-        fee_recipient = FEE_RECIPIENT
+        fee_recipient = get_protocol_fee_recipient_random()
     fee_recipient_ata = get_associated_token_address(fee_recipient, pp.quote_mint, TOKEN_PROGRAM)
     
     # Build instructions
     instructions: List[Instruction] = []
     
     # Create WSOL/USDC ATA if needed for receiving
-    if params.create_output_mint_ata and quote_is_wsol_or_usdc:
+    if params.create_output_mint_ata:
         instructions.append(create_associated_token_account_idempotent(
-            params.payer, params.payer, pp.quote_mint, pp.quote_token_program
+            params.payer, params.payer, output_stable_mint, output_stable_token_program
         ))
     
     # Build accounts array
@@ -520,9 +839,9 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
             AccountMeta(user_volume_accumulator, False, True),
         ])
     
-    # Add pool v2 PDA
-    pool_v2 = get_pool_v2_pda(pp.base_mint)
-    accounts.append(AccountMeta(pool_v2, False, False))
+    if _should_add_pool_v2(pp):
+        pool_v2 = get_pool_v2_pda(pp.base_mint)
+        accounts.append(AccountMeta(pool_v2, False, False))
     protocol_extra = get_protocol_extra_fee_recipient_random()
     accounts.append(AccountMeta(protocol_extra, False, False))
     accounts.append(
@@ -533,21 +852,24 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
     if quote_is_wsol_or_usdc:
         data = SELL_DISCRIMINATOR + struct.pack("<Q", token_amount) + struct.pack("<Q", sol_amount)
     else:
-        data = SELL_DISCRIMINATOR + struct.pack("<Q", sol_amount) + struct.pack("<Q", token_amount)
+        data = BUY_DISCRIMINATOR + struct.pack("<Q", sol_amount) + struct.pack("<Q", token_amount)
     
     instructions.append(Instruction(PUMPSWAP_PROGRAM, data, accounts))
     
     # Close WSOL ATA if requested
-    if params.close_output_mint_ata and quote_is_wsol_or_usdc:
-        instructions.append(close_wsol(params.payer))
+    if params.close_output_mint_ata:
+        close_ix = close_wsol_for_mint(params.payer, output_stable_mint, output_stable_token_program)
+        if close_ix is not None:
+            instructions.append(close_ix)
     
     # Close base token account if requested
     if params.close_input_mint_ata:
+        input_token_account = user_base_token_account if quote_is_wsol_or_usdc else user_quote_token_account
         close_ix = Instruction(
-            pp.base_token_program,
+            pp.base_token_program if quote_is_wsol_or_usdc else pp.quote_token_program,
             bytes([9]) + bytes(8),  # close_account discriminator
             [
-                AccountMeta(user_base_token_account, False, True),
+                AccountMeta(input_token_account, False, True),
                 AccountMeta(params.payer, False, True),
                 AccountMeta(params.payer, True, False),
             ]
@@ -761,7 +1083,7 @@ async def fetch_pool(fetcher: PoolFetcher, pool_address: Pubkey) -> PumpSwapPool
     Returns:
         PumpSwapPool if successful, None if not found or invalid
     """
-    data = await fetcher.get_account_info(pool_address)
+    data = await _fetch_account_data(fetcher, pool_address)
     if data is None or len(data) < 8:
         return None
     return decode_pool(data[8:])
@@ -783,8 +1105,8 @@ async def get_token_balances(
         Tuple of (base_balance, quote_balance) if successful, None if error
     """
     try:
-        base_balance = await fetcher.get_token_account_balance(pool.pool_base_token_account)
-        quote_balance = await fetcher.get_token_account_balance(pool.pool_quote_token_account)
+        base_balance = await _fetch_token_balance(fetcher, pool.pool_base_token_account)
+        quote_balance = await _fetch_token_balance(fetcher, pool.pool_quote_token_account)
         
         if base_balance is None or quote_balance is None:
             return None
@@ -792,6 +1114,114 @@ async def get_token_balances(
         return (base_balance, quote_balance)
     except Exception:
         return None
+
+
+async def params_from_pool_data(
+    fetcher: PoolFetcher,
+    pool_address: Pubkey,
+    pool: PumpSwapPool,
+    fee_basis_points: PumpSwapFeeBasisPoints | None = None,
+    cashback_fee_basis_points: int = 0,
+) -> PumpSwapParams:
+    """
+    Build PumpSwap params from a decoded pool using explicit cold-path RPC reads.
+
+    `fee_basis_points` is optional. When provided, it is trusted and no FeeConfig
+    discovery is needed for fee math. When omitted, this helper fetches FeeConfig
+    and mint supply before trading; instruction builders remain params-only.
+    """
+    balances = await get_token_balances(fetcher, pool)
+    if balances is None:
+        raise ValueError("Failed to read pool token balances")
+    base_balance, quote_balance = balances
+
+    base_token_program_ata = get_associated_token_address(
+        pool_address,
+        pool.base_mint,
+        TOKEN_PROGRAM,
+    )
+    quote_token_program_ata = get_associated_token_address(
+        pool_address,
+        pool.quote_mint,
+        TOKEN_PROGRAM,
+    )
+    base_token_program = (
+        TOKEN_PROGRAM
+        if pool.pool_base_token_account == base_token_program_ata
+        else TOKEN_PROGRAM_2022
+    )
+    quote_token_program = (
+        TOKEN_PROGRAM
+        if pool.pool_quote_token_account == quote_token_program_ata
+        else TOKEN_PROGRAM_2022
+    )
+
+    base_mint_supply = None
+    mint_data = await _fetch_account_data(fetcher, pool.base_mint)
+    if mint_data is not None:
+        base_mint_supply = decode_mint_supply(mint_data)
+
+    effective_fees = fee_basis_points
+    if effective_fees is None:
+        fee_config = await fetch_fee_config(fetcher)
+        effective_fees = compute_pumpswap_fee_basis_points(
+            fee_config,
+            pool.creator,
+            pool.base_mint,
+            base_mint_supply,
+            base_balance,
+            quote_balance,
+        )
+
+    creator_fee_basis_points = (
+        0
+        if pool.coin_creator == Pubkey.default()
+        else effective_fees.coin_creator_fee_basis_points
+    )
+    effective_fees = PumpSwapFeeBasisPoints(
+        effective_fees.lp_fee_basis_points,
+        effective_fees.protocol_fee_basis_points,
+        creator_fee_basis_points,
+    )
+
+    return PumpSwapParams(
+        pool=pool_address,
+        base_mint=pool.base_mint,
+        quote_mint=pool.quote_mint,
+        pool_base_token_account=pool.pool_base_token_account,
+        pool_quote_token_account=pool.pool_quote_token_account,
+        pool_base_token_reserves=base_balance,
+        pool_quote_token_reserves=quote_balance,
+        coin_creator_vault_ata=get_coin_creator_vault_ata(pool.coin_creator, pool.quote_mint),
+        coin_creator_vault_authority=get_coin_creator_vault_authority(pool.coin_creator),
+        base_token_program=base_token_program,
+        quote_token_program=quote_token_program,
+        is_mayhem_mode=pool.is_mayhem_mode,
+        is_cashback_coin=pool.is_cashback_coin,
+        coin_creator=pool.coin_creator,
+        cashback_fee_basis_points=cashback_fee_basis_points,
+        fee_basis_points=effective_fees,
+        pool_creator=pool.creator,
+        base_mint_supply=base_mint_supply,
+    )
+
+
+async def params_from_pool_address(
+    fetcher: PoolFetcher,
+    pool_address: Pubkey,
+    fee_basis_points: PumpSwapFeeBasisPoints | None = None,
+    cashback_fee_basis_points: int = 0,
+) -> PumpSwapParams:
+    pool = await fetch_pool(fetcher, pool_address)
+    if pool is None:
+        raise ValueError("PumpSwap pool account not found or invalid")
+    return await params_from_pool_data(
+        fetcher,
+        pool_address,
+        pool,
+        fee_basis_points=fee_basis_points,
+        cashback_fee_basis_points=cashback_fee_basis_points,
+    )
 
 
 async def find_by_mint(
@@ -815,7 +1245,7 @@ async def find_by_mint(
     """
     # 1. Try v2 PDA
     pool_v2 = get_pool_v2_pda(mint)
-    data = await fetcher.get_account_info(pool_v2)
+    data = await _fetch_account_data(fetcher, pool_v2)
     if data is not None and len(data) >= 8:
         pool = decode_pool(data[8:])
         if pool is not None and pool.base_mint == mint:
@@ -823,13 +1253,32 @@ async def find_by_mint(
 
     # 2. Try canonical pool PDA
     canonical = get_canonical_pool_pda(mint)
-    data = await fetcher.get_account_info(canonical)
+    data = await _fetch_account_data(fetcher, canonical)
     if data is not None and len(data) >= 8:
         pool = decode_pool(data[8:])
         if pool is not None and pool.base_mint == mint:
             return (canonical, pool)
 
     return None
+
+
+async def params_from_mint(
+    fetcher: PoolFetcher,
+    mint: Pubkey,
+    fee_basis_points: PumpSwapFeeBasisPoints | None = None,
+    cashback_fee_basis_points: int = 0,
+) -> PumpSwapParams:
+    found = await find_by_mint(fetcher, mint)
+    if found is None:
+        raise ValueError("No pool found for mint")
+    pool_address, pool = found
+    return await params_from_pool_data(
+        fetcher,
+        pool_address,
+        pool,
+        fee_basis_points=fee_basis_points,
+        cashback_fee_basis_points=cashback_fee_basis_points,
+    )
 
 
 # ===== Pool Size Constants - from Rust: src/instruction/utils/pumpswap.rs =====

@@ -3,6 +3,7 @@ PumpSwap calculation utilities.
 100% port from Rust sol-trade-sdk (src/utils/calc/pumpswap.rs).
 """
 
+from dataclasses import dataclass
 from typing import Dict
 
 # Maximum slippage in basis points (99.99%)
@@ -13,6 +14,21 @@ MAX_SLIPPAGE_BASIS_POINTS = 9999
 LP_FEE_BASIS_POINTS = 25
 PROTOCOL_FEE_BASIS_POINTS = 5
 COIN_CREATOR_FEE_BASIS_POINTS = 5
+
+
+@dataclass(frozen=True)
+class PumpSwapFeeBasisPoints:
+    lp_fee_basis_points: int
+    protocol_fee_basis_points: int
+    coin_creator_fee_basis_points: int
+
+
+def legacy_pumpswap_fee_basis_points(has_coin_creator: bool) -> PumpSwapFeeBasisPoints:
+    return PumpSwapFeeBasisPoints(
+        LP_FEE_BASIS_POINTS,
+        PROTOCOL_FEE_BASIS_POINTS,
+        COIN_CREATOR_FEE_BASIS_POINTS if has_coin_creator else 0,
+    )
 
 
 def ceil_div(a: int, b: int) -> int:
@@ -73,6 +89,22 @@ def buy_quote_input_internal(
     pool_quote_reserves: int,
     has_coin_creator: bool,
 ) -> Dict[str, int]:
+    return buy_quote_input_internal_with_fees(
+        quote_amount_in,
+        slippage_basis_points,
+        pool_base_reserves,
+        pool_quote_reserves,
+        legacy_pumpswap_fee_basis_points(has_coin_creator),
+    )
+
+
+def buy_quote_input_internal_with_fees(
+    quote_amount_in: int,
+    slippage_basis_points: int,
+    pool_base_reserves: int,
+    pool_quote_reserves: int,
+    fee_basis_points: PumpSwapFeeBasisPoints,
+) -> Dict[str, int]:
     """
     Calculate base amount out for given quote amount in.
     
@@ -86,19 +118,27 @@ def buy_quote_input_internal(
     if quote_amount_in == 0 or pool_base_reserves == 0 or pool_quote_reserves == 0:
         return {"base": 0, "internal_quote_without_fees": 0, "max_quote": 0}
 
-    # Calculate total fee basis points (Rust: LP_FEE + PROTOCOL_FEE + COIN_CREATOR_FEE)
-    total_fee_bps = LP_FEE_BASIS_POINTS + PROTOCOL_FEE_BASIS_POINTS
-    if has_coin_creator:
-        total_fee_bps += COIN_CREATOR_FEE_BASIS_POINTS
+    total_fee_bps = (
+        fee_basis_points.lp_fee_basis_points
+        + fee_basis_points.protocol_fee_basis_points
+        + fee_basis_points.coin_creator_fee_basis_points
+    )
     
     # Calculate effective quote after fees (Rust formula)
     # effective_quote = quote * 10000 / (10000 + total_fee_bps)
     denominator = 10_000 + total_fee_bps
     effective_quote = (quote_amount_in * 10_000) // denominator
+    lp_fee = compute_fee(effective_quote, fee_basis_points.lp_fee_basis_points)
+    protocol_fee = compute_fee(effective_quote, fee_basis_points.protocol_fee_basis_points)
+    coin_creator_fee = compute_fee(effective_quote, fee_basis_points.coin_creator_fee_basis_points)
+    total_with_fees = effective_quote + lp_fee + protocol_fee + coin_creator_fee
+    if total_with_fees > quote_amount_in:
+        effective_quote = max(0, effective_quote - (total_with_fees - quote_amount_in))
+    input_amount = max(0, effective_quote - 1)
 
     # Constant product formula: base_out = (base_reserves * effective_quote) / (quote_reserves + effective_quote)
-    numerator = pool_base_reserves * effective_quote
-    denominator_effective = pool_quote_reserves + effective_quote
+    numerator = pool_base_reserves * input_amount
+    denominator_effective = pool_quote_reserves + input_amount
 
     if denominator_effective == 0:
         return {"base": 0, "internal_quote_without_fees": effective_quote, "max_quote": 0}
@@ -121,6 +161,22 @@ def buy_base_input_internal(
     pool_base_reserves: int,
     pool_quote_reserves: int,
     has_coin_creator: bool,
+) -> Dict[str, int]:
+    return buy_base_input_internal_with_fees(
+        base_amount_out,
+        slippage_basis_points,
+        pool_base_reserves,
+        pool_quote_reserves,
+        legacy_pumpswap_fee_basis_points(has_coin_creator),
+    )
+
+
+def buy_base_input_internal_with_fees(
+    base_amount_out: int,
+    slippage_basis_points: int,
+    pool_base_reserves: int,
+    pool_quote_reserves: int,
+    fee_basis_points: PumpSwapFeeBasisPoints,
 ) -> Dict[str, int]:
     """
     Calculate quote amount needed for given base output.
@@ -149,11 +205,9 @@ def buy_base_input_internal(
     quote_amount_in = ceil_div(numerator, denominator)
     
     # Calculate fees
-    lp_fee = compute_fee(quote_amount_in, LP_FEE_BASIS_POINTS)
-    protocol_fee = compute_fee(quote_amount_in, PROTOCOL_FEE_BASIS_POINTS)
-    coin_creator_fee = 0
-    if has_coin_creator:
-        coin_creator_fee = compute_fee(quote_amount_in, COIN_CREATOR_FEE_BASIS_POINTS)
+    lp_fee = compute_fee(quote_amount_in, fee_basis_points.lp_fee_basis_points)
+    protocol_fee = compute_fee(quote_amount_in, fee_basis_points.protocol_fee_basis_points)
+    coin_creator_fee = compute_fee(quote_amount_in, fee_basis_points.coin_creator_fee_basis_points)
     
     total_quote = quote_amount_in + lp_fee + protocol_fee + coin_creator_fee
     
@@ -173,6 +227,22 @@ def sell_base_input_internal(
     pool_base_reserves: int,
     pool_quote_reserves: int,
     has_coin_creator: bool,
+) -> Dict[str, int]:
+    return sell_base_input_internal_with_fees(
+        base_amount_in,
+        slippage_basis_points,
+        pool_base_reserves,
+        pool_quote_reserves,
+        legacy_pumpswap_fee_basis_points(has_coin_creator),
+    )
+
+
+def sell_base_input_internal_with_fees(
+    base_amount_in: int,
+    slippage_basis_points: int,
+    pool_base_reserves: int,
+    pool_quote_reserves: int,
+    fee_basis_points: PumpSwapFeeBasisPoints,
 ) -> Dict[str, int]:
     """
     Calculate quote amount out for given base amount in.
@@ -197,11 +267,9 @@ def sell_base_input_internal(
     quote_amount_out = numerator // denominator
 
     # Calculate fees (Rust computes each fee separately)
-    lp_fee = compute_fee(quote_amount_out, LP_FEE_BASIS_POINTS)
-    protocol_fee = compute_fee(quote_amount_out, PROTOCOL_FEE_BASIS_POINTS)
-    coin_creator_fee = 0
-    if has_coin_creator:
-        coin_creator_fee = compute_fee(quote_amount_out, COIN_CREATOR_FEE_BASIS_POINTS)
+    lp_fee = compute_fee(quote_amount_out, fee_basis_points.lp_fee_basis_points)
+    protocol_fee = compute_fee(quote_amount_out, fee_basis_points.protocol_fee_basis_points)
+    coin_creator_fee = compute_fee(quote_amount_out, fee_basis_points.coin_creator_fee_basis_points)
 
     total_fees = lp_fee + protocol_fee + coin_creator_fee
     if total_fees > quote_amount_out:
@@ -226,6 +294,22 @@ def sell_quote_input_internal(
     pool_quote_reserves: int,
     has_coin_creator: bool,
 ) -> Dict[str, int]:
+    return sell_quote_input_internal_with_fees(
+        quote_amount_out,
+        slippage_basis_points,
+        pool_base_reserves,
+        pool_quote_reserves,
+        legacy_pumpswap_fee_basis_points(has_coin_creator),
+    )
+
+
+def sell_quote_input_internal_with_fees(
+    quote_amount_out: int,
+    slippage_basis_points: int,
+    pool_base_reserves: int,
+    pool_quote_reserves: int,
+    fee_basis_points: PumpSwapFeeBasisPoints,
+) -> Dict[str, int]:
     """
     Calculate base amount needed for given quote output.
     
@@ -242,9 +326,11 @@ def sell_quote_input_internal(
     if quote_amount_out > pool_quote_reserves:
         return {"internal_raw_quote": 0, "base": 0, "min_quote": 0}
     
-    # Calculate reverse fees
-    coin_creator_fee = COIN_CREATOR_FEE_BASIS_POINTS if has_coin_creator else 0
-    total_fee_bps = LP_FEE_BASIS_POINTS + PROTOCOL_FEE_BASIS_POINTS + coin_creator_fee
+    total_fee_bps = (
+        fee_basis_points.lp_fee_basis_points
+        + fee_basis_points.protocol_fee_basis_points
+        + fee_basis_points.coin_creator_fee_basis_points
+    )
     
     # Reverse the fee calculation
     denominator = 10_000 - total_fee_bps
