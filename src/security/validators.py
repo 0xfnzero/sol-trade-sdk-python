@@ -201,9 +201,9 @@ def validate_slippage(slippage_basis_points: int) -> int:
     if slippage_basis_points < 0:
         raise ValidationError(f"Slippage cannot be negative: {slippage_basis_points}")
 
-    if slippage_basis_points > 10_000:
+    if slippage_basis_points >= 10_000:
         raise ValidationError(
-            f"Slippage cannot exceed 10000 basis points (100%), got {slippage_basis_points}"
+            f"Slippage must be less than 10000 basis points (100%), got {slippage_basis_points}"
         )
 
     # Warn on high slippage

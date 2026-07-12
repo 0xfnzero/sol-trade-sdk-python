@@ -1,10 +1,15 @@
+import json
 import os
+import time
 from typing import Optional
 
+import base58
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 
 from sol_trade_sdk import (
+    TOKEN_PROGRAM,
+    WSOL_TOKEN_ACCOUNT,
     AstralaneTransport,
     BondingCurveAccount,
     BonkParams,
@@ -25,8 +30,6 @@ from sol_trade_sdk import (
     TradeSellParams,
     TradeTokenType,
     TradingClient,
-    TOKEN_PROGRAM,
-    WSOL_TOKEN_ACCOUNT,
 )
 
 RUN_LIVE = os.getenv("RUN_LIVE_EXAMPLES") == "1"
@@ -46,7 +49,9 @@ def default_swqos_configs() -> list[SwqosConfig]:
 
     if os.getenv("JITO_UUID"):
         configs.append(
-            SwqosConfig(type=SwqosType.JITO, region=SwqosRegion.FRANKFURT, api_key=os.environ["JITO_UUID"])
+            SwqosConfig(
+                type=SwqosType.JITO, region=SwqosRegion.FRANKFURT, api_key=os.environ["JITO_UUID"]
+            )
         )
     if os.getenv("BLOXROUTE_AUTH_TOKEN"):
         configs.append(
@@ -99,7 +104,87 @@ def trade_config(**overrides) -> TradeConfig:
 
 
 def create_example_client(**config_overrides) -> TradingClient:
+    if RUN_LIVE:
+        raise RuntimeError(
+            "Protocol examples contain placeholder accounts and are dry-run only. "
+            "Use low_latency_bot.py with real parser/streamer adapters before submitting."
+        )
     return TradingClient(Keypair(), trade_config(**config_overrides))
+
+
+def load_payer_from_env(name: str = "PRIVATE_KEY") -> Keypair:
+    encoded = os.getenv(name, "").strip()
+    if not encoded:
+        raise RuntimeError(f"{name} is required for live trading")
+
+    secret = bytearray()
+    try:
+        if encoded.startswith("["):
+            values = json.loads(encoded)
+            if (
+                not isinstance(values, list)
+                or len(values) != 64
+                or any(
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or value < 0
+                    or value > 255
+                    for value in values
+                )
+            ):
+                raise ValueError("JSON private key must contain exactly 64 bytes")
+            secret.extend(values)
+        else:
+            secret.extend(base58.b58decode(encoded))
+        if len(secret) != 64:
+            raise ValueError(f"decoded private key has {len(secret)} bytes, expected 64")
+        return Keypair.from_bytes(bytes(secret))
+    except Exception as exc:
+        raise RuntimeError(f"Invalid {name}: {exc}") from exc
+    finally:
+        for index in range(len(secret)):
+            secret[index] = 0
+
+
+def create_live_client(**config_overrides) -> TradingClient:
+    if not RUN_LIVE:
+        raise RuntimeError("Set RUN_LIVE_EXAMPLES=1 only after all live adapters are configured")
+    return TradingClient(load_payer_from_env(), trade_config(**config_overrides))
+
+
+def is_event_fresh(received_at_ms: int, max_age_ms: int, now_ms: Optional[int] = None) -> bool:
+    current = int(time.time() * 1000) if now_ms is None else now_ms
+    return max_age_ms > 0 and received_at_ms <= current and current - received_at_ms <= max_age_ms
+
+
+def matches_target(actual: Pubkey, expected: Optional[Pubkey]) -> bool:
+    return expected is None or actual == expected
+
+
+def checked_position_delta(before: int, after: int) -> int:
+    if after <= before:
+        raise ValueError(
+            f"Buy produced no positive token balance delta: before={before} after={after}"
+        )
+    return after - before
+
+
+def validate_trade_intent(
+    input_amount: int, slippage_basis_points: int, fixed_output: Optional[int] = None
+) -> None:
+    if not isinstance(input_amount, int) or isinstance(input_amount, bool) or input_amount <= 0:
+        raise ValueError("input amount must be a positive integer")
+    if (
+        not isinstance(slippage_basis_points, int)
+        or isinstance(slippage_basis_points, bool)
+        or slippage_basis_points < 0
+        or slippage_basis_points >= 10_000
+    ):
+        raise ValueError("slippage must be an integer from 0 through 9999 basis points")
+    if fixed_output is not None and (
+        not isinstance(fixed_output, int) or isinstance(fixed_output, bool) or fixed_output <= 0
+    ):
+        raise ValueError("fixed output amount must be a positive integer when provided")
 
 
 def example_bonding_curve() -> BondingCurveAccount:
@@ -258,8 +343,6 @@ def example_buy_params(dex_type: DexType, mint: Optional[Pubkey] = None) -> Trad
         gas_fee_strategy=low_latency_gas_strategy(),
         grpc_recv_us=0,
     )
-    if dex_type == DexType.METEORA_DAMM_V2:
-        params.fixed_output_token_amount = 90_000
     return params
 
 
@@ -280,14 +363,14 @@ def example_sell_params(dex_type: DexType, mint: Optional[Pubkey] = None) -> Tra
         gas_fee_strategy=low_latency_gas_strategy(),
         grpc_recv_us=0,
     )
-    if dex_type == DexType.METEORA_DAMM_V2:
-        params.fixed_output_token_amount = 45_000
     return params
 
 
 def describe_dry_run(name: str) -> None:
     print(f"{name} prepared with current SDK types.")
-    print("Set RUN_LIVE_EXAMPLES=1 and replace example params with real RPC or decoded event data before sending transactions.")
+    print(
+        "Placeholder protocol accounts are never submitted. Use low_latency_bot.py for the guarded live workflow."
+    )
 
 
 def log_result(label: str, result: TradeResult) -> None:

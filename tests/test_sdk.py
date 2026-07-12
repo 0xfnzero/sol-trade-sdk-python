@@ -86,6 +86,7 @@ from sol_trade_sdk.trading.core.async_executor import (
     ExecutionConfig,
     SubmitMode,
 )
+from sol_trade_sdk.security.validators import ValidationError
 from sol_trade_sdk.swqos.providers import (
     SwqosConfig as ProviderSwqosConfig,
     SwqosManager,
@@ -581,6 +582,35 @@ class TestSimpleTradingParams:
 
 
 class TestRootTradingClientExecution:
+    @pytest.mark.asyncio
+    async def test_rejects_unsafe_trade_boundaries_before_instruction_building(self):
+        client = TradingClient(Keypair(), RootTradeConfig(rpc_url="https://x"))
+
+        with pytest.raises(ValidationError, match="input_token_amount cannot be zero"):
+            await client.buy(
+                SimpleNamespace(
+                    input_token_amount=0,
+                    slippage_basis_points=300,
+                    fixed_output_token_amount=None,
+                )
+            )
+        with pytest.raises(ValidationError, match="fixed_output_token_amount cannot be zero"):
+            await client.buy(
+                SimpleNamespace(
+                    input_token_amount=1,
+                    slippage_basis_points=300,
+                    fixed_output_token_amount=0,
+                )
+            )
+        with pytest.raises(ValidationError, match="less than 10000"):
+            await client.sell(
+                SimpleNamespace(
+                    input_token_amount=1,
+                    slippage_basis_points=10_000,
+                    fixed_output_token_amount=None,
+                )
+            )
+
     @pytest.mark.asyncio
     async def test_simulate_uses_nonce_hash_and_does_not_submit(self):
         payer = Keypair()

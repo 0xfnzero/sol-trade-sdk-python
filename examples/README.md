@@ -1,6 +1,6 @@
 # Sol Trade SDK Python Examples
 
-Examples are updated for the current Python SDK API. They run in dry-run mode by default so they do not send mainnet transactions accidentally.
+Examples are updated for the current Python SDK API. Protocol examples contain synthetic accounts and are intentionally dry-run only; setting `RUN_LIVE_EXAMPLES=1` makes them fail closed.
 
 ## Run
 
@@ -9,13 +9,14 @@ pip install -e .
 python examples/trading_client.py
 ```
 
-Set `RUN_LIVE_EXAMPLES=1` only after replacing placeholder params with real RPC or decoded event data and funding the signer.
+For a live bot, start from [low_latency_bot.py](low_latency_bot.py), read [LOW_LATENCY_BOT.md](LOW_LATENCY_BOT.md), and provide real parser, balance, quote, and state-refresh adapters. `PRIVATE_KEY` accepts a base58 64-byte secret key or a JSON array containing 64 bytes.
 
 ## Coverage
 
 | Area | Example |
 | --- | --- |
 | Trading client and low-latency config | [trading_client.py](trading_client.py) |
+| Parser + streamer guarded bot workflow | [low_latency_bot.py](low_latency_bot.py) |
 | Shared config across wallets | [shared_infrastructure.py](shared_infrastructure.py) |
 | PumpFun v2 fee recipient and cashback | [pumpfun_sniper_trading.py](pumpfun_sniper_trading.py), [pumpfun_copy_trading.py](pumpfun_copy_trading.py), [pumpfun_trading.py](pumpfun_trading.py) |
 | PumpSwap cashback-aware params | [pumpswap_trading.py](pumpswap_trading.py), [pumpswap_direct_trading.py](pumpswap_direct_trading.py) |

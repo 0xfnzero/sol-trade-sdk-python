@@ -26,6 +26,8 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Commitment, Confirmed
 
+from .security.validators import validate_amount, validate_slippage
+
 # ============== Enums ==============
 
 
@@ -1432,6 +1434,12 @@ class TradingClient:
         Returns:
             TradeResult with transaction details
         """
+        validate_amount(params.input_token_amount, "input_token_amount")
+        if params.slippage_basis_points is not None:
+            validate_slippage(params.slippage_basis_points)
+        if params.fixed_output_token_amount is not None:
+            validate_amount(params.fixed_output_token_amount, "fixed_output_token_amount")
+
         if not params.recent_blockhash and not params.durable_nonce:
             return TradeResult(
                 success=False,
@@ -1510,6 +1518,12 @@ class TradingClient:
         Returns:
             TradeResult with transaction details
         """
+        validate_amount(params.input_token_amount, "input_token_amount")
+        if params.slippage_basis_points is not None:
+            validate_slippage(params.slippage_basis_points)
+        if params.fixed_output_token_amount is not None:
+            validate_amount(params.fixed_output_token_amount, "fixed_output_token_amount")
+
         if not params.recent_blockhash and not params.durable_nonce:
             return TradeResult(
                 success=False,
