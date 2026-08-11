@@ -33,7 +33,9 @@ def test_all_calc_modules():
     print(f"  PumpFun buy: {tokens} tokens")
 
     # PumpSwap
-    result = buy_quote_input_internal(1_000_000_000, 100, 1_000_000, 1_000_000, creator)
+    result = buy_quote_input_internal(
+        1_000_000_000, 100, 1_000_000, 1_000_000, 0, creator
+    )
     assert result["base"] >= 0
     print(f"  PumpSwap buy: {result['base']} base")
 

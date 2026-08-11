@@ -18,6 +18,9 @@ PUMPFUN_CREATOR_FEE = 30       # Creator fee
 PUMPSWAP_LP_FEE_BASIS_POINTS = 25          # 0.25%
 PUMPSWAP_PROTOCOL_FEE_BASIS_POINTS = 5     # 0.05%
 PUMPSWAP_COIN_CREATOR_FEE_BASIS_POINTS = 5 # 0.05%
+U64_MAX = (1 << 64) - 1
+I128_MIN = -(1 << 127)
+I128_MAX = (1 << 127) - 1
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,22 @@ def legacy_pumpswap_fee_basis_points(has_coin_creator: bool) -> PumpSwapFeeBasis
         PUMPSWAP_PROTOCOL_FEE_BASIS_POINTS,
         PUMPSWAP_COIN_CREATOR_FEE_BASIS_POINTS if has_coin_creator else 0,
     )
+
+
+def effective_quote_reserves(quote_vault_balance: int, virtual_quote_reserves: int) -> int:
+    if isinstance(virtual_quote_reserves, bool):
+        raise TypeError("virtual_quote_reserves must be the signed i128 event or Pool value")
+    if not 0 <= quote_vault_balance <= U64_MAX:
+        raise ValueError(f"Invalid quote vault balance: {quote_vault_balance}")
+    if not I128_MIN <= virtual_quote_reserves <= I128_MAX:
+        raise ValueError(f"Invalid i128 virtual quote reserves: {virtual_quote_reserves}")
+    effective = quote_vault_balance + virtual_quote_reserves
+    if not 0 < effective <= U64_MAX:
+        raise ValueError(
+            "Invalid effective quote reserves: "
+            f"raw={quote_vault_balance}, virtual={virtual_quote_reserves}"
+        )
+    return effective
 
 # Bonk constants - 100% from Rust: src/instruction/utils/bonk.rs accounts
 BONK_PROTOCOL_FEE_RATE = 25   # 0.25%
@@ -264,6 +283,7 @@ def buy_base_input_internal(
     slippage_basis_points: Optional[int] = None,
     base_reserve: Optional[int] = None,
     quote_reserve: Optional[int] = None,
+    virtual_quote_reserves: Optional[int] = None,
     has_coin_creator: bool = False,
     **kwargs,
 ) -> BuyBaseInputResult:
@@ -272,6 +292,7 @@ def buy_base_input_internal(
         slippage_basis_points,
         base_reserve,
         quote_reserve,
+        virtual_quote_reserves,
         legacy_pumpswap_fee_basis_points(has_coin_creator),
         **kwargs,
     )
@@ -282,6 +303,7 @@ def buy_base_input_internal_with_fees(
     slippage_basis_points: Optional[int] = None,
     base_reserve: Optional[int] = None,
     quote_reserve: Optional[int] = None,
+    virtual_quote_reserves: Optional[int] = None,
     fee_basis_points: PumpSwapFeeBasisPoints = PumpSwapFeeBasisPoints(25, 5, 5),
     **kwargs,
 ) -> BuyBaseInputResult:
@@ -301,16 +323,28 @@ def buy_base_input_internal_with_fees(
     if kwargs:
         unexpected = ", ".join(kwargs.keys())
         raise TypeError(f"unexpected keyword argument(s): {unexpected}")
-    if base is None or slippage_basis_points is None or base_reserve is None or quote_reserve is None:
-        raise TypeError("base, slippage_basis_points, base_reserve and quote_reserve are required")
+    if (
+        base is None
+        or slippage_basis_points is None
+        or base_reserve is None
+        or quote_reserve is None
+        or virtual_quote_reserves is None
+    ):
+        raise TypeError(
+            "base, slippage_basis_points, base_reserve, quote_reserve and "
+            "virtual_quote_reserves are required"
+        )
 
     if base_reserve == 0 or quote_reserve == 0:
         return BuyBaseInputResult(0, 0, 0)
+    effective_quote_reserve = effective_quote_reserves(
+        quote_reserve, virtual_quote_reserves
+    )
     if base > base_reserve:
         return BuyBaseInputResult(0, 0, 0)
 
     # Rust: quote_amount_in = ceil_div(quote_reserve * base, base_reserve - base)
-    numerator = quote_reserve * base
+    numerator = effective_quote_reserve * base
     denominator = base_reserve - base
     if denominator == 0:
         return BuyBaseInputResult(0, 0, 0)
@@ -336,6 +370,7 @@ def buy_quote_input_internal(
     slippage_basis_points: int,
     base_reserve: int,
     quote_reserve: int,
+    virtual_quote_reserves: int,
     has_coin_creator: bool = False,
 ) -> BuyQuoteInputResult:
     return buy_quote_input_internal_with_fees(
@@ -343,6 +378,7 @@ def buy_quote_input_internal(
         slippage_basis_points,
         base_reserve,
         quote_reserve,
+        virtual_quote_reserves,
         legacy_pumpswap_fee_basis_points(has_coin_creator),
     )
 
@@ -352,6 +388,7 @@ def buy_quote_input_internal_with_fees(
     slippage_basis_points: int,
     base_reserve: int,
     quote_reserve: int,
+    virtual_quote_reserves: int,
     fee_basis_points: PumpSwapFeeBasisPoints,
 ) -> BuyQuoteInputResult:
     """
@@ -361,6 +398,9 @@ def buy_quote_input_internal_with_fees(
     """
     if base_reserve == 0 or quote_reserve == 0:
         return BuyQuoteInputResult(0, 0, 0)
+    effective_quote_reserve = effective_quote_reserves(
+        quote_reserve, virtual_quote_reserves
+    )
 
     total_fee_bps = (
         fee_basis_points.lp_fee_basis_points
@@ -381,7 +421,7 @@ def buy_quote_input_internal_with_fees(
 
     # Rust: base_amount_out = base_reserve * effective_quote / (quote_reserve + effective_quote)
     numerator = base_reserve * input_amount
-    denominator_effective = quote_reserve + input_amount
+    denominator_effective = effective_quote_reserve + input_amount
     if denominator_effective == 0:
         return BuyQuoteInputResult(0, effective_quote, 0)
 
@@ -400,6 +440,7 @@ def sell_base_input_internal(
     slippage_basis_points: Optional[int] = None,
     base_reserve: Optional[int] = None,
     quote_reserve: Optional[int] = None,
+    virtual_quote_reserves: Optional[int] = None,
     has_coin_creator: bool = False,
     **kwargs,
 ) -> SellBaseInputResult:
@@ -408,6 +449,7 @@ def sell_base_input_internal(
         slippage_basis_points,
         base_reserve,
         quote_reserve,
+        virtual_quote_reserves,
         legacy_pumpswap_fee_basis_points(has_coin_creator),
         **kwargs,
     )
@@ -418,6 +460,7 @@ def sell_base_input_internal_with_fees(
     slippage_basis_points: Optional[int] = None,
     base_reserve: Optional[int] = None,
     quote_reserve: Optional[int] = None,
+    virtual_quote_reserves: Optional[int] = None,
     fee_basis_points: PumpSwapFeeBasisPoints = PumpSwapFeeBasisPoints(25, 5, 5),
     **kwargs,
 ) -> SellBaseInputResult:
@@ -437,14 +480,26 @@ def sell_base_input_internal_with_fees(
     if kwargs:
         unexpected = ", ".join(kwargs.keys())
         raise TypeError(f"unexpected keyword argument(s): {unexpected}")
-    if base is None or slippage_basis_points is None or base_reserve is None or quote_reserve is None:
-        raise TypeError("base, slippage_basis_points, base_reserve and quote_reserve are required")
+    if (
+        base is None
+        or slippage_basis_points is None
+        or base_reserve is None
+        or quote_reserve is None
+        or virtual_quote_reserves is None
+    ):
+        raise TypeError(
+            "base, slippage_basis_points, base_reserve, quote_reserve and "
+            "virtual_quote_reserves are required"
+        )
 
     if base_reserve == 0 or quote_reserve == 0:
         return SellBaseInputResult(0, 0, 0)
+    effective_quote_reserve = effective_quote_reserves(
+        quote_reserve, virtual_quote_reserves
+    )
 
     # Rust: quote_amount_out = (quote_reserve * base) / (base_reserve + base)
-    numerator = quote_reserve * base
+    numerator = effective_quote_reserve * base
     denominator = base_reserve + base
     if denominator == 0:
         return SellBaseInputResult(0, 0, 0)
@@ -458,6 +513,8 @@ def sell_base_input_internal_with_fees(
     total_fees = lp_fee + protocol_fee + coin_creator_fee
     if total_fees > quote_amount_out:
         return SellBaseInputResult(0, 0, quote_amount_out)
+    if quote_amount_out - lp_fee > quote_reserve:
+        raise ValueError("Insufficient real quote reserves to cover the sell output")
     
     final_quote = quote_amount_out - total_fees
     min_quote = calculate_with_slippage_sell(final_quote, slippage_basis_points)
@@ -473,6 +530,7 @@ def sell_quote_input_internal(
     slippage_basis_points: int,
     base_reserve: int,
     quote_reserve: int,
+    virtual_quote_reserves: int,
     has_coin_creator: bool = False,
 ) -> SellQuoteInputResult:
     return sell_quote_input_internal_with_fees(
@@ -480,6 +538,7 @@ def sell_quote_input_internal(
         slippage_basis_points,
         base_reserve,
         quote_reserve,
+        virtual_quote_reserves,
         legacy_pumpswap_fee_basis_points(has_coin_creator),
     )
 
@@ -489,6 +548,7 @@ def sell_quote_input_internal_with_fees(
     slippage_basis_points: int,
     base_reserve: int,
     quote_reserve: int,
+    virtual_quote_reserves: int,
     fee_basis_points: PumpSwapFeeBasisPoints,
 ) -> SellQuoteInputResult:
     """
@@ -500,6 +560,9 @@ def sell_quote_input_internal_with_fees(
         return SellQuoteInputResult(0, 0, 0)
     if quote > quote_reserve:
         return SellQuoteInputResult(0, 0, 0)
+    effective_quote_reserve = effective_quote_reserves(
+        quote_reserve, virtual_quote_reserves
+    )
 
     total_fee_bps = (
         fee_basis_points.lp_fee_basis_points
@@ -509,17 +572,21 @@ def sell_quote_input_internal_with_fees(
     
     # Rust: raw_quote = ceil_div(quote * 10000, 10000 - total_fee_bps)
     denominator = 10000 - total_fee_bps
-    if denominator == 0:
-        return SellQuoteInputResult(0, 0, 0)
+    if denominator <= 0:
+        raise ValueError("Total fee basis points must be less than 10,000")
     
     raw_quote = ceil_div(quote * 10000, denominator)
 
-    if raw_quote >= quote_reserve:
+    lp_fee = compute_fee(raw_quote, fee_basis_points.lp_fee_basis_points)
+    if raw_quote - lp_fee > quote_reserve:
+        raise ValueError("Insufficient real quote reserves to cover the sell output")
+
+    if raw_quote >= effective_quote_reserve:
         return SellQuoteInputResult(raw_quote, 0, 0)
 
     # Rust: base_amount_in = ceil_div(base_reserve * raw_quote, quote_reserve - raw_quote)
     numerator = base_reserve * raw_quote
-    denominator = quote_reserve - raw_quote
+    denominator = effective_quote_reserve - raw_quote
     if denominator == 0:
         return SellQuoteInputResult(raw_quote, 0, 0)
     

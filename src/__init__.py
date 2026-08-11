@@ -512,6 +512,7 @@ class PumpSwapParams:
     pool_quote_token_account: Pubkey
     pool_base_token_reserves: int
     pool_quote_token_reserves: int
+    virtual_quote_reserves: int
     coin_creator_vault_ata: Pubkey
     coin_creator_vault_authority: Pubkey
     base_token_program: Pubkey
@@ -544,6 +545,7 @@ class PumpSwapParams:
             pool_quote_token_account=params.pool_quote_token_account,
             pool_base_token_reserves=params.pool_base_token_reserves,
             pool_quote_token_reserves=params.pool_quote_token_reserves,
+            virtual_quote_reserves=params.virtual_quote_reserves,
             coin_creator_vault_ata=params.coin_creator_vault_ata,
             coin_creator_vault_authority=params.coin_creator_vault_authority,
             base_token_program=params.base_token_program,
@@ -655,6 +657,7 @@ class PumpSwapParams:
             ),
             pool_base_token_reserves=int(_parser_value(event, "pool_base_token_reserves", 0) or 0),
             pool_quote_token_reserves=int(_parser_value(event, "pool_quote_token_reserves", 0) or 0),
+            virtual_quote_reserves=int(_parser_value(event, "virtual_quote_reserves", 0) or 0),
             coin_creator_vault_ata=_pubkey_from_parser(
                 _parser_value(event, "coin_creator_vault_ata")
             ),
@@ -1957,6 +1960,7 @@ def buy_base_input_internal(
     base: int,
     base_reserve: int,
     quote_reserve: int,
+    virtual_quote_reserves: int,
     slippage_basis_points: int,
     has_coin_creator: bool = False,
 ):
@@ -1967,6 +1971,7 @@ def buy_base_input_internal(
         slippage_basis_points,
         base_reserve,
         quote_reserve,
+        virtual_quote_reserves,
         has_coin_creator,
     )
 
@@ -1975,6 +1980,7 @@ def sell_base_input_internal(
     base: int,
     base_reserve: int,
     quote_reserve: int,
+    virtual_quote_reserves: int,
     slippage_basis_points: int,
     has_coin_creator: bool = False,
 ):
@@ -1985,6 +1991,7 @@ def sell_base_input_internal(
         slippage_basis_points,
         base_reserve,
         quote_reserve,
+        virtual_quote_reserves,
         has_coin_creator,
     )
 

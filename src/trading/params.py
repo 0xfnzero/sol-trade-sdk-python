@@ -160,6 +160,7 @@ class PumpSwapParams:
     pool_quote_token_account: bytes = field(default_factory=lambda: bytes(32))
     pool_base_token_reserves: int = 0
     pool_quote_token_reserves: int = 0
+    virtual_quote_reserves: int = 0
     coin_creator_vault_ata: bytes = field(default_factory=lambda: bytes(32))
     coin_creator_vault_authority: bytes = field(default_factory=lambda: bytes(32))
     base_token_program: bytes = field(default_factory=lambda: bytes(32))
@@ -202,6 +203,7 @@ class PumpSwapParams:
             pool_quote_token_account=cls._pubkey_to_bytes(params.pool_quote_token_account),
             pool_base_token_reserves=params.pool_base_token_reserves,
             pool_quote_token_reserves=params.pool_quote_token_reserves,
+            virtual_quote_reserves=params.virtual_quote_reserves,
             coin_creator_vault_ata=cls._pubkey_to_bytes(params.coin_creator_vault_ata),
             coin_creator_vault_authority=cls._pubkey_to_bytes(params.coin_creator_vault_authority),
             base_token_program=cls._pubkey_to_bytes(params.base_token_program),
@@ -285,6 +287,7 @@ class PumpSwapParams:
         pool_quote_token_account: bytes,
         pool_base_token_reserves: int,
         pool_quote_token_reserves: int,
+        virtual_quote_reserves: int,
         coin_creator_vault_ata: bytes,
         coin_creator_vault_authority: bytes,
         base_token_program: bytes,
@@ -307,6 +310,7 @@ class PumpSwapParams:
             pool_quote_token_account=pool_quote_token_account,
             pool_base_token_reserves=pool_base_token_reserves,
             pool_quote_token_reserves=pool_quote_token_reserves,
+            virtual_quote_reserves=virtual_quote_reserves,
             coin_creator_vault_ata=coin_creator_vault_ata,
             coin_creator_vault_authority=coin_creator_vault_authority,
             base_token_program=base_token_program,
@@ -328,6 +332,7 @@ class PumpSwapParams:
         pool_quote_token_account: bytes,
         pool_base_token_reserves: int,
         pool_quote_token_reserves: int,
+        virtual_quote_reserves: int,
         coin_creator_vault_ata: bytes,
         coin_creator_vault_authority: bytes,
         base_token_program: bytes,
@@ -347,6 +352,7 @@ class PumpSwapParams:
             pool_quote_token_account,
             pool_base_token_reserves,
             pool_quote_token_reserves,
+            virtual_quote_reserves,
             coin_creator_vault_ata,
             coin_creator_vault_authority,
             base_token_program,

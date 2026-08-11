@@ -310,7 +310,7 @@ class TestCalculations:
     def test_pumpswap_buy(self):
         result = buy_base_input_internal(
             1_000_000, 30_000_000_000,
-            1_073_000_000_000_000, 500,
+            1_073_000_000_000_000, 0, 500,
         )
         assert result.amount_out > 0
         assert result.fee > 0
@@ -318,7 +318,7 @@ class TestCalculations:
     def test_pumpswap_sell(self):
         result = sell_base_input_internal(
             1_000_000_000, 1_073_000_000_000_000,
-            30_000_000_000, 500,
+            30_000_000_000, 0, 500,
         )
         assert result.amount_out > 0
 

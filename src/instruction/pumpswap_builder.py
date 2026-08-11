@@ -5,14 +5,14 @@ PumpSwap instruction builder - Production-grade implementation.
 
 from __future__ import annotations
 
-import struct
-import secrets
 import base64
-from typing import List, Optional, Tuple
+import secrets
+import struct
 from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
+from solders.instruction import AccountMeta, Instruction
 from solders.pubkey import Pubkey
-from solders.instruction import Instruction, AccountMeta
 
 # ===== Program IDs - 100% from Rust: src/instruction/utils/pumpswap.rs accounts =====
 
@@ -137,10 +137,14 @@ def get_coin_creator_vault_authority(coin_creator: Pubkey) -> Pubkey:
     return pda
 
 
-def get_coin_creator_vault_ata(coin_creator: Pubkey, quote_mint: Pubkey) -> Pubkey:
+def get_coin_creator_vault_ata(
+    coin_creator: Pubkey,
+    quote_mint: Pubkey,
+    quote_token_program: Pubkey = TOKEN_PROGRAM,
+) -> Pubkey:
     """Get coin creator vault ATA for the quote mint."""
     authority = get_coin_creator_vault_authority(coin_creator)
-    return get_associated_token_address(authority, quote_mint, TOKEN_PROGRAM)
+    return get_associated_token_address(authority, quote_mint, quote_token_program)
 
 
 def get_user_volume_accumulator_pda(user: Pubkey) -> Pubkey:
@@ -213,6 +217,7 @@ class PumpSwapParams:
     pool_quote_token_account: Pubkey
     pool_base_token_reserves: int
     pool_quote_token_reserves: int
+    virtual_quote_reserves: int
     coin_creator_vault_ata: Pubkey
     coin_creator_vault_authority: Pubkey
     base_token_program: Pubkey
@@ -552,6 +557,8 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
     """
     from ..calc.pumpswap import (
         PumpSwapFeeBasisPoints as CalcPumpSwapFeeBasisPoints,
+    )
+    from ..calc.pumpswap import (
         buy_quote_input_internal_with_fees,
         calculate_with_slippage_sell,
         sell_base_input_internal_with_fees,
@@ -583,6 +590,7 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
             params.slippage_basis_points,
             pp.pool_base_token_reserves,
             pp.pool_quote_token_reserves,
+            pp.virtual_quote_reserves,
             CalcPumpSwapFeeBasisPoints(
                 fee_basis_points.lp_fee_basis_points,
                 fee_basis_points.protocol_fee_basis_points,
@@ -597,6 +605,7 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
             params.slippage_basis_points,
             pp.pool_base_token_reserves,
             pp.pool_quote_token_reserves,
+            pp.virtual_quote_reserves,
             CalcPumpSwapFeeBasisPoints(
                 fee_basis_points.lp_fee_basis_points,
                 fee_basis_points.protocol_fee_basis_points,
@@ -619,7 +628,9 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
         fee_recipient = get_mayhem_fee_recipient_random()
     else:
         fee_recipient = get_protocol_fee_recipient_random()
-    fee_recipient_ata = get_associated_token_address(fee_recipient, pp.quote_mint, TOKEN_PROGRAM)
+    fee_recipient_ata = get_associated_token_address(
+        fee_recipient, pp.quote_mint, pp.quote_token_program
+    )
     
     # Build instructions
     instructions: List[Instruction] = []
@@ -685,7 +696,11 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
     protocol_extra = get_protocol_extra_fee_recipient_random()
     accounts.append(AccountMeta(protocol_extra, False, False))
     accounts.append(
-        AccountMeta(get_associated_token_address(protocol_extra, pp.quote_mint, TOKEN_PROGRAM), False, True)
+        AccountMeta(
+            get_associated_token_address(protocol_extra, pp.quote_mint, pp.quote_token_program),
+            False,
+            True,
+        )
     )
 
     # Build instruction data
@@ -718,6 +733,8 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
     """
     from ..calc.pumpswap import (
         PumpSwapFeeBasisPoints as CalcPumpSwapFeeBasisPoints,
+    )
+    from ..calc.pumpswap import (
         buy_quote_input_internal_with_fees,
         sell_base_input_internal_with_fees,
     )
@@ -749,6 +766,7 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
             params.slippage_basis_points,
             pp.pool_base_token_reserves,
             pp.pool_quote_token_reserves,
+            pp.virtual_quote_reserves,
             CalcPumpSwapFeeBasisPoints(
                 fee_basis_points.lp_fee_basis_points,
                 fee_basis_points.protocol_fee_basis_points,
@@ -762,6 +780,7 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
             params.slippage_basis_points,
             pp.pool_base_token_reserves,
             pp.pool_quote_token_reserves,
+            pp.virtual_quote_reserves,
             CalcPumpSwapFeeBasisPoints(
                 fee_basis_points.lp_fee_basis_points,
                 fee_basis_points.protocol_fee_basis_points,
@@ -784,7 +803,9 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
         fee_recipient = get_mayhem_fee_recipient_random()
     else:
         fee_recipient = get_protocol_fee_recipient_random()
-    fee_recipient_ata = get_associated_token_address(fee_recipient, pp.quote_mint, TOKEN_PROGRAM)
+    fee_recipient_ata = get_associated_token_address(
+        fee_recipient, pp.quote_mint, pp.quote_token_program
+    )
     
     # Build instructions
     instructions: List[Instruction] = []
@@ -845,7 +866,11 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
     protocol_extra = get_protocol_extra_fee_recipient_random()
     accounts.append(AccountMeta(protocol_extra, False, False))
     accounts.append(
-        AccountMeta(get_associated_token_address(protocol_extra, pp.quote_mint, TOKEN_PROGRAM), False, True)
+        AccountMeta(
+            get_associated_token_address(protocol_extra, pp.quote_mint, pp.quote_token_program),
+            False,
+            True,
+        )
     )
 
     # Build instruction data
@@ -906,8 +931,9 @@ def build_claim_cashback_instruction(
 
 from dataclasses import dataclass
 
-# Pool size in bytes (244 bytes as per pump-public-docs)
-POOL_SIZE = 244
+POOL_SIZE = 253
+LEGACY_POOL_SIZE = 244
+POOL_DISCRIMINATOR = bytes([241, 154, 109, 4, 17, 177, 109, 188])
 
 
 @dataclass
@@ -925,6 +951,7 @@ class PumpSwapPool:
     coin_creator: Pubkey
     is_mayhem_mode: bool
     is_cashback_coin: bool
+    virtual_quote_reserves: int = 0
 
 
 def decode_pool(data: bytes) -> PumpSwapPool | None:
@@ -933,12 +960,12 @@ def decode_pool(data: bytes) -> PumpSwapPool | None:
     Uses simple byte-level deserialization matching Borsh layout.
     
     Args:
-        data: Raw account data (should be at least 244 bytes)
+        data: Raw Pool payload data, excluding the Anchor discriminator
     
     Returns:
         PumpSwapPool if successful, None if data is invalid
     """
-    if len(data) < POOL_SIZE:
+    if len(data) < POOL_SIZE and len(data) != LEGACY_POOL_SIZE:
         return None
     
     try:
@@ -992,6 +1019,13 @@ def decode_pool(data: bytes) -> PumpSwapPool | None:
         
         # is_cashback_coin: bool
         is_cashback_coin = data[offset] == 1
+        offset += 1
+
+        virtual_quote_reserves = (
+            int.from_bytes(data[offset:offset + 16], "little", signed=True)
+            if len(data) >= POOL_SIZE
+            else 0
+        )
         
         return PumpSwapPool(
             pool_bump=pool_bump,
@@ -1006,9 +1040,19 @@ def decode_pool(data: bytes) -> PumpSwapPool | None:
             coin_creator=coin_creator,
             is_mayhem_mode=is_mayhem_mode,
             is_cashback_coin=is_cashback_coin,
+            virtual_quote_reserves=virtual_quote_reserves,
         )
     except Exception:
         return None
+
+
+def decode_pool_account(data: bytes) -> PumpSwapPool | None:
+    """Validate and decode a complete Anchor Pool account."""
+    if len(data) < len(POOL_DISCRIMINATOR):
+        return None
+    if data[:len(POOL_DISCRIMINATOR)] != POOL_DISCRIMINATOR:
+        return None
+    return decode_pool(data[len(POOL_DISCRIMINATOR):])
 
 
 def find_pool_by_mint(mint: Pubkey) -> Pubkey:
@@ -1084,9 +1128,9 @@ async def fetch_pool(fetcher: PoolFetcher, pool_address: Pubkey) -> PumpSwapPool
         PumpSwapPool if successful, None if not found or invalid
     """
     data = await _fetch_account_data(fetcher, pool_address)
-    if data is None or len(data) < 8:
+    if data is None:
         return None
-    return decode_pool(data[8:])
+    return decode_pool_account(data)
 
 
 async def get_token_balances(
@@ -1134,6 +1178,11 @@ async def params_from_pool_data(
     if balances is None:
         raise ValueError("Failed to read pool token balances")
     base_balance, quote_balance = balances
+    from ..calc.pumpswap import effective_quote_reserves
+
+    effective_quote_balance = effective_quote_reserves(
+        quote_balance, pool.virtual_quote_reserves
+    )
 
     base_token_program_ata = get_associated_token_address(
         pool_address,
@@ -1170,7 +1219,7 @@ async def params_from_pool_data(
             pool.base_mint,
             base_mint_supply,
             base_balance,
-            quote_balance,
+            effective_quote_balance,
         )
 
     creator_fee_basis_points = (
@@ -1192,7 +1241,10 @@ async def params_from_pool_data(
         pool_quote_token_account=pool.pool_quote_token_account,
         pool_base_token_reserves=base_balance,
         pool_quote_token_reserves=quote_balance,
-        coin_creator_vault_ata=get_coin_creator_vault_ata(pool.coin_creator, pool.quote_mint),
+        virtual_quote_reserves=pool.virtual_quote_reserves,
+        coin_creator_vault_ata=get_coin_creator_vault_ata(
+            pool.coin_creator, pool.quote_mint, quote_token_program
+        ),
         coin_creator_vault_authority=get_coin_creator_vault_authority(pool.coin_creator),
         base_token_program=base_token_program,
         quote_token_program=quote_token_program,
@@ -1246,16 +1298,16 @@ async def find_by_mint(
     # 1. Try v2 PDA
     pool_v2 = get_pool_v2_pda(mint)
     data = await _fetch_account_data(fetcher, pool_v2)
-    if data is not None and len(data) >= 8:
-        pool = decode_pool(data[8:])
+    if data is not None:
+        pool = decode_pool_account(data)
         if pool is not None and pool.base_mint == mint:
             return (pool_v2, pool)
 
     # 2. Try canonical pool PDA
     canonical = get_canonical_pool_pda(mint)
     data = await _fetch_account_data(fetcher, canonical)
-    if data is not None and len(data) >= 8:
-        pool = decode_pool(data[8:])
+    if data is not None:
+        pool = decode_pool_account(data)
         if pool is not None and pool.base_mint == mint:
             return (canonical, pool)
 
@@ -1283,9 +1335,9 @@ async def params_from_mint(
 
 # ===== Pool Size Constants - from Rust: src/instruction/utils/pumpswap.rs =====
 
-# Pool data size for SPL Token (8 discriminator + 244 data)
-POOL_DATA_LEN_SPL = 8 + 244
-# Pool data size for Token2022
+POOL_DATA_LEN_LEGACY = 8 + LEGACY_POOL_SIZE
+POOL_DATA_LEN_CURRENT = 8 + POOL_SIZE
+POOL_DATA_LEN_PADDED = 300
 POOL_DATA_LEN_T22 = 643
 
 
@@ -1333,10 +1385,9 @@ async def find_by_base_mint(
         # Decode and sort by lp_supply (highest first)
         pools: list[tuple[Pubkey, PumpSwapPool]] = []
         for pubkey, data in results:
-            if len(data) > 8:
-                pool = decode_pool(data[8:])
-                if pool is not None:
-                    pools.append((pubkey, pool))
+            pool = decode_pool_account(data)
+            if pool is not None:
+                pools.append((pubkey, pool))
 
         if not pools:
             return None
@@ -1382,10 +1433,9 @@ async def find_by_quote_mint(
         # Decode and sort by lp_supply (highest first)
         pools: list[tuple[Pubkey, PumpSwapPool]] = []
         for pubkey, data in results:
-            if len(data) > 8:
-                pool = decode_pool(data[8:])
-                if pool is not None:
-                    pools.append((pubkey, pool))
+            pool = decode_pool_account(data)
+            if pool is not None:
+                pools.append((pubkey, pool))
 
         if not pools:
             return None

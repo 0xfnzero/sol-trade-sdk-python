@@ -4,13 +4,15 @@ from src.instruction.pumpswap_builder import (
     BUY_DISCRIMINATOR,
     BUY_EXACT_QUOTE_IN_DISCRIMINATOR,
     FEE_CONFIG,
+    POOL_DISCRIMINATOR,
     TOKEN_PROGRAM,
+    TOKEN_PROGRAM_2022,
     WSOL_TOKEN_ACCOUNT,
     BuildBuyParams,
     BuildSellParams,
     PumpSwapFeeBasisPoints,
-    PumpSwapPool,
     PumpSwapParams,
+    PumpSwapPool,
     build_buy_instructions,
     build_sell_instructions,
     compute_pumpswap_fee_basis_points,
@@ -19,8 +21,8 @@ from src.instruction.pumpswap_builder import (
     get_associated_token_address,
     get_coin_creator_vault_ata,
     get_coin_creator_vault_authority,
-    get_pump_pool_authority_pda,
     get_pool_v2_pda,
+    get_pump_pool_authority_pda,
     params_from_pool_address,
 )
 
@@ -34,6 +36,7 @@ def params(**overrides) -> PumpSwapParams:
         pool_quote_token_account=Pubkey.new_unique(),
         pool_base_token_reserves=1_000_000_000_000,
         pool_quote_token_reserves=4_500_000_000,
+        virtual_quote_reserves=0,
         coin_creator_vault_ata=Pubkey.new_unique(),
         coin_creator_vault_authority=Pubkey.new_unique(),
         base_token_program=TOKEN_PROGRAM,
@@ -126,6 +129,36 @@ def test_pumpswap_omits_pool_v2_when_known_coin_creator_is_default():
     assert pool_v2 not in [meta.pubkey for meta in ix.accounts]
 
 
+def test_pumpswap_uses_quote_token_program_for_fee_vault_atas():
+    protocol_params = params(quote_token_program=TOKEN_PROGRAM_2022)
+    ix = build_ix(protocol_params)
+
+    fee_recipient_ata = get_associated_token_address(
+        ix.accounts[9].pubkey,
+        protocol_params.quote_mint,
+        TOKEN_PROGRAM_2022,
+    )
+    assert ix.accounts[10].pubkey == fee_recipient_ata
+
+    protocol_extra = ix.accounts[-2].pubkey
+    protocol_extra_ata = get_associated_token_address(
+        protocol_extra,
+        protocol_params.quote_mint,
+        TOKEN_PROGRAM_2022,
+    )
+    assert ix.accounts[-1].pubkey == protocol_extra_ata
+
+    creator_vault_ata = get_coin_creator_vault_ata(
+        protocol_params.coin_creator,
+        protocol_params.quote_mint,
+        TOKEN_PROGRAM_2022,
+    )
+    assert creator_vault_ata != get_coin_creator_vault_ata(
+        protocol_params.coin_creator,
+        protocol_params.quote_mint,
+    )
+
+
 def fee_config_bytes() -> bytes:
     data = bytearray()
     data.extend(bytes(8))  # discriminator
@@ -154,7 +187,7 @@ def mint_bytes(supply: int) -> bytes:
 
 
 def pool_bytes(pool: PumpSwapPool) -> bytes:
-    data = bytearray(8)
+    data = bytearray(POOL_DISCRIMINATOR)
     data.extend(bytes([pool.pool_bump]))
     data.extend(pool.index.to_bytes(2, "little"))
     data.extend(bytes(pool.creator))
@@ -167,7 +200,7 @@ def pool_bytes(pool: PumpSwapPool) -> bytes:
     data.extend(bytes(pool.coin_creator))
     data.extend(bytes([1 if pool.is_mayhem_mode else 0]))
     data.extend(bytes([1 if pool.is_cashback_coin else 0]))
-    data.extend(bytes(7))
+    data.extend(pool.virtual_quote_reserves.to_bytes(16, "little", signed=True))
     return bytes(data)
 
 
@@ -243,6 +276,7 @@ async def test_params_from_pool_address_auto_discovers_fee_config():
         coin_creator=coin_creator,
         is_mayhem_mode=False,
         is_cashback_coin=True,
+        virtual_quote_reserves=100,
     )
     fetcher = FakePumpSwapFetcher(
         {
@@ -252,7 +286,7 @@ async def test_params_from_pool_address_auto_discovers_fee_config():
         },
         {
             pool.pool_base_token_account: 1_000,
-            pool.pool_quote_token_account: 1_000,
+            pool.pool_quote_token_account: 50,
         },
     )
 
@@ -260,6 +294,8 @@ async def test_params_from_pool_address_auto_discovers_fee_config():
 
     assert built.fee_basis_points == PumpSwapFeeBasisPoints(20, 5, 75)
     assert built.base_mint_supply == 10_000
+    assert built.pool_quote_token_reserves == 50
+    assert built.virtual_quote_reserves == 100
     assert built.pool_creator == pool.creator
     assert built.coin_creator == coin_creator
     assert built.coin_creator_vault_authority == get_coin_creator_vault_authority(coin_creator)

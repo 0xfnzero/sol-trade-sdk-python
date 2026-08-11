@@ -91,6 +91,7 @@ def test_pumpswap_params_from_parser_event_uses_creator_vault_accounts():
         "pool_quote_token_account": str(Pubkey.new_unique()),
         "pool_base_token_reserves": 10,
         "pool_quote_token_reserves": 20,
+        "virtual_quote_reserves": -7,
         "coin_creator_vault_ata": str(vault),
         "coin_creator_vault_authority": str(authority),
         "base_token_program": str(TOKEN_PROGRAM),
@@ -101,6 +102,7 @@ def test_pumpswap_params_from_parser_event_uses_creator_vault_accounts():
 
     assert params.coin_creator_vault_ata == vault
     assert params.coin_creator_vault_authority == authority
+    assert params.virtual_quote_reserves == -7
 
 
 def test_pumpswap_params_from_parser_event_uses_fee_basis_points():

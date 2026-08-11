@@ -1572,6 +1572,7 @@ class TestCalculations:
             amount_in=1_000_000,
             reserve_in=30_000_000_000,
             reserve_out=1_073_000_000_000_000,
+            virtual_quote_reserves=0,
             slippage_bps=500,
         )
         assert result.amount_out > 0
@@ -1583,6 +1584,7 @@ class TestCalculations:
             amount_in=1_000_000_000,
             reserve_in=1_073_000_000_000_000,
             reserve_out=30_000_000_000,
+            virtual_quote_reserves=0,
             slippage_bps=500,
         )
         assert result.amount_out > 0

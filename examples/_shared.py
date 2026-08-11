@@ -223,6 +223,7 @@ def pump_swap_params() -> PumpSwapParams:
         pool_quote_token_account=example_pubkey(24),
         pool_base_token_reserves=2_000_000_000,
         pool_quote_token_reserves=50_000_000_000,
+        virtual_quote_reserves=0,
         coin_creator_vault_ata=example_pubkey(25),
         coin_creator_vault_authority=example_pubkey(26),
         base_token_program=TOKEN_PROGRAM,
