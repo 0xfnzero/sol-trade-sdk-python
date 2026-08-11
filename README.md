@@ -179,6 +179,8 @@ async def main():
 asyncio.run(main())
 ```
 
+Temporal uses HTTP/3 QUIC first and Binary Batch HTTP as its default fallback. BlockRazor uses gRPC `SendBinaryTransaction` first and JSON HTTP as fallback. Astralane uses persistent QUIC first and Binary HTTP as fallback. Explicit transport settings force one protocol; a custom URL without a transport remains an explicit HTTP route.
+
 **Method 2: Shared infrastructure (multiple wallets)**
 
 For multi-wallet scenarios, create the infrastructure once and share it across wallets.

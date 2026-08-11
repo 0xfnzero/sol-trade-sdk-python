@@ -34,6 +34,10 @@ dependencies = [
     "base58>=2.1.1",
     "requests>=2.31.0",
     "typing-extensions>=4.0.0",
+    "grpcio>=1.64.0",
+    "protobuf>=5.26.0",
+    "aioquic>=1.0.0",
+    "cryptography>=41.0.0",
 ]
 
 [project.optional-dependencies]
@@ -47,7 +51,7 @@ dev = [
     "pytest-cov>=4.0.0",
     "black>=23.0.0",
     "isort>=5.12.0",
-    "mypy>=1.0.0",
+    "mypy>=1.0.0,<1.19",
     "ruff>=0.1.0",
 ]
 
@@ -93,3 +97,4 @@ disallow_untyped_defs = true
 disallow_incomplete_defs = true
 check_untyped_defs = true
 strict_optional = true
+follow_imports = "skip"

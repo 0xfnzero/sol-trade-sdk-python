@@ -5,17 +5,17 @@ Implements various SWQOS (Solana Write Queue Operating System) providers.
 
 import asyncio
 import base64
+import contextlib
+import datetime
 import json
 import random
 import ssl
 import struct
-import datetime
 import ipaddress
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
-from enum import Enum
 from urllib.parse import urlencode, urlparse
 
 import aiohttp
@@ -25,20 +25,35 @@ from solders.keypair import Keypair
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.hazmat.primitives import serialization, hashes
-    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import hashes
     from cryptography import x509
     from cryptography.x509.oid import NameOID
     import aioquic  # noqa: F401 - just check availability
     from aioquic.asyncio import connect as quic_connect
     from aioquic.quic.configuration import QuicConfiguration
     from aioquic.asyncio.protocol import QuicConnectionProtocol
+    from aioquic.h3.connection import H3_ALPN, H3Connection
+    from aioquic.h3.events import DataReceived, HeadersReceived
+    from aioquic.quic.events import ConnectionTerminated, ProtocolNegotiated
+
     _QUIC_AVAILABLE = True
 except ImportError:
     _QUIC_AVAILABLE = False
-    QuicConfiguration = object  # type: ignore[assignment]
-    QuicConnectionProtocol = object  # type: ignore[assignment]
+    QuicConfiguration = object  # type: ignore[misc,assignment]
+    QuicConnectionProtocol = object  # type: ignore[misc,assignment]
     quic_connect = None  # type: ignore[assignment]
+    H3_ALPN = []  # type: ignore[assignment]
+    H3Connection = object  # type: ignore[misc,assignment]
+    ConnectionTerminated = DataReceived = HeadersReceived = ProtocolNegotiated = object  # type: ignore[assignment,misc]
+
+try:
+    import grpc  # type: ignore[import-untyped]
+    from google.protobuf import descriptor_pb2, descriptor_pool, message_factory  # type: ignore[import-untyped]
+
+    _GRPC_AVAILABLE = True
+except ImportError:
+    grpc = None  # type: ignore[assignment]
+    _GRPC_AVAILABLE = False
 
 from ..common.types import SwqosType, SwqosRegion, TradeType
 
@@ -62,7 +77,7 @@ MIN_TIP_FLASH_BLOCK = 0.0001
 MIN_TIP_BLOCK_RAZOR = 0.0001
 MIN_TIP_NODE1 = 0.0001
 MIN_TIP_ASTRALANE = 0.00001
-MIN_TIP_HELIUS = 0.000005       # swqos_only mode
+MIN_TIP_HELIUS = 0.000005  # swqos_only mode
 MIN_TIP_HELIUS_NORMAL = 0.0002  # normal mode
 MIN_TIP_STELLIUM = 0.0001
 MIN_TIP_LIGHTSPEED = 0.0001
@@ -266,217 +281,232 @@ def _signature_from_serialized_transaction(transaction: bytes) -> str:
             code=400,
             message="Only single-signature versioned transactions are supported for SWQOS submit",
         )
-    return base58.b58encode(transaction[1:65]).decode("ascii")
+    return str(base58.b58encode(transaction[1:65]).decode("ascii"))
 
 
 # ===== Endpoints by Region =====
 
 JITO_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "https://ny.mainnet.block-engine.jito.wtf",
-    SwqosRegion.FRANKFURT:   "https://frankfurt.mainnet.block-engine.jito.wtf",
-    SwqosRegion.AMSTERDAM:   "https://amsterdam.mainnet.block-engine.jito.wtf",
-    SwqosRegion.DUBLIN:      "https://dublin.mainnet.block-engine.jito.wtf",
-    SwqosRegion.SLC:         "https://slc.mainnet.block-engine.jito.wtf",
-    SwqosRegion.TOKYO:       "https://tokyo.mainnet.block-engine.jito.wtf",
-    SwqosRegion.SINGAPORE:   "https://singapore.mainnet.block-engine.jito.wtf",
-    SwqosRegion.LONDON:      "https://london.mainnet.block-engine.jito.wtf",
+    SwqosRegion.NEW_YORK: "https://ny.mainnet.block-engine.jito.wtf",
+    SwqosRegion.FRANKFURT: "https://frankfurt.mainnet.block-engine.jito.wtf",
+    SwqosRegion.AMSTERDAM: "https://amsterdam.mainnet.block-engine.jito.wtf",
+    SwqosRegion.DUBLIN: "https://dublin.mainnet.block-engine.jito.wtf",
+    SwqosRegion.SLC: "https://slc.mainnet.block-engine.jito.wtf",
+    SwqosRegion.TOKYO: "https://tokyo.mainnet.block-engine.jito.wtf",
+    SwqosRegion.SINGAPORE: "https://singapore.mainnet.block-engine.jito.wtf",
+    SwqosRegion.LONDON: "https://london.mainnet.block-engine.jito.wtf",
     SwqosRegion.LOS_ANGELES: "https://slc.mainnet.block-engine.jito.wtf",
-    SwqosRegion.DEFAULT:     "https://mainnet.block-engine.jito.wtf",
+    SwqosRegion.DEFAULT: "https://mainnet.block-engine.jito.wtf",
 }
 
 BLOXROUTE_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "https://ny.solana.dex.blxrbdn.com",
-    SwqosRegion.FRANKFURT:   "https://germany.solana.dex.blxrbdn.com",
-    SwqosRegion.AMSTERDAM:   "https://amsterdam.solana.dex.blxrbdn.com",
-    SwqosRegion.DUBLIN:      "https://uk.solana.dex.blxrbdn.com",
-    SwqosRegion.SLC:         "https://la.solana.dex.blxrbdn.com",
-    SwqosRegion.TOKYO:       "https://tokyo.solana.dex.blxrbdn.com",
-    SwqosRegion.SINGAPORE:   "https://tokyo.solana.dex.blxrbdn.com",
-    SwqosRegion.LONDON:      "https://uk.solana.dex.blxrbdn.com",
+    SwqosRegion.NEW_YORK: "https://ny.solana.dex.blxrbdn.com",
+    SwqosRegion.FRANKFURT: "https://germany.solana.dex.blxrbdn.com",
+    SwqosRegion.AMSTERDAM: "https://amsterdam.solana.dex.blxrbdn.com",
+    SwqosRegion.DUBLIN: "https://uk.solana.dex.blxrbdn.com",
+    SwqosRegion.SLC: "https://la.solana.dex.blxrbdn.com",
+    SwqosRegion.TOKYO: "https://tokyo.solana.dex.blxrbdn.com",
+    SwqosRegion.SINGAPORE: "https://tokyo.solana.dex.blxrbdn.com",
+    SwqosRegion.LONDON: "https://uk.solana.dex.blxrbdn.com",
     SwqosRegion.LOS_ANGELES: "https://la.solana.dex.blxrbdn.com",
-    SwqosRegion.DEFAULT:     "https://global.solana.dex.blxrbdn.com",
+    SwqosRegion.DEFAULT: "https://global.solana.dex.blxrbdn.com",
 }
 
 ZERO_SLOT_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "http://ny.0slot.trade",
-    SwqosRegion.FRANKFURT:   "http://de2.0slot.trade",
-    SwqosRegion.AMSTERDAM:   "http://ams.0slot.trade",
-    SwqosRegion.DUBLIN:      "http://ams.0slot.trade",
-    SwqosRegion.SLC:         "http://la.0slot.trade",
-    SwqosRegion.TOKYO:       "http://jp.0slot.trade",
-    SwqosRegion.SINGAPORE:   "http://jp.0slot.trade",
-    SwqosRegion.LONDON:      "http://ams.0slot.trade",
+    SwqosRegion.NEW_YORK: "http://ny.0slot.trade",
+    SwqosRegion.FRANKFURT: "http://de2.0slot.trade",
+    SwqosRegion.AMSTERDAM: "http://ams.0slot.trade",
+    SwqosRegion.DUBLIN: "http://ams.0slot.trade",
+    SwqosRegion.SLC: "http://la.0slot.trade",
+    SwqosRegion.TOKYO: "http://jp.0slot.trade",
+    SwqosRegion.SINGAPORE: "http://jp.0slot.trade",
+    SwqosRegion.LONDON: "http://ams.0slot.trade",
     SwqosRegion.LOS_ANGELES: "http://la.0slot.trade",
-    SwqosRegion.DEFAULT:     "http://de2.0slot.trade",
+    SwqosRegion.DEFAULT: "http://de2.0slot.trade",
 }
 
 TEMPORAL_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "http://ewr1.nozomi.temporal.xyz",
-    SwqosRegion.FRANKFURT:   "http://fra2.nozomi.temporal.xyz",
-    SwqosRegion.AMSTERDAM:   "http://ams1.nozomi.temporal.xyz",
-    SwqosRegion.DUBLIN:      "http://lon1.nozomi.temporal.xyz",
-    SwqosRegion.SLC:         "http://lax1.nozomi.temporal.xyz",
-    SwqosRegion.TOKYO:       "http://tyo1.nozomi.temporal.xyz",
-    SwqosRegion.SINGAPORE:   "http://sgp1.nozomi.temporal.xyz",
-    SwqosRegion.LONDON:      "http://lon1.nozomi.temporal.xyz",
+    SwqosRegion.NEW_YORK: "http://ewr1.nozomi.temporal.xyz",
+    SwqosRegion.FRANKFURT: "http://fra2.nozomi.temporal.xyz",
+    SwqosRegion.AMSTERDAM: "http://ams1.nozomi.temporal.xyz",
+    SwqosRegion.DUBLIN: "http://lon1.nozomi.temporal.xyz",
+    SwqosRegion.SLC: "http://lax1.nozomi.temporal.xyz",
+    SwqosRegion.TOKYO: "http://tyo1.nozomi.temporal.xyz",
+    SwqosRegion.SINGAPORE: "http://sgp1.nozomi.temporal.xyz",
+    SwqosRegion.LONDON: "http://lon1.nozomi.temporal.xyz",
     SwqosRegion.LOS_ANGELES: "http://lax1.nozomi.temporal.xyz",
-    SwqosRegion.DEFAULT:     "http://fra2.nozomi.temporal.xyz",
+    SwqosRegion.DEFAULT: "http://fra2.nozomi.temporal.xyz",
 }
 
 FLASH_BLOCK_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "http://ny.flashblock.trade",
-    SwqosRegion.FRANKFURT:   "http://fra.flashblock.trade",
-    SwqosRegion.AMSTERDAM:   "http://ams.flashblock.trade",
-    SwqosRegion.DUBLIN:      "http://london.flashblock.trade",
-    SwqosRegion.SLC:         "http://slc.flashblock.trade",
-    SwqosRegion.TOKYO:       "http://tokyo.flashblock.trade",
-    SwqosRegion.SINGAPORE:   "http://singapore.flashblock.trade",
-    SwqosRegion.LONDON:      "http://london.flashblock.trade",
+    SwqosRegion.NEW_YORK: "http://ny.flashblock.trade",
+    SwqosRegion.FRANKFURT: "http://fra.flashblock.trade",
+    SwqosRegion.AMSTERDAM: "http://ams.flashblock.trade",
+    SwqosRegion.DUBLIN: "http://london.flashblock.trade",
+    SwqosRegion.SLC: "http://slc.flashblock.trade",
+    SwqosRegion.TOKYO: "http://tokyo.flashblock.trade",
+    SwqosRegion.SINGAPORE: "http://singapore.flashblock.trade",
+    SwqosRegion.LONDON: "http://london.flashblock.trade",
     SwqosRegion.LOS_ANGELES: "http://slc.flashblock.trade",
-    SwqosRegion.DEFAULT:     "http://fra.flashblock.trade",
+    SwqosRegion.DEFAULT: "http://fra.flashblock.trade",
 }
 
 HELIUS_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "http://ewr-sender.helius-rpc.com/fast",
-    SwqosRegion.FRANKFURT:   "http://fra-sender.helius-rpc.com/fast",
-    SwqosRegion.AMSTERDAM:   "http://ams-sender.helius-rpc.com/fast",
-    SwqosRegion.DUBLIN:      "http://lon-sender.helius-rpc.com/fast",
-    SwqosRegion.SLC:         "http://slc-sender.helius-rpc.com/fast",
-    SwqosRegion.TOKYO:       "http://tyo-sender.helius-rpc.com/fast",
-    SwqosRegion.SINGAPORE:   "http://sg-sender.helius-rpc.com/fast",
-    SwqosRegion.LONDON:      "http://lon-sender.helius-rpc.com/fast",
+    SwqosRegion.NEW_YORK: "http://ewr-sender.helius-rpc.com/fast",
+    SwqosRegion.FRANKFURT: "http://fra-sender.helius-rpc.com/fast",
+    SwqosRegion.AMSTERDAM: "http://ams-sender.helius-rpc.com/fast",
+    SwqosRegion.DUBLIN: "http://lon-sender.helius-rpc.com/fast",
+    SwqosRegion.SLC: "http://slc-sender.helius-rpc.com/fast",
+    SwqosRegion.TOKYO: "http://tyo-sender.helius-rpc.com/fast",
+    SwqosRegion.SINGAPORE: "http://sg-sender.helius-rpc.com/fast",
+    SwqosRegion.LONDON: "http://lon-sender.helius-rpc.com/fast",
     SwqosRegion.LOS_ANGELES: "http://slc-sender.helius-rpc.com/fast",
-    SwqosRegion.DEFAULT:     "https://sender.helius-rpc.com/fast",
+    SwqosRegion.DEFAULT: "https://sender.helius-rpc.com/fast",
 }
 
 NODE1_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "http://ny.node1.me",
-    SwqosRegion.FRANKFURT:   "http://fra.node1.me",
-    SwqosRegion.AMSTERDAM:   "http://ams.node1.me",
-    SwqosRegion.DUBLIN:      "http://lon.node1.me",
-    SwqosRegion.SLC:         "http://ny.node1.me",
-    SwqosRegion.TOKYO:       "http://tk.node1.me",
-    SwqosRegion.SINGAPORE:   "http://tk.node1.me",
-    SwqosRegion.LONDON:      "http://lon.node1.me",
+    SwqosRegion.NEW_YORK: "http://ny.node1.me",
+    SwqosRegion.FRANKFURT: "http://fra.node1.me",
+    SwqosRegion.AMSTERDAM: "http://ams.node1.me",
+    SwqosRegion.DUBLIN: "http://lon.node1.me",
+    SwqosRegion.SLC: "http://ny.node1.me",
+    SwqosRegion.TOKYO: "http://tk.node1.me",
+    SwqosRegion.SINGAPORE: "http://tk.node1.me",
+    SwqosRegion.LONDON: "http://lon.node1.me",
     SwqosRegion.LOS_ANGELES: "http://ny.node1.me",
-    SwqosRegion.DEFAULT:     "http://fra.node1.me",
+    SwqosRegion.DEFAULT: "http://fra.node1.me",
 }
 
 BLOCK_RAZOR_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "http://newyork.solana.blockrazor.xyz:443/v2/sendTransaction",
-    SwqosRegion.FRANKFURT:   "http://frankfurt.solana.blockrazor.xyz:443/v2/sendTransaction",
-    SwqosRegion.AMSTERDAM:   "http://amsterdam.solana.blockrazor.xyz:443/v2/sendTransaction",
-    SwqosRegion.DUBLIN:      "http://london.solana.blockrazor.xyz:443/v2/sendTransaction",
-    SwqosRegion.SLC:         "http://newyork.solana.blockrazor.xyz:443/v2/sendTransaction",
-    SwqosRegion.TOKYO:       "http://tokyo.solana.blockrazor.xyz:443/v2/sendTransaction",
-    SwqosRegion.SINGAPORE:   "http://tokyo.solana.blockrazor.xyz:443/v2/sendTransaction",
-    SwqosRegion.LONDON:      "http://london.solana.blockrazor.xyz:443/v2/sendTransaction",
-    SwqosRegion.LOS_ANGELES: "http://newyork.solana.blockrazor.xyz:443/v2/sendTransaction",
-    SwqosRegion.DEFAULT:     "http://frankfurt.solana.blockrazor.xyz:443/v2/sendTransaction",
+    SwqosRegion.NEW_YORK: "http://newyork.solana.blockrazor.xyz:443/sendTransaction",
+    SwqosRegion.FRANKFURT: "http://frankfurt.solana.blockrazor.xyz:443/sendTransaction",
+    SwqosRegion.AMSTERDAM: "http://amsterdam.solana.blockrazor.xyz:443/sendTransaction",
+    SwqosRegion.DUBLIN: "http://london.solana.blockrazor.xyz:443/sendTransaction",
+    SwqosRegion.SLC: "http://newyork.solana.blockrazor.xyz:443/sendTransaction",
+    SwqosRegion.TOKYO: "http://tokyo.solana.blockrazor.xyz:443/sendTransaction",
+    SwqosRegion.SINGAPORE: "http://singapore.solana.blockrazor.xyz:443/sendTransaction",
+    SwqosRegion.LONDON: "http://london.solana.blockrazor.xyz:443/sendTransaction",
+    SwqosRegion.LOS_ANGELES: "http://losangeles.solana.blockrazor.xyz:443/sendTransaction",
+    SwqosRegion.DEFAULT: "http://frankfurt.solana.blockrazor.xyz:443/sendTransaction",
+}
+
+BLOCK_RAZOR_GRPC_ENDPOINTS: Dict[SwqosRegion, str] = {
+    SwqosRegion.NEW_YORK: "newyork.solana-grpc.blockrazor.xyz:80",
+    SwqosRegion.FRANKFURT: "frankfurt.solana-grpc.blockrazor.xyz:80",
+    SwqosRegion.AMSTERDAM: "amsterdam.solana-grpc.blockrazor.xyz:80",
+    SwqosRegion.DUBLIN: "london.solana-grpc.blockrazor.xyz:80",
+    SwqosRegion.SLC: "newyork.solana-grpc.blockrazor.xyz:80",
+    SwqosRegion.TOKYO: "tokyo.solana-grpc.blockrazor.xyz:80",
+    SwqosRegion.SINGAPORE: "singapore.solana-grpc.blockrazor.xyz:80",
+    SwqosRegion.LONDON: "london.solana-grpc.blockrazor.xyz:80",
+    SwqosRegion.LOS_ANGELES: "losangeles.solana-grpc.blockrazor.xyz:80",
+    SwqosRegion.DEFAULT: "frankfurt.solana-grpc.blockrazor.xyz:80",
 }
 
 ASTRALANE_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "http://ny.gateway.astralane.io/irisb",
-    SwqosRegion.FRANKFURT:   "http://fr.gateway.astralane.io/irisb",
-    SwqosRegion.AMSTERDAM:   "http://ams.gateway.astralane.io/irisb",
-    SwqosRegion.DUBLIN:      "http://ams.gateway.astralane.io/irisb",
-    SwqosRegion.SLC:         "http://la.gateway.astralane.io/irisb",
-    SwqosRegion.TOKYO:       "http://jp.gateway.astralane.io/irisb",
-    SwqosRegion.SINGAPORE:   "http://sg.gateway.astralane.io/irisb",
-    SwqosRegion.LONDON:      "http://ams.gateway.astralane.io/irisb",
+    SwqosRegion.NEW_YORK: "http://ny.gateway.astralane.io/irisb",
+    SwqosRegion.FRANKFURT: "http://fr.gateway.astralane.io/irisb",
+    SwqosRegion.AMSTERDAM: "http://ams.gateway.astralane.io/irisb",
+    SwqosRegion.DUBLIN: "http://ams.gateway.astralane.io/irisb",
+    SwqosRegion.SLC: "http://la.gateway.astralane.io/irisb",
+    SwqosRegion.TOKYO: "http://jp.gateway.astralane.io/irisb",
+    SwqosRegion.SINGAPORE: "http://sg.gateway.astralane.io/irisb",
+    SwqosRegion.LONDON: "http://ams.gateway.astralane.io/irisb",
     SwqosRegion.LOS_ANGELES: "http://la.gateway.astralane.io/irisb",
-    SwqosRegion.DEFAULT:     "https://edge.astralane.io/irisb",
+    SwqosRegion.DEFAULT: "https://edge.astralane.io/irisb",
 }
 
 ASTRALANE_QUIC_HOSTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "ny.gateway.astralane.io",
-    SwqosRegion.FRANKFURT:   "fr.gateway.astralane.io",
-    SwqosRegion.AMSTERDAM:   "ams.gateway.astralane.io",
-    SwqosRegion.DUBLIN:      "ams.gateway.astralane.io",
-    SwqosRegion.SLC:         "la.gateway.astralane.io",
-    SwqosRegion.TOKYO:       "jp.gateway.astralane.io",
-    SwqosRegion.SINGAPORE:   "sg.gateway.astralane.io",
-    SwqosRegion.LONDON:      "ams.gateway.astralane.io",
+    SwqosRegion.NEW_YORK: "ny.gateway.astralane.io",
+    SwqosRegion.FRANKFURT: "fr.gateway.astralane.io",
+    SwqosRegion.AMSTERDAM: "ams.gateway.astralane.io",
+    SwqosRegion.DUBLIN: "ams.gateway.astralane.io",
+    SwqosRegion.SLC: "la.gateway.astralane.io",
+    SwqosRegion.TOKYO: "jp.gateway.astralane.io",
+    SwqosRegion.SINGAPORE: "sg.gateway.astralane.io",
+    SwqosRegion.LONDON: "ams.gateway.astralane.io",
     SwqosRegion.LOS_ANGELES: "la.gateway.astralane.io",
-    SwqosRegion.DEFAULT:     "lim.gateway.astralane.io",
+    SwqosRegion.DEFAULT: "lim.gateway.astralane.io",
 }
 
 STELLIUM_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "http://ewr1.flashrpc.com",
-    SwqosRegion.FRANKFURT:   "http://fra1.flashrpc.com",
-    SwqosRegion.AMSTERDAM:   "http://ams1.flashrpc.com",
-    SwqosRegion.DUBLIN:      "http://lhr1.flashrpc.com",
-    SwqosRegion.SLC:         "http://ewr1.flashrpc.com",
-    SwqosRegion.TOKYO:       "http://tyo1.flashrpc.com",
-    SwqosRegion.SINGAPORE:   "http://tyo1.flashrpc.com",
-    SwqosRegion.LONDON:      "http://lhr1.flashrpc.com",
+    SwqosRegion.NEW_YORK: "http://ewr1.flashrpc.com",
+    SwqosRegion.FRANKFURT: "http://fra1.flashrpc.com",
+    SwqosRegion.AMSTERDAM: "http://ams1.flashrpc.com",
+    SwqosRegion.DUBLIN: "http://lhr1.flashrpc.com",
+    SwqosRegion.SLC: "http://ewr1.flashrpc.com",
+    SwqosRegion.TOKYO: "http://tyo1.flashrpc.com",
+    SwqosRegion.SINGAPORE: "http://tyo1.flashrpc.com",
+    SwqosRegion.LONDON: "http://lhr1.flashrpc.com",
     SwqosRegion.LOS_ANGELES: "http://ewr1.flashrpc.com",
-    SwqosRegion.DEFAULT:     "http://fra1.flashrpc.com",
+    SwqosRegion.DEFAULT: "http://fra1.flashrpc.com",
 }
 
 NEXT_BLOCK_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "http://ny.nextblock.io",
-    SwqosRegion.FRANKFURT:   "http://fra.nextblock.io",
-    SwqosRegion.AMSTERDAM:   "http://ams.nextblock.io",
-    SwqosRegion.DUBLIN:      "http://dublin.nextblock.io",
-    SwqosRegion.SLC:         "http://slc.nextblock.io",
-    SwqosRegion.TOKYO:       "http://tokyo.nextblock.io",
-    SwqosRegion.SINGAPORE:   "http://sgp.nextblock.io",
-    SwqosRegion.LONDON:      "http://london.nextblock.io",
+    SwqosRegion.NEW_YORK: "http://ny.nextblock.io",
+    SwqosRegion.FRANKFURT: "http://fra.nextblock.io",
+    SwqosRegion.AMSTERDAM: "http://ams.nextblock.io",
+    SwqosRegion.DUBLIN: "http://dublin.nextblock.io",
+    SwqosRegion.SLC: "http://slc.nextblock.io",
+    SwqosRegion.TOKYO: "http://tokyo.nextblock.io",
+    SwqosRegion.SINGAPORE: "http://sgp.nextblock.io",
+    SwqosRegion.LONDON: "http://london.nextblock.io",
     SwqosRegion.LOS_ANGELES: "http://slc.nextblock.io",
-    SwqosRegion.DEFAULT:     "http://fra.nextblock.io",
+    SwqosRegion.DEFAULT: "http://fra.nextblock.io",
 }
 
 SOYAS_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "nyc.landing.soyas.xyz:9000",
-    SwqosRegion.FRANKFURT:   "fra.landing.soyas.xyz:9000",
-    SwqosRegion.AMSTERDAM:   "ams.landing.soyas.xyz:9000",
-    SwqosRegion.DUBLIN:      "lon.landing.soyas.xyz:9000",
-    SwqosRegion.SLC:         "nyc.landing.soyas.xyz:9000",
-    SwqosRegion.TOKYO:       "tyo.landing.soyas.xyz:9000",
-    SwqosRegion.SINGAPORE:   "tyo.landing.soyas.xyz:9000",
-    SwqosRegion.LONDON:      "lon.landing.soyas.xyz:9000",
+    SwqosRegion.NEW_YORK: "nyc.landing.soyas.xyz:9000",
+    SwqosRegion.FRANKFURT: "fra.landing.soyas.xyz:9000",
+    SwqosRegion.AMSTERDAM: "ams.landing.soyas.xyz:9000",
+    SwqosRegion.DUBLIN: "lon.landing.soyas.xyz:9000",
+    SwqosRegion.SLC: "nyc.landing.soyas.xyz:9000",
+    SwqosRegion.TOKYO: "tyo.landing.soyas.xyz:9000",
+    SwqosRegion.SINGAPORE: "tyo.landing.soyas.xyz:9000",
+    SwqosRegion.LONDON: "lon.landing.soyas.xyz:9000",
     SwqosRegion.LOS_ANGELES: "nyc.landing.soyas.xyz:9000",
-    SwqosRegion.DEFAULT:     "fra.landing.soyas.xyz:9000",
+    SwqosRegion.DEFAULT: "fra.landing.soyas.xyz:9000",
 }
 
 SPEEDLANDING_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "nyc.speedlanding.trade:17778",
-    SwqosRegion.FRANKFURT:   "fra.speedlanding.trade:17778",
-    SwqosRegion.AMSTERDAM:   "ams.speedlanding.trade:17778",
-    SwqosRegion.DUBLIN:      "ams.speedlanding.trade:17778",
-    SwqosRegion.SLC:         "nyc.speedlanding.trade:17778",
-    SwqosRegion.TOKYO:       "tyo.speedlanding.trade:17778",
-    SwqosRegion.SINGAPORE:   "sgp.speedlanding.trade:17778",
-    SwqosRegion.LONDON:      "ams.speedlanding.trade:17778",
+    SwqosRegion.NEW_YORK: "nyc.speedlanding.trade:17778",
+    SwqosRegion.FRANKFURT: "fra.speedlanding.trade:17778",
+    SwqosRegion.AMSTERDAM: "ams.speedlanding.trade:17778",
+    SwqosRegion.DUBLIN: "ams.speedlanding.trade:17778",
+    SwqosRegion.SLC: "nyc.speedlanding.trade:17778",
+    SwqosRegion.TOKYO: "tyo.speedlanding.trade:17778",
+    SwqosRegion.SINGAPORE: "sgp.speedlanding.trade:17778",
+    SwqosRegion.LONDON: "ams.speedlanding.trade:17778",
     SwqosRegion.LOS_ANGELES: "nyc.speedlanding.trade:17778",
-    SwqosRegion.DEFAULT:     "fra.speedlanding.trade:17778",
+    SwqosRegion.DEFAULT: "fra.speedlanding.trade:17778",
 }
 
 SOLAMI_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK:    "beam.solami.dev:11000",
-    SwqosRegion.FRANKFURT:   "beam.solami.dev:11000",
-    SwqosRegion.AMSTERDAM:   "beam.solami.dev:11000",
-    SwqosRegion.DUBLIN:      "beam.solami.dev:11000",
-    SwqosRegion.SLC:         "beam.solami.dev:11000",
-    SwqosRegion.TOKYO:       "beam.solami.dev:11000",
-    SwqosRegion.SINGAPORE:   "beam.solami.dev:11000",
-    SwqosRegion.LONDON:      "beam.solami.dev:11000",
+    SwqosRegion.NEW_YORK: "beam.solami.dev:11000",
+    SwqosRegion.FRANKFURT: "beam.solami.dev:11000",
+    SwqosRegion.AMSTERDAM: "beam.solami.dev:11000",
+    SwqosRegion.DUBLIN: "beam.solami.dev:11000",
+    SwqosRegion.SLC: "beam.solami.dev:11000",
+    SwqosRegion.TOKYO: "beam.solami.dev:11000",
+    SwqosRegion.SINGAPORE: "beam.solami.dev:11000",
+    SwqosRegion.LONDON: "beam.solami.dev:11000",
     SwqosRegion.LOS_ANGELES: "beam.solami.dev:11000",
-    SwqosRegion.DEFAULT:     "beam.solami.dev:11000",
+    SwqosRegion.DEFAULT: "beam.solami.dev:11000",
 }
 
 
 # ===== Error Handling =====
 
+
 @dataclass
 class TradeError(Exception):
     """Trade error with detailed information"""
+
     code: int
     message: str
     instruction_index: Optional[int] = None
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"TradeError(code={self.code}, message={self.message})"
 
 
@@ -508,6 +538,7 @@ def _extract_signature(data: Any) -> str:
 
 
 # ===== Interfaces =====
+
 
 class SwqosClient(ABC):
     """Abstract base class for SWQOS clients"""
@@ -560,6 +591,7 @@ class SwqosClient(ABC):
 
 # ===== HTTP Client Base =====
 
+
 class HTTPClientMixin:
     """Mixin for HTTP client functionality"""
 
@@ -581,12 +613,70 @@ class HTTPClientMixin:
         return cls._session
 
     @classmethod
-    async def close_session(cls):
+    async def close_session(cls) -> None:
         if cls._session and not cls._session.closed:
             await cls._session.close()
 
 
+def _should_fallback_transport(error: Exception) -> bool:
+    if isinstance(error, TradeError):
+        return error.code >= 500 or error.code in {408, 425}
+    if _GRPC_AVAILABLE and isinstance(error, grpc.aio.AioRpcError):
+        return error.code() in {
+            grpc.StatusCode.UNAVAILABLE,
+            grpc.StatusCode.DEADLINE_EXCEEDED,
+            grpc.StatusCode.INTERNAL,
+        }
+    return isinstance(error, (asyncio.TimeoutError, ConnectionError, OSError, aiohttp.ClientError))
+
+
+class FallbackSwqosClient(SwqosClient):
+    """Try the provider's preferred transport, then its official fallback."""
+
+    def __init__(self, primary: SwqosClient, fallback: SwqosClient):
+        self.primary = primary
+        self.fallback = fallback
+
+    async def send_transaction(
+        self,
+        trade_type: TradeType,
+        transaction: bytes,
+        wait_confirmation: bool = False,
+    ) -> str:
+        try:
+            return await self.primary.send_transaction(trade_type, transaction, wait_confirmation)
+        except Exception as error:
+            if not _should_fallback_transport(error):
+                raise
+            return await self.fallback.send_transaction(trade_type, transaction, wait_confirmation)
+
+    async def send_transactions(
+        self,
+        trade_type: TradeType,
+        transactions: List[bytes],
+        wait_confirmation: bool = False,
+    ) -> List[str]:
+        try:
+            return await self.primary.send_transactions(trade_type, transactions, wait_confirmation)
+        except Exception as error:
+            if not _should_fallback_transport(error):
+                raise
+            return await self.fallback.send_transactions(
+                trade_type, transactions, wait_confirmation
+            )
+
+    def get_tip_account(self) -> str:
+        return self.primary.get_tip_account()
+
+    def get_swqos_type(self) -> SwqosType:
+        return self.primary.get_swqos_type()
+
+    def min_tip_sol(self) -> float:
+        return self.primary.min_tip_sol()
+
+
 # ===== Jito Client =====
+
 
 class JitoClient(SwqosClient, HTTPClientMixin):
     """
@@ -704,6 +794,7 @@ class JitoClient(SwqosClient, HTTPClientMixin):
 
 # ===== Bloxroute Client =====
 
+
 class BloxrouteClient(SwqosClient, HTTPClientMixin):
     """
     Bloxroute SWQOS client implementation.
@@ -779,6 +870,7 @@ class BloxrouteClient(SwqosClient, HTTPClientMixin):
 
 # ===== ZeroSlot Client =====
 
+
 class ZeroSlotClient(SwqosClient, HTTPClientMixin):
     """
     ZeroSlot SWQOS client implementation.
@@ -835,7 +927,11 @@ class ZeroSlotClient(SwqosClient, HTTPClientMixin):
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
-                message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
+                message=(
+                    data["error"].get("message", str(data["error"]))
+                    if isinstance(data["error"], dict)
+                    else str(data["error"])
+                ),
             )
 
         return _extract_signature(data)
@@ -864,12 +960,115 @@ class ZeroSlotClient(SwqosClient, HTTPClientMixin):
 
 # ===== Temporal Client =====
 
+TEMPORAL_MAX_BATCH_SIZE = 16
+TEMPORAL_MIN_TX_SIZE = 66
+TEMPORAL_MAX_TX_SIZE = 1232
+
+
+def _encode_temporal_batch(transactions: List[bytes]) -> bytes:
+    if not transactions:
+        raise TradeError(400, "Temporal batch cannot be empty")
+    if len(transactions) > TEMPORAL_MAX_BATCH_SIZE:
+        raise TradeError(
+            400,
+            f"Temporal batch has {len(transactions)} transactions; maximum is {TEMPORAL_MAX_BATCH_SIZE}",
+        )
+    body = bytearray()
+    for transaction in transactions:
+        if not TEMPORAL_MIN_TX_SIZE <= len(transaction) <= TEMPORAL_MAX_TX_SIZE:
+            raise TradeError(
+                400,
+                f"Temporal transaction size {len(transaction)} is outside "
+                f"{TEMPORAL_MIN_TX_SIZE}..{TEMPORAL_MAX_TX_SIZE} bytes",
+            )
+        body.extend(struct.pack(">H", len(transaction)))
+        body.extend(transaction)
+    return bytes(body)
+
+
+def _temporal_endpoint_parts(endpoint: str) -> tuple[str, int]:
+    parsed = urlparse(endpoint if "://" in endpoint else f"http://{endpoint}")
+    if not parsed.hostname:
+        raise TradeError(400, f"invalid Temporal endpoint: {endpoint}")
+    return parsed.hostname, parsed.port or 443
+
+
+class _TemporalH3Protocol(QuicConnectionProtocol):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._http: Any = None
+        self._responses: Dict[int, asyncio.Future] = {}
+        self._statuses: Dict[int, int] = {}
+        self._bodies: Dict[int, bytearray] = {}
+
+    def quic_event_received(self, event: Any) -> None:
+        if isinstance(event, ConnectionTerminated):
+            error = TradeError(
+                503,
+                f"Temporal HTTP/3 connection closed: {event.reason_phrase or event.error_code}",
+            )
+            for future in self._responses.values():
+                if not future.done():
+                    future.set_exception(error)
+            return
+        if isinstance(event, ProtocolNegotiated):
+            self._http = H3Connection(self._quic)
+        if self._http is None:
+            return
+        for http_event in self._http.handle_event(event):
+            if isinstance(http_event, HeadersReceived):
+                headers = dict(http_event.headers)
+                self._statuses[http_event.stream_id] = int(headers.get(b":status", b"500"))
+                if http_event.stream_ended:
+                    self._finish(http_event.stream_id)
+            elif isinstance(http_event, DataReceived):
+                self._bodies.setdefault(http_event.stream_id, bytearray()).extend(http_event.data)
+                if http_event.stream_ended:
+                    self._finish(http_event.stream_id)
+
+    def _finish(self, stream_id: int) -> None:
+        future = self._responses.get(stream_id)
+        if future is not None and not future.done():
+            future.set_result(
+                (self._statuses.get(stream_id, 500), bytes(self._bodies.get(stream_id, b"")))
+            )
+
+    async def send_batch(self, authority: str, path: str, body: bytes) -> None:
+        if self._http is None:
+            raise TradeError(503, "Temporal HTTP/3 connection is not ready")
+        stream_id = self._quic.get_next_available_stream_id()
+        future = asyncio.get_running_loop().create_future()
+        self._responses[stream_id] = future
+        self._http.send_headers(
+            stream_id=stream_id,
+            headers=[
+                (b":method", b"POST"),
+                (b":scheme", b"https"),
+                (b":authority", authority.encode()),
+                (b":path", path.encode()),
+                (b"content-type", b"application/octet-stream"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        )
+        self._http.send_data(stream_id=stream_id, data=body, end_stream=True)
+        self.transmit()
+        try:
+            status, response_body = await asyncio.wait_for(future, timeout=3.0)
+        finally:
+            self._responses.pop(stream_id, None)
+            self._statuses.pop(stream_id, None)
+            self._bodies.pop(stream_id, None)
+        if not 200 <= status < 300:
+            message = response_body.decode(errors="replace").strip() or str(status)
+            raise TradeError(status, f"Temporal HTTP/3 error: {message}")
+
+
 class TemporalClient(SwqosClient, HTTPClientMixin):
     """
     Temporal (Nozomi) SWQOS client implementation.
 
     URL:    {endpoint}/?c={token}   (auth in URL param, not header)
-    Body:   standard JSON-RPC sendTransaction (base64 encoding)
+    Body:   official compact binary Batch Send framing
     """
 
     def __init__(
@@ -884,9 +1083,8 @@ class TemporalClient(SwqosClient, HTTPClientMixin):
         self._tip_account = _random_tip_account(TEMPORAL_TIP_ACCOUNTS)
 
     def _build_url(self) -> str:
-        if self.auth_token:
-            return f"{self.endpoint}/?c={self.auth_token}"
-        return f"{self.endpoint}/"
+        params = urlencode({"c": self.auth_token}) if self.auth_token else ""
+        return f"{self.endpoint}/api/sendBatch{f'?{params}' if params else ''}"
 
     async def send_transaction(
         self,
@@ -894,33 +1092,17 @@ class TemporalClient(SwqosClient, HTTPClientMixin):
         transaction: bytes,
         wait_confirmation: bool = False,
     ) -> str:
-        encoded = base64.b64encode(transaction).decode()
-
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "sendTransaction",
-            "params": [
-                encoded,
-                {"encoding": "base64"},
-            ],
-        }
-
         session = await self.get_session()
         url = self._build_url()
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/octet-stream"}
 
-        async with session.post(url, json=payload, headers=headers) as resp:
-            data = await resp.json()
+        async with session.post(
+            url, data=_encode_temporal_batch([transaction]), headers=headers
+        ) as resp:
+            text = await resp.text()
 
-        _raise_for_http_status(resp, data)
-        if "error" in data:
-            raise TradeError(
-                code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
-                message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
-            )
-
-        return _extract_signature(data)
+        _raise_for_http_status(resp, text)
+        return _signature_from_serialized_transaction(transaction)
 
     async def send_transactions(
         self,
@@ -928,10 +1110,106 @@ class TemporalClient(SwqosClient, HTTPClientMixin):
         transactions: List[bytes],
         wait_confirmation: bool = False,
     ) -> List[str]:
-        signatures = []
-        for tx in transactions:
-            sig = await self.send_transaction(trade_type, tx, wait_confirmation)
-            signatures.append(sig)
+        signatures: List[str] = []
+        session = await self.get_session()
+        for start in range(0, len(transactions), TEMPORAL_MAX_BATCH_SIZE):
+            batch = transactions[start : start + TEMPORAL_MAX_BATCH_SIZE]
+            async with session.post(
+                self._build_url(),
+                data=_encode_temporal_batch(batch),
+                headers={"Content-Type": "application/octet-stream"},
+            ) as resp:
+                text = await resp.text()
+            _raise_for_http_status(resp, text)
+            signatures.extend(_signature_from_serialized_transaction(tx) for tx in batch)
+        return signatures
+
+    def get_tip_account(self) -> str:
+        return self._tip_account
+
+    def get_swqos_type(self) -> SwqosType:
+        return SwqosType.TEMPORAL
+
+    def min_tip_sol(self) -> float:
+        return MIN_TIP_TEMPORAL
+
+
+class TemporalQuicClient(SwqosClient):
+    """Persistent Temporal HTTP/3 client using the official Batch Send format."""
+
+    def __init__(self, rpc_url: str, endpoint: str, auth_token: Optional[str] = None):
+        self.rpc_url = rpc_url
+        self.endpoint = endpoint
+        self.auth_token = auth_token or ""
+        self._tip_account = _random_tip_account(TEMPORAL_TIP_ACCOUNTS)
+        self._connection: Any = None
+        self._protocol: Optional[_TemporalH3Protocol] = None
+        self._lock = asyncio.Lock()
+
+    async def _connect(self) -> _TemporalH3Protocol:
+        if not _QUIC_AVAILABLE:
+            raise TradeError(501, "Temporal QUIC requires sol-trade-sdk[quic]")
+        if self._protocol is not None:
+            return self._protocol
+        host, port = _temporal_endpoint_parts(self.endpoint)
+        config = QuicConfiguration(is_client=True, alpn_protocols=H3_ALPN)
+        config.verify_mode = ssl.CERT_REQUIRED
+        config.server_name = host
+        self._connection = quic_connect(
+            host,
+            port,
+            configuration=config,
+            create_protocol=_TemporalH3Protocol,
+        )
+        self._protocol = await self._connection.__aenter__()
+        return self._protocol
+
+    async def _invalidate(self) -> None:
+        connection = self._connection
+        self._connection = None
+        self._protocol = None
+        if connection is not None:
+            try:
+                await connection.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+    async def _send_batch(self, transactions: List[bytes]) -> List[str]:
+        body = _encode_temporal_batch(transactions)
+        host, port = _temporal_endpoint_parts(self.endpoint)
+        authority = host if port == 443 else f"{host}:{port}"
+        path = f"/api/sendBatch?{urlencode({'c': self.auth_token})}"
+        async with self._lock:
+            try:
+                protocol = await self._connect()
+                await protocol.send_batch(authority, path, body)
+            except Exception as error:
+                if not _should_fallback_transport(error):
+                    raise
+                await self._invalidate()
+                protocol = await self._connect()
+                await protocol.send_batch(authority, path, body)
+        return [_signature_from_serialized_transaction(tx) for tx in transactions]
+
+    async def send_transaction(
+        self,
+        trade_type: TradeType,
+        transaction: bytes,
+        wait_confirmation: bool = False,
+    ) -> str:
+        return (await self._send_batch([transaction]))[0]
+
+    async def send_transactions(
+        self,
+        trade_type: TradeType,
+        transactions: List[bytes],
+        wait_confirmation: bool = False,
+    ) -> List[str]:
+        signatures: List[str] = []
+        for start in range(0, len(transactions), TEMPORAL_MAX_BATCH_SIZE):
+            signatures.extend(
+                await self._send_batch(transactions[start : start + TEMPORAL_MAX_BATCH_SIZE])
+            )
         return signatures
 
     def get_tip_account(self) -> str:
@@ -945,6 +1223,7 @@ class TemporalClient(SwqosClient, HTTPClientMixin):
 
 
 # ===== FlashBlock Client =====
+
 
 class FlashBlockClient(SwqosClient, HTTPClientMixin):
     """
@@ -991,7 +1270,11 @@ class FlashBlockClient(SwqosClient, HTTPClientMixin):
         if isinstance(data, dict) and "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
-                message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
+                message=(
+                    data["error"].get("message", str(data["error"]))
+                    if isinstance(data["error"], dict)
+                    else str(data["error"])
+                ),
             )
 
         # Response may be a list of results or a dict
@@ -1055,6 +1338,7 @@ class FlashBlockClient(SwqosClient, HTTPClientMixin):
 
 
 # ===== Helius Client =====
+
 
 class HeliusClient(SwqosClient, HTTPClientMixin):
     """
@@ -1122,7 +1406,11 @@ class HeliusClient(SwqosClient, HTTPClientMixin):
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
-                message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
+                message=(
+                    data["error"].get("message", str(data["error"]))
+                    if isinstance(data["error"], dict)
+                    else str(data["error"])
+                ),
             )
 
         return _extract_signature(data)
@@ -1152,6 +1440,7 @@ class HeliusClient(SwqosClient, HTTPClientMixin):
 
 
 # ===== Default RPC Client =====
+
 
 class DefaultClient(SwqosClient, HTTPClientMixin):
     """Default RPC client implementation"""
@@ -1187,7 +1476,11 @@ class DefaultClient(SwqosClient, HTTPClientMixin):
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
-                message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
+                message=(
+                    data["error"].get("message", str(data["error"]))
+                    if isinstance(data["error"], dict)
+                    else str(data["error"])
+                ),
             )
 
         return _extract_signature(data)
@@ -1215,6 +1508,7 @@ class DefaultClient(SwqosClient, HTTPClientMixin):
 
 
 # ===== Node1 Client =====
+
 
 class Node1Client(SwqosClient, HTTPClientMixin):
     """
@@ -1266,7 +1560,11 @@ class Node1Client(SwqosClient, HTTPClientMixin):
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
-                message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
+                message=(
+                    data["error"].get("message", str(data["error"]))
+                    if isinstance(data["error"], dict)
+                    else str(data["error"])
+                ),
             )
 
         return _extract_signature(data)
@@ -1295,14 +1593,56 @@ class Node1Client(SwqosClient, HTTPClientMixin):
 
 # ===== BlockRazor Client =====
 
+
+def _blockrazor_message_types() -> tuple[Any, Any]:
+    if not _GRPC_AVAILABLE:
+        raise TradeError(501, "BlockRazor gRPC requires grpcio and protobuf")
+
+    file_descriptor = descriptor_pb2.FileDescriptorProto()
+    file_descriptor.name = "blockrazor/server.proto"
+    file_descriptor.package = "serverpb"
+    file_descriptor.syntax = "proto3"
+
+    request = file_descriptor.message_type.add()
+    request.name = "SendBinaryRequest"
+    for name, number, field_type in (
+        ("binaryTransaction", 1, descriptor_pb2.FieldDescriptorProto.TYPE_BYTES),
+        ("mode", 2, descriptor_pb2.FieldDescriptorProto.TYPE_STRING),
+        ("safeWindow", 3, descriptor_pb2.FieldDescriptorProto.TYPE_INT32),
+        ("revertProtection", 4, descriptor_pb2.FieldDescriptorProto.TYPE_BOOL),
+    ):
+        field = request.field.add()
+        field.name = name
+        field.number = number
+        field.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
+        field.type = field_type
+
+    response = file_descriptor.message_type.add()
+    response.name = "SendResponse"
+    signature = response.field.add()
+    signature.name = "signature"
+    signature.number = 1
+    signature.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
+    signature.type = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
+
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(file_descriptor)
+    request_type = message_factory.GetMessageClass(
+        pool.FindMessageTypeByName("serverpb.SendBinaryRequest")
+    )
+    response_type = message_factory.GetMessageClass(
+        pool.FindMessageTypeByName("serverpb.SendResponse")
+    )
+    return request_type, response_type
+
+
 class BlockRazorClient(SwqosClient, HTTPClientMixin):
     """
     BlockRazor SWQOS client implementation.
 
-    URL:    {endpoint}?auth={token}&mode={mode}
-            mode = "fast" | "sandwichMitigation"
-    Content-Type: text/plain
-    Body:   raw base64 string (not JSON)
+    URL:    {endpoint}/sendTransaction
+    Auth:   apikey request header
+    Body:   official JSON request with a base64 transaction
     """
 
     def __init__(
@@ -1318,45 +1658,43 @@ class BlockRazorClient(SwqosClient, HTTPClientMixin):
         self.mev_protection = mev_protection
         self._tip_account = _random_tip_account(BLOCK_RAZOR_TIP_ACCOUNTS)
 
-    def _build_url(self) -> str:
-        mode = "sandwichMitigation" if self.mev_protection else "fast"
-        url = self.endpoint
-        params = []
-        if self.auth_token:
-            params.append(f"auth={self.auth_token}")
-        params.append(f"mode={mode}")
-        return f"{url}?{'&'.join(params)}"
-
     async def send_transaction(
         self,
         trade_type: TradeType,
         transaction: bytes,
         wait_confirmation: bool = False,
     ) -> str:
-        encoded = base64.b64encode(transaction).decode()
-
         session = await self.get_session()
-        url = self._build_url()
-        headers = {"Content-Type": "text/plain"}
+        headers = {"Content-Type": "application/json"}
+        if self.auth_token:
+            headers["apikey"] = self.auth_token
+        payload = {
+            "transaction": base64.b64encode(transaction).decode(),
+            "mode": "sandwichMitigation" if self.mev_protection else "fast",
+            "safeWindow": 3,
+            "revertProtection": False,
+        }
 
-        async with session.post(url, data=encoded, headers=headers) as resp:
+        async with session.post(self.endpoint, json=payload, headers=headers) as resp:
             text = await resp.text()
 
-        if resp.status < 200 or resp.status >= 300:
-            message = text.strip() or getattr(resp, "reason", "") or "HTTP error"
-            raise TradeError(code=resp.status, message=f"HTTP error: {message}")
+        _raise_for_http_status(resp, text)
 
-        # BlockRazor returns the signature as plain text or JSON
-        try:
-            data = json.loads(text)
-            if isinstance(data, dict):
-                if "error" in data:
-                    raise TradeError(code=500, message=str(data["error"]))
+        if text.strip():
+            try:
+                data = json.loads(text)
+                if isinstance(data, dict) and "error" in data:
+                    error = data["error"]
+                    code = error.get("code", 500) if isinstance(error, dict) else 500
+                    message = (
+                        error.get("message", str(error)) if isinstance(error, dict) else str(error)
+                    )
+                    raise TradeError(code=code, message=message)
                 return _extract_signature(data)
-        except (json.JSONDecodeError, ValueError):
-            pass
+            except json.JSONDecodeError:
+                return _extract_signature(text.strip())
 
-        return _extract_signature(text.strip())
+        return _signature_from_serialized_transaction(transaction)
 
     async def send_transactions(
         self,
@@ -1380,7 +1718,89 @@ class BlockRazorClient(SwqosClient, HTTPClientMixin):
         return MIN_TIP_BLOCK_RAZOR
 
 
+class BlockRazorGrpcClient(SwqosClient):
+    """BlockRazor's preferred gRPC SendBinaryTransaction transport."""
+
+    def __init__(
+        self,
+        rpc_url: str,
+        endpoint: str,
+        auth_token: Optional[str] = None,
+        mev_protection: bool = False,
+    ):
+        if not _GRPC_AVAILABLE:
+            raise TradeError(501, "BlockRazor gRPC requires grpcio and protobuf")
+        request_type, response_type = _blockrazor_message_types()
+        target = endpoint.removeprefix("http://").removeprefix("https://")
+        self.rpc_url = rpc_url
+        self.endpoint = target
+        self.auth_token = auth_token or ""
+        self.mev_protection = mev_protection
+        self._tip_account = _random_tip_account(BLOCK_RAZOR_TIP_ACCOUNTS)
+        self._request_type = request_type
+        self._response_type = response_type
+        self._channel: Any = None
+        self._send: Any = None
+
+    def _ensure_send(self) -> Any:
+        """Create grpc.aio objects only while an event loop is running."""
+        if self._send is not None:
+            return self._send
+        self._channel = grpc.aio.insecure_channel(self.endpoint)
+        self._send = self._channel.unary_unary(
+            "/serverpb.Server/SendBinaryTransaction",
+            request_serializer=lambda value: value.SerializeToString(),
+            response_deserializer=self._response_type.FromString,
+        )
+        return self._send
+
+    async def send_transaction(
+        self,
+        trade_type: TradeType,
+        transaction: bytes,
+        wait_confirmation: bool = False,
+    ) -> str:
+        request = self._request_type(
+            binaryTransaction=transaction,
+            mode="sandwichMitigation" if self.mev_protection else "fast",
+            safeWindow=3,
+            revertProtection=False,
+        )
+        metadata = (("apikey", self.auth_token),) if self.auth_token else ()
+        response = await self._ensure_send()(request, metadata=metadata, timeout=3.0)
+        if not response.signature:
+            raise TradeError(502, "BlockRazor gRPC returned an empty signature")
+        return str(response.signature)
+
+    async def send_transactions(
+        self,
+        trade_type: TradeType,
+        transactions: List[bytes],
+        wait_confirmation: bool = False,
+    ) -> List[str]:
+        return [
+            await self.send_transaction(trade_type, transaction, wait_confirmation)
+            for transaction in transactions
+        ]
+
+    async def close(self) -> None:
+        if self._channel is not None:
+            await self._channel.close()
+            self._channel = None
+            self._send = None
+
+    def get_tip_account(self) -> str:
+        return self._tip_account
+
+    def get_swqos_type(self) -> SwqosType:
+        return SwqosType.BLOCK_RAZOR
+
+    def min_tip_sol(self) -> float:
+        return MIN_TIP_BLOCK_RAZOR
+
+
 # ===== Astralane Client =====
+
 
 class AstralaneClient(SwqosClient, HTTPClientMixin):
     """
@@ -1432,15 +1852,23 @@ class AstralaneClient(SwqosClient, HTTPClientMixin):
                 if isinstance(data, dict):
                     if "error" in data:
                         raise TradeError(
-                            code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
-                            message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
+                            code=(
+                                data["error"].get("code", 500)
+                                if isinstance(data["error"], dict)
+                                else 500
+                            ),
+                            message=(
+                                data["error"].get("message", str(data["error"]))
+                                if isinstance(data["error"], dict)
+                                else str(data["error"])
+                            ),
                         )
                     if isinstance(data.get("result"), str):
-                        return data["result"]
+                        return str(data["result"])
                     if isinstance(data.get("signature"), str):
-                        return data["signature"]
+                        return str(data["signature"])
             except json.JSONDecodeError:
-                return text.strip()
+                return str(text.strip())
 
         return _signature_from_serialized_transaction(transaction)
 
@@ -1467,6 +1895,7 @@ class AstralaneClient(SwqosClient, HTTPClientMixin):
 
 
 # ===== Stellium Client =====
+
 
 class StelliumClient(SwqosClient, HTTPClientMixin):
     """
@@ -1521,7 +1950,11 @@ class StelliumClient(SwqosClient, HTTPClientMixin):
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
-                message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
+                message=(
+                    data["error"].get("message", str(data["error"]))
+                    if isinstance(data["error"], dict)
+                    else str(data["error"])
+                ),
             )
 
         return _extract_signature(data)
@@ -1549,6 +1982,7 @@ class StelliumClient(SwqosClient, HTTPClientMixin):
 
 
 # ===== Lightspeed Client =====
+
 
 class LightspeedClient(SwqosClient, HTTPClientMixin):
     """
@@ -1603,7 +2037,11 @@ class LightspeedClient(SwqosClient, HTTPClientMixin):
         if "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
-                message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
+                message=(
+                    data["error"].get("message", str(data["error"]))
+                    if isinstance(data["error"], dict)
+                    else str(data["error"])
+                ),
             )
 
         return _extract_signature(data)
@@ -1631,6 +2069,7 @@ class LightspeedClient(SwqosClient, HTTPClientMixin):
 
 
 # ===== NextBlock Client =====
+
 
 class NextBlockClient(SwqosClient, HTTPClientMixin):
     """
@@ -1681,7 +2120,11 @@ class NextBlockClient(SwqosClient, HTTPClientMixin):
         if isinstance(data, dict) and "error" in data:
             raise TradeError(
                 code=data["error"].get("code", 500) if isinstance(data["error"], dict) else 500,
-                message=data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"]),
+                message=(
+                    data["error"].get("message", str(data["error"]))
+                    if isinstance(data["error"], dict)
+                    else str(data["error"])
+                ),
             )
 
         if isinstance(data, dict):
@@ -1711,6 +2154,7 @@ class NextBlockClient(SwqosClient, HTTPClientMixin):
 
 
 # ===== QUIC helper =====
+
 
 def _make_solana_tpu_quic_config(
     server_name: str,
@@ -1761,21 +2205,12 @@ def _make_solana_tpu_quic_config(
         .sign(private_key, None)  # Ed25519 doesn't use a hash algorithm
     )
 
-    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
-    key_pem = private_key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    )
-
     cfg = QuicConfiguration(
         alpn_protocols=["solana-tpu"],
         is_client=True,
         verify_mode=ssl.CERT_NONE,
         server_name=server_name,
     )
-    cfg.load_cert_chain(certfile=None, keyfile=None)  # will be overridden below
-    # Load the generated cert/key directly into the SSL context
     cfg.certificate = cert
     cfg.private_key = private_key
     return cfg
@@ -1814,8 +2249,12 @@ def _make_astralane_quic_config(api_key: str) -> "QuicConfiguration":
         .issuer_name(subject)
         .public_key(public_key)
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.datetime.utcnow() - datetime.timedelta(hours=1))
-        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+        .not_valid_before(
+            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+        )
+        .not_valid_after(
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365)
+        )
         .sign(private_key, hashes.SHA256())
     )
     cfg = QuicConfiguration(
@@ -1832,12 +2271,12 @@ def _make_astralane_quic_config(api_key: str) -> "QuicConfiguration":
 class _SolanaTPUProtocol(QuicConnectionProtocol):
     """Minimal QUIC protocol: opens a unidirectional stream, writes bytes, closes."""
 
-    def __init__(self, *args, tx_bytes: bytes, **kwargs):
+    def __init__(self, *args: Any, tx_bytes: bytes, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._tx_bytes = tx_bytes
         self._done = asyncio.Event()
 
-    def quic_event_received(self, event) -> None:
+    def quic_event_received(self, event: Any) -> None:
         pass  # we only send, no responses expected
 
     async def send_tx(self) -> None:
@@ -1869,16 +2308,17 @@ async def _send_via_quic(
         configuration=cfg,
         create_protocol=lambda *a, **kw: _SolanaTPUProtocol(*a, tx_bytes=tx_bytes, **kw),
     ) as protocol:
+        assert isinstance(protocol, _SolanaTPUProtocol)
         await protocol.send_tx()
 
 
 class _Node1QuicProtocol(QuicConnectionProtocol):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._buffers: Dict[int, bytearray] = {}
         self._done: Dict[int, asyncio.Future] = {}
 
-    def quic_event_received(self, event) -> None:
+    def quic_event_received(self, event: Any) -> None:
         from aioquic.quic.events import StreamDataReceived
 
         if isinstance(event, StreamDataReceived):
@@ -1905,7 +2345,10 @@ async def _node1_quic_submit(endpoint: str, api_key: str, tx_bytes: bytes) -> No
     api_key_bytes = uuid.UUID(api_key).bytes
     host, port = _host_port_from_http(endpoint, 16666)
     cfg = _make_node1_quic_config(host)
-    async with quic_connect(host, port, configuration=cfg, create_protocol=_Node1QuicProtocol) as protocol:
+    async with quic_connect(
+        host, port, configuration=cfg, create_protocol=_Node1QuicProtocol
+    ) as protocol:
+        assert isinstance(protocol, _Node1QuicProtocol)
         auth_reply = await protocol.send_and_read(api_key_bytes)
         if auth_reply != b"\x00":
             code = auth_reply[0] if auth_reply else -1
@@ -1915,30 +2358,43 @@ async def _node1_quic_submit(endpoint: str, api_key: str, tx_bytes: bytes) -> No
             raise TradeError(500, "Node1 QUIC response too short")
         status = int.from_bytes(response[:2], "big")
         msg_len = int.from_bytes(response[2:6], "big")
-        msg = response[6:6 + msg_len].decode("utf-8", errors="replace")
+        msg = response[6 : 6 + msg_len].decode("utf-8", errors="replace")
         if status != 200:
             raise TradeError(status, f"Node1 QUIC submit failed: {msg}")
 
 
-async def _astralane_quic_submit(endpoint: str, api_key: str, tx_bytes: bytes) -> None:
-    if not _QUIC_AVAILABLE:
-        raise TradeError(501, "QUIC not available: install sol-trade-sdk[quic].")
-    if len(tx_bytes) > 1232:
-        raise TradeError(400, f"Astralane QUIC transaction too large: {len(tx_bytes)} > 1232")
-    if endpoint.startswith("http://") or endpoint.startswith("https://"):
-        host, port = _host_port_from_http(endpoint, 7000)
-    else:
-        host_port = endpoint.rsplit(":", 1)
-        host = host_port[0]
-        port = int(host_port[1]) if len(host_port) == 2 and host_port[1].isdigit() else 7000
-    cfg = _make_astralane_quic_config(api_key)
-    async with quic_connect(
-        host,
-        port,
-        configuration=cfg,
-        create_protocol=lambda *a, **kw: _SolanaTPUProtocol(*a, tx_bytes=tx_bytes, **kw),
-    ) as protocol:
-        await protocol.send_tx()
+class _AstralanePersistentProtocol(QuicConnectionProtocol):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.termination_error: Optional[TradeError] = None
+        self._ping_id = 0
+
+    def quic_event_received(self, event: Any) -> None:
+        if isinstance(event, ConnectionTerminated):
+            if event.error_code == 1:
+                self.termination_error = TradeError(401, "Astralane QUIC rejected the API key")
+            elif event.error_code == 2:
+                self.termination_error = TradeError(429, "Astralane QUIC connection limit exceeded")
+            else:
+                reason = event.reason_phrase or f"application error {event.error_code}"
+                self.termination_error = TradeError(503, f"Astralane QUIC closed: {reason}")
+
+    async def send_transaction(self, transaction: bytes) -> None:
+        if self.termination_error is not None:
+            raise self.termination_error
+        stream_id = self._quic.get_next_available_stream_id(is_unidirectional=True)
+        self._quic.send_stream_data(stream_id, transaction, end_stream=True)
+        self.transmit()
+        await asyncio.sleep(0)
+        if self.termination_error is not None:
+            raise self.termination_error
+
+    def keep_alive(self) -> None:
+        if self.termination_error is not None:
+            return
+        self._ping_id += 1
+        self._quic.send_ping(self._ping_id)
+        self.transmit()
 
 
 class Node1QuicClient(SwqosClient):
@@ -1966,7 +2422,9 @@ class Node1QuicClient(SwqosClient):
     ) -> List[str]:
         signatures: List[str] = []
         for transaction in transactions:
-            signatures.append(await self.send_transaction(trade_type, transaction, wait_confirmation))
+            signatures.append(
+                await self.send_transaction(trade_type, transaction, wait_confirmation)
+            )
         return signatures
 
     def get_tip_account(self) -> str:
@@ -1980,12 +2438,67 @@ class Node1QuicClient(SwqosClient):
 
 
 class AstralaneQuicClient(SwqosClient):
-    """Astralane QUIC TPU client using API key as client certificate CN."""
+    """Persistent Astralane QUIC TPU client with keepalive and reconnect."""
 
     def __init__(self, rpc_url: str, endpoint: str, api_key: str):
         self.rpc_url = rpc_url
         self.endpoint = endpoint
         self.api_key = api_key
+        if endpoint.startswith(("http://", "https://")):
+            self._host, self._port = _host_port_from_http(endpoint, 7000)
+        else:
+            host_port = endpoint.rsplit(":", 1)
+            self._host = host_port[0]
+            self._port = (
+                int(host_port[1]) if len(host_port) == 2 and host_port[1].isdigit() else 7000
+            )
+        self._connection: Any = None
+        self._protocol: Optional[_AstralanePersistentProtocol] = None
+        self._lock = asyncio.Lock()
+        self._keepalive_task: Optional[asyncio.Task] = None
+
+    async def _connect(self) -> _AstralanePersistentProtocol:
+        if not _QUIC_AVAILABLE:
+            raise TradeError(501, "QUIC not available: install sol-trade-sdk[quic].")
+        if not self.api_key:
+            raise TradeError(401, "Astralane QUIC requires an API key")
+        if self._protocol is not None and self._protocol.termination_error is None:
+            return self._protocol
+        await self._invalidate()
+        self._connection = quic_connect(
+            self._host,
+            self._port,
+            configuration=_make_astralane_quic_config(self.api_key),
+            create_protocol=_AstralanePersistentProtocol,
+        )
+        self._protocol = await self._connection.__aenter__()
+        if self._keepalive_task is None or self._keepalive_task.done():
+            self._keepalive_task = asyncio.create_task(self._keepalive())
+        return self._protocol
+
+    async def _invalidate(self) -> None:
+        connection = self._connection
+        self._connection = None
+        self._protocol = None
+        if connection is not None:
+            with contextlib.suppress(Exception):
+                await connection.__aexit__(None, None, None)
+
+    async def _keepalive(self) -> None:
+        while True:
+            await asyncio.sleep(25)
+            protocol = self._protocol
+            if protocol is not None:
+                protocol.keep_alive()
+
+    async def close(self) -> None:
+        task = self._keepalive_task
+        self._keepalive_task = None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        await self._invalidate()
 
     async def send_transaction(
         self,
@@ -1993,7 +2506,20 @@ class AstralaneQuicClient(SwqosClient):
         transaction: bytes,
         wait_confirmation: bool = False,
     ) -> str:
-        await _astralane_quic_submit(self.endpoint, self.api_key, transaction)
+        if len(transaction) > 1232:
+            raise TradeError(
+                400, f"Astralane QUIC transaction too large: {len(transaction)} > 1232"
+            )
+        async with self._lock:
+            try:
+                protocol = await self._connect()
+                await protocol.send_transaction(transaction)
+            except Exception as error:
+                if not _should_fallback_transport(error):
+                    raise
+                await self._invalidate()
+                protocol = await self._connect()
+                await protocol.send_transaction(transaction)
         return _signature_from_serialized_transaction(transaction)
 
     async def send_transactions(
@@ -2004,7 +2530,9 @@ class AstralaneQuicClient(SwqosClient):
     ) -> List[str]:
         signatures: List[str] = []
         for transaction in transactions:
-            signatures.append(await self.send_transaction(trade_type, transaction, wait_confirmation))
+            signatures.append(
+                await self.send_transaction(trade_type, transaction, wait_confirmation)
+            )
         return signatures
 
     def get_tip_account(self) -> str:
@@ -2018,6 +2546,7 @@ class AstralaneQuicClient(SwqosClient):
 
 
 # ===== Soyas Client =====
+
 
 class SoyasClient(SwqosClient):
     """
@@ -2072,6 +2601,7 @@ class SoyasClient(SwqosClient):
 
 # ===== Speedlanding Client =====
 
+
 class SpeedlandingClient(SwqosClient):
     """
     Speedlanding SWQOS client.
@@ -2123,6 +2653,7 @@ class SpeedlandingClient(SwqosClient):
 
 
 # ===== Solami Client =====
+
 
 class SolamiClient(SwqosClient):
     """
@@ -2187,9 +2718,11 @@ class SolamiClient(SwqosClient):
 
 # ===== Client Factory =====
 
+
 @dataclass
 class SwqosConfig:
     """Configuration for SWQOS client"""
+
     type: SwqosType
     region: SwqosRegion = SwqosRegion.DEFAULT
     custom_url: Optional[str] = None
@@ -2243,7 +2776,23 @@ class ClientFactory:
             endpoint = config.custom_url or TEMPORAL_ENDPOINTS.get(
                 region, TEMPORAL_ENDPOINTS[SwqosRegion.DEFAULT]
             )
-            return TemporalClient(rpc_url, endpoint, config.api_key)
+            transport = getattr(
+                getattr(config, "transport", None), "value", getattr(config, "transport", None)
+            )
+            if config.custom_url and transport is None:
+                return TemporalClient(rpc_url, endpoint, config.api_key)
+            if transport == "Http":
+                return TemporalClient(rpc_url, endpoint, config.api_key)
+            if transport == "Grpc":
+                raise TradeError(400, "Temporal does not provide a gRPC transaction-submission API")
+            quic_client = TemporalQuicClient(rpc_url, endpoint, config.api_key)
+            if transport == "Quic":
+                return quic_client
+            if transport is not None:
+                raise TradeError(400, f"Unsupported Temporal transport: {transport}")
+            return FallbackSwqosClient(
+                quic_client, TemporalClient(rpc_url, endpoint, config.api_key)
+            )
 
         elif swqos_type == SwqosType.FLASH_BLOCK.value:
             endpoint = config.custom_url or FLASH_BLOCK_ENDPOINTS.get(
@@ -2255,27 +2804,75 @@ class ClientFactory:
             endpoint = config.custom_url or HELIUS_ENDPOINTS.get(
                 region, HELIUS_ENDPOINTS[SwqosRegion.DEFAULT]
             )
-            return HeliusClient(rpc_url, endpoint, config.api_key, swqos_only=bool(config.swqos_only))
+            return HeliusClient(
+                rpc_url, endpoint, config.api_key, swqos_only=bool(config.swqos_only)
+            )
 
         elif swqos_type == SwqosType.NODE1.value:
-            transport = getattr(getattr(config, "transport", None), "value", getattr(config, "transport", None))
+            transport = getattr(
+                getattr(config, "transport", None), "value", getattr(config, "transport", None)
+            )
             endpoint = config.custom_url or NODE1_ENDPOINTS.get(
                 region, NODE1_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             if transport == "Quic":
-                return Node1QuicClient(rpc_url, f"{_host_port_from_http(endpoint, 16666)[0]}:16666", config.api_key)
+                return Node1QuicClient(
+                    rpc_url,
+                    f"{_host_port_from_http(endpoint, 16666)[0]}:16666",
+                    config.api_key or "",
+                )
             return Node1Client(rpc_url, endpoint, config.api_key)
 
         elif swqos_type == SwqosType.BLOCK_RAZOR.value:
-            endpoint = config.custom_url or BLOCK_RAZOR_ENDPOINTS.get(
+            http_endpoint = config.custom_url or BLOCK_RAZOR_ENDPOINTS.get(
                 region, BLOCK_RAZOR_ENDPOINTS[SwqosRegion.DEFAULT]
             )
-            return BlockRazorClient(
-                rpc_url, endpoint, config.api_key, mev_protection=config.mev_protection
+            transport = getattr(
+                getattr(config, "transport", None), "value", getattr(config, "transport", None)
+            )
+            if config.custom_url and transport is None:
+                return BlockRazorClient(
+                    rpc_url,
+                    http_endpoint,
+                    config.api_key,
+                    mev_protection=config.mev_protection,
+                )
+            if transport == "Http":
+                return BlockRazorClient(
+                    rpc_url,
+                    http_endpoint,
+                    config.api_key,
+                    mev_protection=config.mev_protection,
+                )
+            if transport == "Quic":
+                raise TradeError(
+                    400, "BlockRazor does not provide a QUIC transaction-submission API"
+                )
+            grpc_endpoint = config.custom_url or BLOCK_RAZOR_GRPC_ENDPOINTS.get(
+                region, BLOCK_RAZOR_GRPC_ENDPOINTS[SwqosRegion.DEFAULT]
+            )
+            grpc_client = BlockRazorGrpcClient(
+                rpc_url,
+                grpc_endpoint,
+                config.api_key,
+                mev_protection=config.mev_protection,
+            )
+            if transport == "Grpc":
+                return grpc_client
+            if transport is not None:
+                raise TradeError(400, f"Unsupported BlockRazor transport: {transport}")
+            return FallbackSwqosClient(
+                grpc_client,
+                BlockRazorClient(
+                    rpc_url,
+                    http_endpoint,
+                    config.api_key,
+                    mev_protection=config.mev_protection,
+                ),
             )
 
         elif swqos_type == SwqosType.ASTRALANE.value:
-            endpoint = config.custom_url or ASTRALANE_ENDPOINTS.get(
+            base_endpoint = config.custom_url or ASTRALANE_ENDPOINTS.get(
                 region, ASTRALANE_ENDPOINTS[SwqosRegion.DEFAULT]
             )
             mode = getattr(
@@ -2283,20 +2880,37 @@ class ClientFactory:
                 "value",
                 getattr(config, "astralane_transport", None),
             )
+            if config.custom_url and mode is None:
+                return AstralaneClient(rpc_url, base_endpoint, config.api_key)
             if mode == "Plain":
-                endpoint = endpoint.replace("/irisb", "/iris")
-            elif mode == "Quic":
+                return AstralaneClient(
+                    rpc_url, base_endpoint.replace("/irisb", "/iris"), config.api_key
+                )
+            if mode == "Binary":
+                return AstralaneClient(rpc_url, base_endpoint, config.api_key)
+            if mode == "Quic":
                 if config.custom_url:
                     if config.custom_url.startswith(("http://", "https://")):
-                        host, port = _host_port_from_http(config.custom_url, 9000 if config.mev_protection else 7000)
-                        endpoint = f"{host}:{port}"
+                        host, port = _host_port_from_http(
+                            config.custom_url, 9000 if config.mev_protection else 7000
+                        )
+                        quic_endpoint = f"{host}:{port}"
                     else:
-                        endpoint = config.custom_url
+                        quic_endpoint = config.custom_url
                 else:
-                    host = ASTRALANE_QUIC_HOSTS.get(region, ASTRALANE_QUIC_HOSTS[SwqosRegion.DEFAULT])
-                    endpoint = f"{host}:{9000 if config.mev_protection else 7000}"
-                return AstralaneQuicClient(rpc_url, endpoint, config.api_key)
-            return AstralaneClient(rpc_url, endpoint, config.api_key)
+                    host = ASTRALANE_QUIC_HOSTS.get(
+                        region, ASTRALANE_QUIC_HOSTS[SwqosRegion.DEFAULT]
+                    )
+                    quic_endpoint = f"{host}:{9000 if config.mev_protection else 7000}"
+                return AstralaneQuicClient(rpc_url, quic_endpoint, config.api_key or "")
+            if mode is not None:
+                raise TradeError(400, f"Unsupported Astralane transport: {mode}")
+            host = ASTRALANE_QUIC_HOSTS.get(region, ASTRALANE_QUIC_HOSTS[SwqosRegion.DEFAULT])
+            quic_endpoint = f"{host}:{9000 if config.mev_protection else 7000}"
+            return FallbackSwqosClient(
+                AstralaneQuicClient(rpc_url, quic_endpoint, config.api_key or ""),
+                AstralaneClient(rpc_url, base_endpoint, config.api_key),
+            )
 
         elif swqos_type == SwqosType.STELLIUM.value:
             endpoint = config.custom_url or STELLIUM_ENDPOINTS.get(
@@ -2341,6 +2955,7 @@ class ClientFactory:
 
 
 # ===== Convenience function for creating clients =====
+
 
 def create_swqos_client(
     swqos_type: SwqosType,

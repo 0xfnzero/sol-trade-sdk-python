@@ -47,11 +47,14 @@ from sol_trade_sdk.swqos.clients import (
     ASTRALANE_ENDPOINTS,
     ASTRALANE_QUIC_HOSTS,
     AstralaneClient as SenderAstralaneClient,
+    AstralaneQuicClient as SenderAstralaneQuicClient,
     BLOXROUTE_ENDPOINTS,
     BloxrouteClient as SenderBloxrouteClient,
     BLOCK_RAZOR_ENDPOINTS,
     BlockRazorClient as SenderBlockRazorClient,
+    BlockRazorGrpcClient as SenderBlockRazorGrpcClient,
     ClientFactory as SenderClientFactory,
+    FallbackSwqosClient,
     MIN_TIP_DEFAULT,
     MIN_TIP_SOLAMI,
     NODE1_ENDPOINTS,
@@ -63,6 +66,12 @@ from sol_trade_sdk.swqos.clients import (
     SwqosConfig as SenderSwqosConfig,
     SwqosRegion as SenderSwqosRegion,
     SwqosType as SenderSwqosType,
+    TemporalClient as SenderTemporalClient,
+    TemporalQuicClient as SenderTemporalQuicClient,
+    TradeError,
+    _encode_temporal_batch,
+    _make_astralane_quic_config,
+    _make_solana_tpu_quic_config,
     _signature_from_serialized_transaction,
 )
 from sol_trade_sdk.swqos.advanced_clients import (
@@ -242,7 +251,7 @@ class TestGasFeeStrategy:
     def test_global_fee_strategy(self):
         """Test setting global fee strategy"""
         strategy = create_gas_fee_strategy()
-        
+
         # Check that all SWQOS types have strategies set
         for swqos_type in [SwqosType.JITO, SwqosType.BLOXROUTE, SwqosType.ZERO_SLOT]:
             value = strategy.get(swqos_type, TradeType.BUY, GasFeeStrategyType.NORMAL)
@@ -251,8 +260,12 @@ class TestGasFeeStrategy:
     def test_update_buy_tip(self):
         """Test updating buy tip for all strategies"""
         strategy = GasFeeStrategy()
-        strategy.set(SwqosType.JITO, TradeType.BUY, GasFeeStrategyType.NORMAL, 200000, 100000, 0.001)
-        strategy.set(SwqosType.JITO, TradeType.SELL, GasFeeStrategyType.NORMAL, 200000, 100000, 0.002)
+        strategy.set(
+            SwqosType.JITO, TradeType.BUY, GasFeeStrategyType.NORMAL, 200000, 100000, 0.001
+        )
+        strategy.set(
+            SwqosType.JITO, TradeType.SELL, GasFeeStrategyType.NORMAL, 200000, 100000, 0.002
+        )
 
         strategy.update_buy_tip(0.005)
 
@@ -265,7 +278,9 @@ class TestGasFeeStrategy:
     def test_delete(self):
         """Test deleting strategies"""
         strategy = GasFeeStrategy()
-        strategy.set(SwqosType.JITO, TradeType.BUY, GasFeeStrategyType.NORMAL, 200000, 100000, 0.001)
+        strategy.set(
+            SwqosType.JITO, TradeType.BUY, GasFeeStrategyType.NORMAL, 200000, 100000, 0.001
+        )
 
         strategy.delete(SwqosType.JITO, TradeType.BUY, GasFeeStrategyType.NORMAL)
 
@@ -275,21 +290,28 @@ class TestGasFeeStrategy:
     def test_conflict_resolution(self):
         """Test that Normal strategy removes high/low variants"""
         strategy = GasFeeStrategy()
-        
+
         # Set high/low strategies first
         strategy.set(
-            SwqosType.JITO, TradeType.BUY, GasFeeStrategyType.LOW_TIP_HIGH_CU_PRICE,
-            200000, 100000, 0.0005
+            SwqosType.JITO,
+            TradeType.BUY,
+            GasFeeStrategyType.LOW_TIP_HIGH_CU_PRICE,
+            200000,
+            100000,
+            0.0005,
         )
         strategy.set(
-            SwqosType.JITO, TradeType.BUY, GasFeeStrategyType.HIGH_TIP_LOW_CU_PRICE,
-            200000, 100000, 0.002
+            SwqosType.JITO,
+            TradeType.BUY,
+            GasFeeStrategyType.HIGH_TIP_LOW_CU_PRICE,
+            200000,
+            100000,
+            0.002,
         )
 
         # Set Normal strategy (should remove high/low)
         strategy.set(
-            SwqosType.JITO, TradeType.BUY, GasFeeStrategyType.NORMAL,
-            200000, 100000, 0.001
+            SwqosType.JITO, TradeType.BUY, GasFeeStrategyType.NORMAL, 200000, 100000, 0.001
         )
 
         # Check that high/low are gone
@@ -1032,7 +1054,9 @@ class TestSwqosSolami:
         assert ProviderSwqosType.ALCHEMY not in SwqosClientFactory.get_supported_types()
 
         with pytest.raises(ValueError, match="Unsupported SWQOS type"):
-            SwqosClientFactory.create_client(ProviderSwqosConfig(swqos_type=ProviderSwqosType.TRITON))
+            SwqosClientFactory.create_client(
+                ProviderSwqosConfig(swqos_type=ProviderSwqosType.TRITON)
+            )
 
     @pytest.mark.asyncio
     async def test_sender_solami_requires_api_token(self):
@@ -1085,9 +1109,14 @@ class TestSwqosSolami:
         url, kwargs = session.calls[0]
         assert "/v2/sendTransaction" in url
         assert "/api/v1/submit" not in url
-        assert kwargs["headers"]["Content-Type"] == "text/plain"
-        assert kwargs["data"] == base64.b64encode(tx).decode()
-        assert "mode=fast" in url
+        assert kwargs["headers"]["Content-Type"] == "application/json"
+        assert kwargs["headers"]["apikey"] == "token"
+        assert kwargs["json"] == {
+            "transaction": base64.b64encode(tx).decode(),
+            "mode": "fast",
+            "safeWindow": 3,
+            "revertProtection": False,
+        }
 
     @pytest.mark.asyncio
     async def test_provider_blockrazor_defaults_to_no_mev_protection(self, monkeypatch):
@@ -1111,9 +1140,8 @@ class TestSwqosSolami:
         result = await client.submit_transaction(bytes([1] + [7] * 64))
 
         assert result.success is True
-        url, _ = session.calls[0]
-        assert "mode=fast" in url
-        assert "sandwichMitigation" not in url
+        _, kwargs = session.calls[0]
+        assert kwargs["json"]["mode"] == "fast"
 
     @pytest.mark.asyncio
     async def test_provider_astralane_delegates_to_rust_parity_sender(self, monkeypatch):
@@ -1228,11 +1256,17 @@ class TestSwqosSolami:
 class TestSwqosEndpointParity:
     def test_key_region_fallbacks_match_rust_v4_0_21(self):
         assert MIN_TIP_DEFAULT == 0.00001
-        assert BLOXROUTE_ENDPOINTS[SenderSwqosRegion.SINGAPORE] == "https://tokyo.solana.dex.blxrbdn.com"
+        assert (
+            BLOXROUTE_ENDPOINTS[SenderSwqosRegion.SINGAPORE]
+            == "https://tokyo.solana.dex.blxrbdn.com"
+        )
         assert NODE1_ENDPOINTS[SenderSwqosRegion.SINGAPORE] == "http://tk.node1.me"
-        assert "tokyo.solana.blockrazor" in BLOCK_RAZOR_ENDPOINTS[SenderSwqosRegion.SINGAPORE]
+        assert "singapore.solana.blockrazor" in BLOCK_RAZOR_ENDPOINTS[SenderSwqosRegion.SINGAPORE]
         assert ASTRALANE_ENDPOINTS[SenderSwqosRegion.SLC] == "http://la.gateway.astralane.io/irisb"
-        assert ASTRALANE_ENDPOINTS[SenderSwqosRegion.SINGAPORE] == "http://sg.gateway.astralane.io/irisb"
+        assert (
+            ASTRALANE_ENDPOINTS[SenderSwqosRegion.SINGAPORE]
+            == "http://sg.gateway.astralane.io/irisb"
+        )
         assert ASTRALANE_QUIC_HOSTS[SenderSwqosRegion.SINGAPORE] == "sg.gateway.astralane.io"
         assert STELLIUM_ENDPOINTS[SenderSwqosRegion.SINGAPORE] == "http://tyo1.flashrpc.com"
         assert SOYAS_ENDPOINTS[SenderSwqosRegion.SINGAPORE] == "tyo.landing.soyas.xyz:9000"
@@ -1255,9 +1289,13 @@ class TestSwqosEndpointParity:
     async def test_blockrazor_http_accepts_plain_text_signature(self):
         signature = "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3BbeqPevr5E1iCbpTjqHuTFLtfxTTD5ekfVuZFzQyEQf8"
         session = _MockSession(signature)
-        client = SenderBlockRazorClient("https://rpc.example", "http://blockrazor/v2/sendTransaction", "token")
+        client = SenderBlockRazorClient(
+            "https://rpc.example", "http://blockrazor/v2/sendTransaction", "token"
+        )
+
         async def get_session():
             return session
+
         client.get_session = get_session  # type: ignore[method-assign]
         tx = bytes([1] + [7] * 64)
 
@@ -1265,16 +1303,28 @@ class TestSwqosEndpointParity:
 
         assert result == signature
         url, kwargs = session.calls[0]
-        assert url == "http://blockrazor/v2/sendTransaction?auth=token&mode=fast"
-        assert kwargs["headers"]["Content-Type"] == "text/plain"
-        assert kwargs["data"] == base64.b64encode(tx).decode()
+        assert url == "http://blockrazor/v2/sendTransaction"
+        assert kwargs["headers"] == {
+            "Content-Type": "application/json",
+            "apikey": "token",
+        }
+        assert kwargs["json"] == {
+            "transaction": base64.b64encode(tx).decode(),
+            "mode": "fast",
+            "safeWindow": 3,
+            "revertProtection": False,
+        }
 
     @pytest.mark.asyncio
     async def test_blockrazor_http_error_does_not_fallback_to_signature(self):
         session = _MockSession("", status=400, reason="Bad Request")
-        client = SenderBlockRazorClient("https://rpc.example", "http://blockrazor/v2/sendTransaction", "token")
+        client = SenderBlockRazorClient(
+            "https://rpc.example", "http://blockrazor/v2/sendTransaction", "token"
+        )
+
         async def get_session():
             return session
+
         client.get_session = get_session  # type: ignore[method-assign]
         tx = bytes([1] + [7] * 64)
 
@@ -1282,22 +1332,100 @@ class TestSwqosEndpointParity:
             await client.send_transaction(TradeType.BUY, tx)
 
     @pytest.mark.asyncio
-    async def test_blockrazor_http_success_without_signature_is_error(self):
+    async def test_blockrazor_http_success_without_signature_uses_transaction_signature(self):
         session = _MockSession("")
-        client = SenderBlockRazorClient("https://rpc.example", "http://blockrazor/v2/sendTransaction", "token")
+        client = SenderBlockRazorClient(
+            "https://rpc.example", "http://blockrazor/v2/sendTransaction", "token"
+        )
+
         async def get_session():
             return session
-        client.get_session = get_session  # type: ignore[method-assign]
 
-        with pytest.raises(Exception, match="missing transaction signature"):
-            await client.send_transaction(TradeType.BUY, bytes([1] + [7] * 64))
+        client.get_session = get_session  # type: ignore[method-assign]
+        tx = bytes([1] + [7] * 64)
+
+        assert await client.send_transaction(
+            TradeType.BUY, tx
+        ) == _signature_from_serialized_transaction(tx)
+
+    def test_default_provider_transport_chains(self):
+        temporal = SenderClientFactory.create_client(
+            SenderSwqosConfig(type=SenderSwqosType.TEMPORAL, api_key="token"),
+            "https://rpc.example",
+        )
+        blockrazor = SenderClientFactory.create_client(
+            SenderSwqosConfig(type=SenderSwqosType.BLOCK_RAZOR, api_key="token"),
+            "https://rpc.example",
+        )
+        astralane = SenderClientFactory.create_client(
+            SenderSwqosConfig(type=SenderSwqosType.ASTRALANE, api_key="token"),
+            "https://rpc.example",
+        )
+
+        assert isinstance(temporal, FallbackSwqosClient)
+        assert isinstance(temporal.primary, SenderTemporalQuicClient)
+        assert isinstance(temporal.fallback, SenderTemporalClient)
+        assert isinstance(blockrazor, FallbackSwqosClient)
+        assert isinstance(blockrazor.primary, SenderBlockRazorGrpcClient)
+        assert isinstance(blockrazor.fallback, SenderBlockRazorClient)
+        assert isinstance(astralane, FallbackSwqosClient)
+        assert isinstance(astralane.primary, SenderAstralaneQuicClient)
+        assert isinstance(astralane.fallback, SenderAstralaneClient)
+
+    def test_temporal_batch_uses_big_endian_u16_lengths(self):
+        first = bytes([1] + [7] * 65)
+        second = bytes([1] + [8] * 66)
+
+        encoded = _encode_temporal_batch([first, second])
+
+        assert (
+            encoded
+            == len(first).to_bytes(2, "big") + first + len(second).to_bytes(2, "big") + second
+        )
+
+    def test_quic_client_certificates_match_provider_protocols(self):
+        solana = _make_solana_tpu_quic_config("solana-tpu")
+        astralane = _make_astralane_quic_config("api-key")
+
+        assert solana.alpn_protocols == ["solana-tpu"]
+        assert solana.certificate is not None
+        assert solana.private_key is not None
+        assert astralane.alpn_protocols == ["astralane-tpu"]
+        assert astralane.certificate.subject.rfc4514_string() == "CN=api-key"
+
+    @pytest.mark.asyncio
+    async def test_fallback_only_retries_transport_or_service_errors(self):
+        class FakeClient:
+            def __init__(self, error=None, result="signature"):
+                self.error = error
+                self.result = result
+                self.calls = 0
+
+            async def send_transaction(self, *_args):
+                self.calls += 1
+                if self.error:
+                    raise self.error
+                return self.result
+
+        fallback = FakeClient(result="fallback")
+        service_failure = FallbackSwqosClient(FakeClient(TradeError(503, "down")), fallback)
+        assert await service_failure.send_transaction(TradeType.BUY, b"tx") == "fallback"
+        assert fallback.calls == 1
+
+        fallback = FakeClient(result="must-not-run")
+        auth_failure = FallbackSwqosClient(FakeClient(TradeError(401, "bad key")), fallback)
+        with pytest.raises(TradeError, match="bad key"):
+            await auth_failure.send_transaction(TradeType.BUY, b"tx")
+        assert fallback.calls == 0
 
     @pytest.mark.asyncio
     async def test_astralane_binary_http_sends_raw_bytes(self):
         session = _MockSession("")
         client = SenderAstralaneClient("https://rpc.example", "http://astralane/irisb", "token")
+
         async def get_session():
             return session
+
         client.get_session = get_session  # type: ignore[method-assign]
         tx = bytes([1] + [7] * 64)
 
@@ -1313,8 +1441,10 @@ class TestSwqosEndpointParity:
     async def test_astralane_http_error_does_not_fallback_to_signature(self):
         session = _MockSession("", status=400, reason="Bad Request")
         client = SenderAstralaneClient("https://rpc.example", "http://astralane/irisb", "token")
+
         async def get_session():
             return session
+
         client.get_session = get_session  # type: ignore[method-assign]
         tx = bytes([1] + [7] * 64)
 
@@ -1342,9 +1472,10 @@ class TestConfirmationParsing:
         assert "user rejected" in hints
 
     def test_instruction_error_code_from_meta_err_matches_rust(self):
-        assert instruction_error_code_from_meta_err(
-            {"InstructionError": [2, {"Custom": 6001}]}
-        ).code == 6001
+        assert (
+            instruction_error_code_from_meta_err({"InstructionError": [2, {"Custom": 6001}]}).code
+            == 6001
+        )
 
         parsed = instruction_error_code_from_meta_err(
             {"InstructionError": [1, "InvalidInstructionData"]}
@@ -1352,9 +1483,12 @@ class TestConfirmationParsing:
         assert parsed.code == 3
         assert parsed.instruction_index == 1
 
-        assert instruction_error_code_from_meta_err(
-            {"InstructionError": [3, "ComputationalBudgetExceeded"]}
-        ).code == 999
+        assert (
+            instruction_error_code_from_meta_err(
+                {"InstructionError": [3, "ComputationalBudgetExceeded"]}
+            ).code
+            == 999
+        )
         assert instruction_error_code_from_meta_err("BlockhashNotFound").code == 108
 
     def test_format_parsed_transaction_error_includes_code_instruction_and_log_hint(self):
@@ -1438,7 +1572,7 @@ class TestBondingCurveAccount:
     def test_initial_state(self):
         """Test initial bonding curve state"""
         curve = BondingCurveAccount()
-        
+
         assert curve.virtual_token_reserves == 1073000000000000
         assert curve.virtual_sol_reserves == 30000000000
         assert curve.real_token_reserves == 793000000000000
@@ -1447,7 +1581,7 @@ class TestBondingCurveAccount:
     def test_get_buy_price(self):
         """Test calculating buy price"""
         curve = BondingCurveAccount()
-        
+
         # Buy with 0.001 SOL (1_000_000 lamports)
         tokens = curve.get_buy_price(1_000_000)
         assert tokens > 0
@@ -1455,7 +1589,7 @@ class TestBondingCurveAccount:
     def test_get_sell_price(self):
         """Test calculating sell price"""
         curve = BondingCurveAccount()
-        
+
         # Sell some tokens
         sol = curve.get_sell_price(1_000_000_000)  # 1 million tokens
         assert sol > 0
@@ -1463,21 +1597,21 @@ class TestBondingCurveAccount:
     def test_get_market_cap_sol(self):
         """Test calculating market cap"""
         curve = BondingCurveAccount()
-        
+
         market_cap = curve.get_market_cap_sol()
         assert market_cap > 0
 
     def test_get_token_price(self):
         """Test calculating token price"""
         curve = BondingCurveAccount()
-        
+
         price = curve.get_token_price()
         assert price > 0
 
     def test_complete_curve_returns_zero(self):
         """Test that complete curves return zero for buy/sell"""
         curve = BondingCurveAccount(complete=True)
-        
+
         assert curve.get_buy_price(1_000_000) == 0
         assert curve.get_sell_price(1_000_000) == 0
 
@@ -1488,7 +1622,7 @@ class TestNonceCache:
     def test_set_and_get(self):
         """Test setting and getting nonce info"""
         cache = NonceCache()
-        
+
         pubkey = b"test_pubkey_32_bytes_long_enough_xx"
         info = DurableNonceInfo(
             nonce_account=b"nonce_account_32_bytes_long_enough",
@@ -1496,17 +1630,17 @@ class TestNonceCache:
             nonce_hash=b"hash_32_bytes_long_enough_for_hash!",
             recent_blockhash=b"blockhash_32_bytes_long_enough!",
         )
-        
+
         cache.set(pubkey, info)
         result = cache.get(pubkey)
-        
+
         assert result is not None
         assert result.nonce_account == info.nonce_account
 
     def test_delete(self):
         """Test deleting nonce info"""
         cache = NonceCache()
-        
+
         pubkey = b"test_pubkey_32_bytes_long_enough_xx"
         info = DurableNonceInfo(
             nonce_account=b"nonce_account_32_bytes_long_enough",
@@ -1514,10 +1648,10 @@ class TestNonceCache:
             nonce_hash=b"hash_32_bytes_long_enough_for_hash!",
             recent_blockhash=b"blockhash_32_bytes_long_enough!",
         )
-        
+
         cache.set(pubkey, info)
         cache.delete(pubkey)
-        
+
         result = cache.get(pubkey)
         assert result is None
 
