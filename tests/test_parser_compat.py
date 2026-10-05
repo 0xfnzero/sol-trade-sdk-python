@@ -1,3 +1,4 @@
+import pytest
 from solders.pubkey import Pubkey
 
 from src import PumpFunParams, PumpSwapParams, SOL_TOKEN_ACCOUNT, TOKEN_PROGRAM, USDC_TOKEN_ACCOUNT
@@ -134,3 +135,20 @@ def test_pumpswap_params_from_parser_event_uses_fee_basis_points():
     assert params.fee_basis_points.lp_fee_basis_points == 20
     assert params.fee_basis_points.protocol_fee_basis_points == 5
     assert params.fee_basis_points.coin_creator_fee_basis_points == 75
+
+@pytest.mark.parametrize('value',[-1,1<<64,1.5,True,'1e3','0x10',' 1 '])
+def test_pumpfun_parser_rejects_inexact_or_out_of_range_integers(value):
+    from src import PumpFunParams
+    with pytest.raises(ValueError):
+        PumpFunParams.from_parser_trade_event({'virtual_token_reserves':value})
+
+def test_pumpfun_quote_switch_updates_curve_and_layout():
+    from src import PumpFunParams
+    from src import USDC_TOKEN_ACCOUNT, SOL_TOKEN_ACCOUNT, WSOL_TOKEN_ACCOUNT
+    params=PumpFunParams.from_parser_trade_event({'virtual_sol_reserves':30_000_000_123,'real_sol_reserves':123})
+    params.with_quote_mint(USDC_TOKEN_ACCOUNT)
+    assert params.bonding_curve.virtual_sol_reserves==4_292_000_123
+    assert params.bonding_curve.quote_mint==USDC_TOKEN_ACCOUNT
+    params.with_quote_mint(SOL_TOKEN_ACCOUNT)
+    assert params.bonding_curve.virtual_sol_reserves==30_000_000_123
+    assert params.bonding_curve.quote_mint==WSOL_TOKEN_ACCOUNT

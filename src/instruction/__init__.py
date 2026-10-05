@@ -573,6 +573,7 @@ class RaydiumAmmV4InstructionBuilder(InstructionBuilder):
         return build_buy_instructions(
             payer=payer,
             output_mint=output_mint,
+            input_mint=input_mint,
             input_amount=input_amount,
             slippage_bps=slippage_basis_points,
             params=BuilderParams(
@@ -593,6 +594,8 @@ class RaydiumAmmV4InstructionBuilder(InstructionBuilder):
                 serum_vault_signer=protocol_params.serum_vault_signer,
                 coin_reserve=protocol_params.coin_reserve,
                 pc_reserve=protocol_params.pc_reserve,
+                swap_fee_numerator=protocol_params.swap_fee_numerator,
+                swap_fee_denominator=protocol_params.swap_fee_denominator,
             ),
             create_input_ata=create_input_ata,
             create_output_ata=create_output_ata,
@@ -641,6 +644,8 @@ class RaydiumAmmV4InstructionBuilder(InstructionBuilder):
                 serum_vault_signer=protocol_params.serum_vault_signer,
                 coin_reserve=protocol_params.coin_reserve,
                 pc_reserve=protocol_params.pc_reserve,
+                swap_fee_numerator=protocol_params.swap_fee_numerator,
+                swap_fee_denominator=protocol_params.swap_fee_denominator,
             ),
             create_output_ata=create_output_ata,
             close_output_ata=close_output_ata,

@@ -229,6 +229,7 @@ class PumpSwapParams:
     fee_basis_points: PumpSwapFeeBasisPoints | None = None
     pool_creator: Pubkey | None = None
     base_mint_supply: int | None = None
+    protocol_fee_recipient_override: Pubkey | None = None
 
 
 @dataclass
@@ -411,7 +412,8 @@ def _decode_fee_tiers(data: bytes, offset: int) -> tuple[list[PumpSwapFeeTier], 
 
 
 def decode_fee_config(data: bytes) -> PumpSwapFeeConfig | None:
-    """Decode PumpSwap FeeConfig account data."""
+    """Decode PumpSwap FeeConfig account data with its actual discriminator."""
+    if data[:8] != bytes([143,52,146,187,219,123,76,155]):return None
     try:
         offset = 8  # discriminator
         offset += 1  # bump
@@ -584,7 +586,14 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
     fee_basis_points = _effective_fee_basis_points(pp)
     
     # Calculate trade amounts
-    if quote_is_wsol_or_usdc:
+    if params.fixed_output_amount is not None:
+        if not quote_is_wsol_or_usdc:
+            raise ValueError("PumpSwap exact-output buy requires a buy instruction")
+        if type(params.fixed_output_amount) is not int or not 0 <= params.fixed_output_amount < pp.pool_base_token_reserves:
+            raise ValueError("Exact base output must be below the pool base reserve")
+        token_amount = params.fixed_output_amount
+        sol_amount = params.input_amount
+    elif quote_is_wsol_or_usdc:
         result = buy_quote_input_internal_with_fees(
             params.input_amount,
             params.slippage_basis_points,
@@ -616,8 +625,7 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
         sol_amount = params.input_amount
     
     # Override token amount if fixed output is specified
-    if params.fixed_output_amount is not None:
-        token_amount = params.fixed_output_amount
+
     
     # Get user token accounts
     user_base_token_account = get_associated_token_address(params.payer, pp.base_mint, pp.base_token_program)
@@ -626,6 +634,8 @@ def build_buy_instructions(params: BuildBuyParams) -> List[Instruction]:
     # Determine fee recipient
     if pp.is_mayhem_mode:
         fee_recipient = get_mayhem_fee_recipient_random()
+    elif pp.protocol_fee_recipient_override is not None:
+        fee_recipient = pp.protocol_fee_recipient_override
     else:
         fee_recipient = get_protocol_fee_recipient_random()
     fee_recipient_ata = get_associated_token_address(
@@ -760,7 +770,14 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
     token_amount = params.input_amount
     sol_amount = 0
     
-    if quote_is_wsol_or_usdc:
+    if params.fixed_output_amount is not None:
+        if quote_is_wsol_or_usdc:
+            raise ValueError("PumpSwap exact-output sell requires a buy instruction")
+        if type(params.fixed_output_amount) is not int or not 0 <= params.fixed_output_amount < pp.pool_base_token_reserves:
+            raise ValueError("Exact base output must be below the pool base reserve")
+        token_amount = params.input_amount
+        sol_amount = params.fixed_output_amount
+    elif quote_is_wsol_or_usdc:
         result = sell_base_input_internal_with_fees(
             params.input_amount,
             params.slippage_basis_points,
@@ -791,8 +808,7 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
         sol_amount = result["base"]
     
     # Override sol amount if fixed output is specified
-    if params.fixed_output_amount is not None:
-        sol_amount = params.fixed_output_amount
+
     
     # Get user token accounts
     user_base_token_account = get_associated_token_address(params.payer, pp.base_mint, pp.base_token_program)
@@ -801,6 +817,8 @@ def build_sell_instructions(params: BuildSellParams) -> List[Instruction]:
     # Determine fee recipient
     if pp.is_mayhem_mode:
         fee_recipient = get_mayhem_fee_recipient_random()
+    elif pp.protocol_fee_recipient_override is not None:
+        fee_recipient = pp.protocol_fee_recipient_override
     else:
         fee_recipient = get_protocol_fee_recipient_random()
     fee_recipient_ata = get_associated_token_address(

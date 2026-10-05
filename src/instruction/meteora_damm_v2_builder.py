@@ -41,7 +41,10 @@ AUTHORITY: Pubkey = Pubkey.from_string("HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDai
 
 SWAP_DISCRIMINATOR: bytes = bytes([248, 198, 158, 145, 225, 117, 135, 200])
 SWAP2_DISCRIMINATOR: bytes = bytes([65, 75, 63, 76, 235, 91, 91, 136])
+SWAP_MODE_EXACT_IN: int = 0
 SWAP_MODE_PARTIAL_FILL: int = 1
+SWAP_MODE_EXACT_OUT: int = 2
+SYSVAR_INSTRUCTIONS: Pubkey = Pubkey.from_string("Sysvar1nstructions1111111111111111111111111")
 
 # ============================================
 # Seeds
@@ -78,6 +81,9 @@ class MeteoraDammV2Params:
     token_b_mint: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
     token_a_program: Pubkey = TOKEN_PROGRAM
     token_b_program: Pubkey = TOKEN_PROGRAM
+    referral_token_account: Optional[Pubkey] = None
+    swap_mode: int = SWAP_MODE_PARTIAL_FILL
+    include_rate_limiter_sysvar: bool = False
 
     @property
     def is_wsol(self) -> bool:
@@ -88,6 +94,51 @@ class MeteoraDammV2Params:
     def is_usdc(self) -> bool:
         """Check if the pool contains USDC."""
         return self.token_a_mint == USDC_TOKEN_ACCOUNT or self.token_b_mint == USDC_TOKEN_ACCOUNT
+
+
+def _resolve_swap_mode(params: MeteoraDammV2Params) -> int:
+    mode = params.swap_mode
+    if mode not in (SWAP_MODE_EXACT_IN, SWAP_MODE_PARTIAL_FILL, SWAP_MODE_EXACT_OUT):
+        raise ValueError(f"Unsupported MeteoraDammV2 swap_mode {mode}")
+    return mode
+
+
+def _resolve_amounts(swap_mode: int, amount_in: int, fixed_output: int) -> tuple[int, int]:
+    if swap_mode == SWAP_MODE_EXACT_OUT:
+        return fixed_output, amount_in
+    return amount_in, fixed_output
+
+
+def _build_account_metas(
+    params: MeteoraDammV2Params,
+    payer: Pubkey,
+    input_token_account: Pubkey,
+    output_token_account: Pubkey,
+    event_authority: Pubkey,
+) -> List[AccountMeta]:
+    accounts = [
+        AccountMeta(AUTHORITY, False, False),
+        AccountMeta(params.pool, False, True),
+        AccountMeta(input_token_account, False, True),
+        AccountMeta(output_token_account, False, True),
+        AccountMeta(params.token_a_vault, False, True),
+        AccountMeta(params.token_b_vault, False, True),
+        AccountMeta(params.token_a_mint, False, False),
+        AccountMeta(params.token_b_mint, False, False),
+        AccountMeta(payer, True, False),
+        AccountMeta(params.token_a_program, False, False),
+        AccountMeta(params.token_b_program, False, False),
+    ]
+    accounts.append(AccountMeta(params.referral_token_account, False, True) if params.referral_token_account is not None else AccountMeta(METEORA_DAMM_V2_PROGRAM_ID, False, False))
+    accounts.extend(
+        [
+            AccountMeta(event_authority, False, False),
+            AccountMeta(METEORA_DAMM_V2_PROGRAM_ID, False, False),
+        ]
+    )
+    if params.include_rate_limiter_sysvar:
+        accounts.append(AccountMeta(SYSVAR_INSTRUCTIONS, False, False))
+    return accounts
 
 
 DEFAULT_PUBKEY: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
@@ -155,7 +206,8 @@ def build_buy_instructions(
     if fixed_output_amount is None:
         raise ValueError("fixed_output_amount must be set for MeteoraDammV2 swap")
 
-    minimum_amount_out = fixed_output_amount
+    swap_mode = _resolve_swap_mode(params)
+    amount_0, amount_1 = _resolve_amounts(swap_mode, input_amount, fixed_output_amount)
 
     # Determine input/output mints and programs from the pool sides
     expected_input_mint = params.token_a_mint if is_a_in else params.token_b_mint
@@ -195,27 +247,10 @@ def build_buy_instructions(
         )
 
     # Build swap2 instruction data
-    data = (
-        SWAP2_DISCRIMINATOR
-        + struct.pack("<QQB", input_amount, minimum_amount_out, SWAP_MODE_PARTIAL_FILL)
+    data = SWAP2_DISCRIMINATOR + struct.pack("<QQB", amount_0, amount_1, swap_mode)
+    accounts = _build_account_metas(
+        params, payer, input_token_account, output_token_account, event_authority
     )
-
-    # Build accounts list (13 accounts)
-    accounts = [
-        AccountMeta(AUTHORITY, False, False),  # pool_authority (readonly)
-        AccountMeta(params.pool, False, True),  # pool (writable)
-        AccountMeta(input_token_account, False, True),  # input_token_account (writable)
-        AccountMeta(output_token_account, False, True),  # output_token_account (writable)
-        AccountMeta(params.token_a_vault, False, True),  # token_a_vault (writable)
-        AccountMeta(params.token_b_vault, False, True),  # token_b_vault (writable)
-        AccountMeta(params.token_a_mint, False, False),  # token_a_mint (readonly)
-        AccountMeta(params.token_b_mint, False, False),  # token_b_mint (readonly)
-        AccountMeta(payer, True, False),  # user_transfer_authority (signer)
-        AccountMeta(params.token_a_program, False, False),  # token_a_program (readonly)
-        AccountMeta(params.token_b_program, False, False),  # token_b_program (readonly)
-        AccountMeta(event_authority, False, False),  # event_authority (readonly)
-        AccountMeta(METEORA_DAMM_V2_PROGRAM_ID, False, False),  # program (readonly)
-    ]
 
     instructions.append(Instruction(METEORA_DAMM_V2_PROGRAM_ID, data, accounts))
 
@@ -275,7 +310,8 @@ def build_sell_instructions(
     if fixed_output_amount is None:
         raise ValueError("fixed_output_amount must be set for MeteoraDammV2 swap")
 
-    minimum_amount_out = fixed_output_amount
+    swap_mode = _resolve_swap_mode(params)
+    amount_0, amount_1 = _resolve_amounts(swap_mode, input_amount, fixed_output_amount)
 
     # Determine input/output mints from the pool sides
     expected_input_mint = params.token_a_mint if is_a_in else params.token_b_mint
@@ -312,27 +348,10 @@ def build_sell_instructions(
         )
 
     # Build swap2 instruction data
-    data = (
-        SWAP2_DISCRIMINATOR
-        + struct.pack("<QQB", input_amount, minimum_amount_out, SWAP_MODE_PARTIAL_FILL)
+    data = SWAP2_DISCRIMINATOR + struct.pack("<QQB", amount_0, amount_1, swap_mode)
+    accounts = _build_account_metas(
+        params, payer, input_token_account, output_token_account, event_authority
     )
-
-    # Build accounts list (13 accounts)
-    accounts = [
-        AccountMeta(AUTHORITY, False, False),  # pool_authority (readonly)
-        AccountMeta(params.pool, False, True),  # pool (writable)
-        AccountMeta(input_token_account, False, True),  # input_token_account (writable)
-        AccountMeta(output_token_account, False, True),  # output_token_account (writable)
-        AccountMeta(params.token_a_vault, False, True),  # token_a_vault (writable)
-        AccountMeta(params.token_b_vault, False, True),  # token_b_vault (writable)
-        AccountMeta(params.token_a_mint, False, False),  # token_a_mint (readonly)
-        AccountMeta(params.token_b_mint, False, False),  # token_b_mint (readonly)
-        AccountMeta(payer, True, False),  # user_transfer_authority (signer)
-        AccountMeta(params.token_a_program, False, False),  # token_a_program (readonly)
-        AccountMeta(params.token_b_program, False, False),  # token_b_program (readonly)
-        AccountMeta(event_authority, False, False),  # event_authority (readonly)
-        AccountMeta(METEORA_DAMM_V2_PROGRAM_ID, False, False),  # program (readonly)
-    ]
 
     instructions.append(Instruction(METEORA_DAMM_V2_PROGRAM_ID, data, accounts))
 
@@ -361,18 +380,18 @@ METEORA_POOL_SIZE = 1104
 
 @dataclass
 class MeteoraBaseFeeStruct:
-    """Base fee structure for Meteora"""
     cliff_fee_numerator: int
     fee_scheduler_mode: int
+    padding_0: bytes
     number_of_period: int
     period_frequency: int
     reduction_factor: int
-
+    padding_1: int
 
 @dataclass
 class MeteoraDynamicFeeStruct:
-    """Dynamic fee structure for Meteora"""
     initialized: int
+    padding: bytes
     max_volatility_accumulator: int
     variable_fee_control: int
     bin_step: int
@@ -385,20 +404,18 @@ class MeteoraDynamicFeeStruct:
     volatility_accumulator: int
     volatility_reference: int
 
-
 @dataclass
 class MeteoraPoolFeesStruct:
-    """Pool fees structure for Meteora"""
     base_fee: MeteoraBaseFeeStruct
     protocol_fee_percent: int
     partner_fee_percent: int
     referral_fee_percent: int
+    padding_0: bytes
     dynamic_fee: MeteoraDynamicFeeStruct
-
+    padding_1: list[int]
 
 @dataclass
 class MeteoraPoolMetrics:
-    """Pool metrics for Meteora"""
     total_lp_a_fee: int
     total_lp_b_fee: int
     total_protocol_a_fee: int
@@ -406,24 +423,26 @@ class MeteoraPoolMetrics:
     total_partner_a_fee: int
     total_partner_b_fee: int
     total_position: int
-
+    padding: int
 
 @dataclass
 class MeteoraRewardInfo:
-    """Reward info for Meteora pool"""
     initialized: int
     reward_token_flag: int
+    padding_0: bytes
+    padding_1: bytes
     mint: Pubkey
     vault: Pubkey
     funder: Pubkey
     reward_duration: int
     reward_duration_end: int
     reward_rate: int
-
+    reward_per_token_stored: bytes
+    last_update_time: int
+    cumulative_seconds_with_empty_liquidity_reward: int
 
 @dataclass
 class MeteoraPool:
-    """Decoded Meteora DAMM v2 pool - matches Rust: src/instruction/utils/meteora_damm_v2_types.rs Pool"""
     pool_fees: MeteoraPoolFeesStruct
     token_a_mint: Pubkey
     token_b_mint: Pubkey
@@ -432,6 +451,7 @@ class MeteoraPool:
     whitelisted_vault: Pubkey
     partner: Pubkey
     liquidity: int
+    padding: int
     protocol_a_fee: int
     protocol_b_fee: int
     partner_a_fee: int
@@ -446,310 +466,119 @@ class MeteoraPool:
     token_b_flag: int
     collect_fee_mode: int
     pool_type: int
+    padding_0: bytes
+    fee_a_per_liquidity: bytes
+    fee_b_per_liquidity: bytes
     permanent_lock_liquidity: int
     metrics: MeteoraPoolMetrics
-    reward_infos: list  # List of MeteoraRewardInfo
+    padding_1: list[int]
+    reward_infos: list[MeteoraRewardInfo]
 
 
 def decode_meteora_pool(data: bytes) -> MeteoraPool | None:
-    """
-    Decode a Meteora DAMM v2 pool from account data.
-    100% from Rust: src/instruction/utils/meteora_damm_v2_types.rs pool_decode
-
-    Args:
-        data: Raw account data (should be at least 1104 bytes)
-
-    Returns:
-        MeteoraPool if successful, None if data is invalid
-    """
-    if len(data) < METEORA_POOL_SIZE:
-        return None
-
-    try:
-        offset = 0
-
-        # pool_fees: PoolFeesStruct
-        # BaseFeeStruct
-        cliff_fee_numerator = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-        fee_scheduler_mode = data[offset]
-        offset += 1
-        offset += 5  # padding_0
-        number_of_period = struct.unpack_from('<H', data, offset)[0]
-        offset += 2
-        period_frequency = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-        reduction_factor = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-        offset += 8  # padding_1
-
-        base_fee = MeteoraBaseFeeStruct(
-            cliff_fee_numerator=cliff_fee_numerator,
-            fee_scheduler_mode=fee_scheduler_mode,
-            number_of_period=number_of_period,
-            period_frequency=period_frequency,
-            reduction_factor=reduction_factor,
+    """Decode the fixed Rust 5.0.6 Borsh payload; trailing account extensions are allowed."""
+    if len(data)<METEORA_POOL_SIZE:return None
+    offset=0
+    def take(size):
+        nonlocal offset
+        v=bytes(data[offset:offset+size]);offset+=size;return v
+    def read_BaseFeeStruct():
+        return MeteoraBaseFeeStruct(
+            cliff_fee_numerator=int.from_bytes(take(8),"little"),
+            fee_scheduler_mode=int.from_bytes(take(1),"little"),
+            padding_0=take(5),
+            number_of_period=int.from_bytes(take(2),"little"),
+            period_frequency=int.from_bytes(take(8),"little"),
+            reduction_factor=int.from_bytes(take(8),"little"),
+            padding_1=int.from_bytes(take(8),"little"),
         )
-
-        protocol_fee_percent = data[offset]
-        offset += 1
-        partner_fee_percent = data[offset]
-        offset += 1
-        referral_fee_percent = data[offset]
-        offset += 1
-        offset += 5  # padding_0
-
-        # DynamicFeeStruct
-        initialized = data[offset]
-        offset += 1
-        offset += 7  # padding
-        max_volatility_accumulator = struct.unpack_from('<I', data, offset)[0]
-        offset += 4
-        variable_fee_control = struct.unpack_from('<I', data, offset)[0]
-        offset += 4
-        bin_step = struct.unpack_from('<H', data, offset)[0]
-        offset += 2
-        filter_period = struct.unpack_from('<H', data, offset)[0]
-        offset += 2
-        decay_period = struct.unpack_from('<H', data, offset)[0]
-        offset += 2
-        reduction_factor = struct.unpack_from('<H', data, offset)[0]
-        offset += 2
-        last_update_timestamp = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-        bin_step_u128 = struct.unpack_from('<QQ', data, offset)
-        offset += 16
-        sqrt_price_reference = struct.unpack_from('<QQ', data, offset)
-        offset += 16
-        volatility_accumulator = struct.unpack_from('<QQ', data, offset)
-        offset += 16
-        volatility_reference = struct.unpack_from('<QQ', data, offset)
-        offset += 16
-
-        dynamic_fee = MeteoraDynamicFeeStruct(
-            initialized=initialized,
-            max_volatility_accumulator=max_volatility_accumulator,
-            variable_fee_control=variable_fee_control,
-            bin_step=bin_step,
-            filter_period=filter_period,
-            decay_period=decay_period,
-            reduction_factor=reduction_factor,
-            last_update_timestamp=last_update_timestamp,
-            bin_step_u128=bin_step_u128[0] + (bin_step_u128[1] << 64),
-            sqrt_price_reference=sqrt_price_reference[0] + (sqrt_price_reference[1] << 64),
-            volatility_accumulator=volatility_accumulator[0] + (volatility_accumulator[1] << 64),
-            volatility_reference=volatility_reference[0] + (volatility_reference[1] << 64),
+    def read_DynamicFeeStruct():
+        return MeteoraDynamicFeeStruct(
+            initialized=int.from_bytes(take(1),"little"),
+            padding=take(7),
+            max_volatility_accumulator=int.from_bytes(take(4),"little"),
+            variable_fee_control=int.from_bytes(take(4),"little"),
+            bin_step=int.from_bytes(take(2),"little"),
+            filter_period=int.from_bytes(take(2),"little"),
+            decay_period=int.from_bytes(take(2),"little"),
+            reduction_factor=int.from_bytes(take(2),"little"),
+            last_update_timestamp=int.from_bytes(take(8),"little"),
+            bin_step_u128=int.from_bytes(take(16),"little"),
+            sqrt_price_reference=int.from_bytes(take(16),"little"),
+            volatility_accumulator=int.from_bytes(take(16),"little"),
+            volatility_reference=int.from_bytes(take(16),"little"),
         )
-
-        offset += 16  # padding_1 for PoolFeesStruct
-
-        pool_fees = MeteoraPoolFeesStruct(
-            base_fee=base_fee,
-            protocol_fee_percent=protocol_fee_percent,
-            partner_fee_percent=partner_fee_percent,
-            referral_fee_percent=referral_fee_percent,
-            dynamic_fee=dynamic_fee,
+    def read_PoolFeesStruct():
+        return MeteoraPoolFeesStruct(
+            base_fee=read_BaseFeeStruct(),
+            protocol_fee_percent=int.from_bytes(take(1),"little"),
+            partner_fee_percent=int.from_bytes(take(1),"little"),
+            referral_fee_percent=int.from_bytes(take(1),"little"),
+            padding_0=take(5),
+            dynamic_fee=read_DynamicFeeStruct(),
+            padding_1=[int.from_bytes(take(8),"little") for _ in range(2)],
         )
-
-        # token_a_mint: Pubkey
-        token_a_mint = Pubkey.from_bytes(data[offset:offset + 32])
-        offset += 32
-
-        # token_b_mint: Pubkey
-        token_b_mint = Pubkey.from_bytes(data[offset:offset + 32])
-        offset += 32
-
-        # token_a_vault: Pubkey
-        token_a_vault = Pubkey.from_bytes(data[offset:offset + 32])
-        offset += 32
-
-        # token_b_vault: Pubkey
-        token_b_vault = Pubkey.from_bytes(data[offset:offset + 32])
-        offset += 32
-
-        # whitelisted_vault: Pubkey
-        whitelisted_vault = Pubkey.from_bytes(data[offset:offset + 32])
-        offset += 32
-
-        # partner: Pubkey
-        partner = Pubkey.from_bytes(data[offset:offset + 32])
-        offset += 32
-
-        # liquidity: u128
-        liquidity_lo = struct.unpack_from('<Q', data, offset)[0]
-        liquidity_hi = struct.unpack_from('<Q', data, offset + 8)[0]
-        liquidity = liquidity_lo + (liquidity_hi << 64)
-        offset += 16
-
-        offset += 16  # padding
-
-        # protocol_a_fee: u64
-        protocol_a_fee = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-
-        # protocol_b_fee: u64
-        protocol_b_fee = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-
-        # partner_a_fee: u64
-        partner_a_fee = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-
-        # partner_b_fee: u64
-        partner_b_fee = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-
-        # sqrt_min_price: u128
-        sqrt_min_price_lo = struct.unpack_from('<Q', data, offset)[0]
-        sqrt_min_price_hi = struct.unpack_from('<Q', data, offset + 8)[0]
-        sqrt_min_price = sqrt_min_price_lo + (sqrt_min_price_hi << 64)
-        offset += 16
-
-        # sqrt_max_price: u128
-        sqrt_max_price_lo = struct.unpack_from('<Q', data, offset)[0]
-        sqrt_max_price_hi = struct.unpack_from('<Q', data, offset + 8)[0]
-        sqrt_max_price = sqrt_max_price_lo + (sqrt_max_price_hi << 64)
-        offset += 16
-
-        # sqrt_price: u128
-        sqrt_price_lo = struct.unpack_from('<Q', data, offset)[0]
-        sqrt_price_hi = struct.unpack_from('<Q', data, offset + 8)[0]
-        sqrt_price = sqrt_price_lo + (sqrt_price_hi << 64)
-        offset += 16
-
-        # activation_point: u64
-        activation_point = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-
-        # activation_type: u8
-        activation_type = data[offset]
-        offset += 1
-
-        # pool_status: u8
-        pool_status = data[offset]
-        offset += 1
-
-        # token_a_flag: u8
-        token_a_flag = data[offset]
-        offset += 1
-
-        # token_b_flag: u8
-        token_b_flag = data[offset]
-        offset += 1
-
-        # collect_fee_mode: u8
-        collect_fee_mode = data[offset]
-        offset += 1
-
-        # pool_type: u8
-        pool_type = data[offset]
-        offset += 1
-
-        offset += 2  # padding_0
-
-        offset += 32  # fee_a_per_liquidity
-        offset += 32  # fee_b_per_liquidity
-
-        # permanent_lock_liquidity: u128
-        permanent_lock_liquidity_lo = struct.unpack_from('<Q', data, offset)[0]
-        permanent_lock_liquidity_hi = struct.unpack_from('<Q', data, offset + 8)[0]
-        permanent_lock_liquidity = permanent_lock_liquidity_lo + (permanent_lock_liquidity_hi << 64)
-        offset += 16
-
-        # metrics: PoolMetrics
-        total_lp_a_fee = struct.unpack_from('<QQ', data, offset)
-        offset += 16
-        total_lp_b_fee = struct.unpack_from('<QQ', data, offset)
-        offset += 16
-        total_protocol_a_fee = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-        total_protocol_b_fee = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-        total_partner_a_fee = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-        total_partner_b_fee = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-        total_position = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-        offset += 8  # padding
-
-        metrics = MeteoraPoolMetrics(
-            total_lp_a_fee=total_lp_a_fee[0] + (total_lp_a_fee[1] << 64),
-            total_lp_b_fee=total_lp_b_fee[0] + (total_lp_b_fee[1] << 64),
-            total_protocol_a_fee=total_protocol_a_fee,
-            total_protocol_b_fee=total_protocol_b_fee,
-            total_partner_a_fee=total_partner_a_fee,
-            total_partner_b_fee=total_partner_b_fee,
-            total_position=total_position,
+    def read_PoolMetrics():
+        return MeteoraPoolMetrics(
+            total_lp_a_fee=int.from_bytes(take(16),"little"),
+            total_lp_b_fee=int.from_bytes(take(16),"little"),
+            total_protocol_a_fee=int.from_bytes(take(8),"little"),
+            total_protocol_b_fee=int.from_bytes(take(8),"little"),
+            total_partner_a_fee=int.from_bytes(take(8),"little"),
+            total_partner_b_fee=int.from_bytes(take(8),"little"),
+            total_position=int.from_bytes(take(8),"little"),
+            padding=int.from_bytes(take(8),"little"),
         )
-
-        offset += 80  # padding_1
-
-        # reward_infos: [RewardInfo; 2] - simplified
-        reward_infos = []
-        for _ in range(2):
-            reward_initialized = data[offset]
-            offset += 1
-            reward_token_flag = data[offset]
-            offset += 1
-            offset += 14  # padding
-            reward_mint = Pubkey.from_bytes(data[offset:offset + 32])
-            offset += 32
-            reward_vault = Pubkey.from_bytes(data[offset:offset + 32])
-            offset += 32
-            reward_funder = Pubkey.from_bytes(data[offset:offset + 32])
-            offset += 32
-            reward_duration = struct.unpack_from('<Q', data, offset)[0]
-            offset += 8
-            reward_duration_end = struct.unpack_from('<Q', data, offset)[0]
-            offset += 8
-            reward_rate = struct.unpack_from('<QQ', data, offset)
-            offset += 16
-            offset += 32  # reward_per_token_stored
-            offset += 8  # last_update_time
-            offset += 8  # cumulative_seconds_with_empty_liquidity_reward
-
-            reward_infos.append(MeteoraRewardInfo(
-                initialized=reward_initialized,
-                reward_token_flag=reward_token_flag,
-                mint=reward_mint,
-                vault=reward_vault,
-                funder=reward_funder,
-                reward_duration=reward_duration,
-                reward_duration_end=reward_duration_end,
-                reward_rate=reward_rate[0] + (reward_rate[1] << 64),
-            ))
-
+    def read_RewardInfo():
+        return MeteoraRewardInfo(
+            initialized=int.from_bytes(take(1),"little"),
+            reward_token_flag=int.from_bytes(take(1),"little"),
+            padding_0=take(6),
+            padding_1=take(8),
+            mint=Pubkey.from_bytes(take(32)),
+            vault=Pubkey.from_bytes(take(32)),
+            funder=Pubkey.from_bytes(take(32)),
+            reward_duration=int.from_bytes(take(8),"little"),
+            reward_duration_end=int.from_bytes(take(8),"little"),
+            reward_rate=int.from_bytes(take(16),"little"),
+            reward_per_token_stored=take(32),
+            last_update_time=int.from_bytes(take(8),"little"),
+            cumulative_seconds_with_empty_liquidity_reward=int.from_bytes(take(8),"little"),
+        )
+    def read_Pool():
         return MeteoraPool(
-            pool_fees=pool_fees,
-            token_a_mint=token_a_mint,
-            token_b_mint=token_b_mint,
-            token_a_vault=token_a_vault,
-            token_b_vault=token_b_vault,
-            whitelisted_vault=whitelisted_vault,
-            partner=partner,
-            liquidity=liquidity,
-            protocol_a_fee=protocol_a_fee,
-            protocol_b_fee=protocol_b_fee,
-            partner_a_fee=partner_a_fee,
-            partner_b_fee=partner_b_fee,
-            sqrt_min_price=sqrt_min_price,
-            sqrt_max_price=sqrt_max_price,
-            sqrt_price=sqrt_price,
-            activation_point=activation_point,
-            activation_type=activation_type,
-            pool_status=pool_status,
-            token_a_flag=token_a_flag,
-            token_b_flag=token_b_flag,
-            collect_fee_mode=collect_fee_mode,
-            pool_type=pool_type,
-            permanent_lock_liquidity=permanent_lock_liquidity,
-            metrics=metrics,
-            reward_infos=reward_infos,
+            pool_fees=read_PoolFeesStruct(),
+            token_a_mint=Pubkey.from_bytes(take(32)),
+            token_b_mint=Pubkey.from_bytes(take(32)),
+            token_a_vault=Pubkey.from_bytes(take(32)),
+            token_b_vault=Pubkey.from_bytes(take(32)),
+            whitelisted_vault=Pubkey.from_bytes(take(32)),
+            partner=Pubkey.from_bytes(take(32)),
+            liquidity=int.from_bytes(take(16),"little"),
+            padding=int.from_bytes(take(16),"little"),
+            protocol_a_fee=int.from_bytes(take(8),"little"),
+            protocol_b_fee=int.from_bytes(take(8),"little"),
+            partner_a_fee=int.from_bytes(take(8),"little"),
+            partner_b_fee=int.from_bytes(take(8),"little"),
+            sqrt_min_price=int.from_bytes(take(16),"little"),
+            sqrt_max_price=int.from_bytes(take(16),"little"),
+            sqrt_price=int.from_bytes(take(16),"little"),
+            activation_point=int.from_bytes(take(8),"little"),
+            activation_type=int.from_bytes(take(1),"little"),
+            pool_status=int.from_bytes(take(1),"little"),
+            token_a_flag=int.from_bytes(take(1),"little"),
+            token_b_flag=int.from_bytes(take(1),"little"),
+            collect_fee_mode=int.from_bytes(take(1),"little"),
+            pool_type=int.from_bytes(take(1),"little"),
+            padding_0=take(2),
+            fee_a_per_liquidity=take(32),
+            fee_b_per_liquidity=take(32),
+            permanent_lock_liquidity=int.from_bytes(take(16),"little"),
+            metrics=read_PoolMetrics(),
+            padding_1=[int.from_bytes(take(8),"little") for _ in range(10)],
+            reward_infos=[read_RewardInfo() for _ in range(2)],
         )
-    except Exception:
-        return None
-
+    return read_Pool()
 
 # ============================================
 # Exports

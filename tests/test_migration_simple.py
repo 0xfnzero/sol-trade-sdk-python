@@ -69,11 +69,11 @@ def test_bonding_curve():
 
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src', 'sol_trade_sdk', 'common'))
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src', 'sol_trade_sdk', 'calc'))
-    from bonding_curve import BondingCurveAccount
+    from sol_trade_sdk.common.bonding_curve import BondingCurveAccount
     from pumpfun import INITIAL_VIRTUAL_TOKEN_RESERVES
 
     # Create default bonding curve
-    bc = BondingCurveAccount()
+    bc = BondingCurveAccount.from_dev_trade(bytes(32), bytes(32), 0, 0, bytes(32))
     assert bc.virtual_token_reserves > 0
     assert bc.virtual_sol_reserves > 0
     assert bc.token_total_supply == 1_000_000_000_000_000
@@ -139,7 +139,7 @@ def test_trading_params():
     print("\nTesting trading parameters...")
 
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src', 'sol_trade_sdk', 'trading'))
-    from params import (
+    from sol_trade_sdk.trading.params import (
         PumpFunParams,
         PumpSwapParams,
         BonkParams,
@@ -152,7 +152,7 @@ def test_trading_params():
 
     # Test PumpFun params
     pumpfun = PumpFunParams()
-    assert pumpfun.bonding_curve is None
+    assert pumpfun.bonding_curve.virtual_token_reserves == 0
     print("  PumpFunParams: OK")
 
     # Test PumpSwap params

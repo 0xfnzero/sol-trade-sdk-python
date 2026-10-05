@@ -10,7 +10,7 @@ from src.instruction.meteora_damm_v2_builder import (
     build_buy_instructions as build_meteora_buy_instructions,
 )
 from src.instruction.raydium_amm_v4_builder import (
-    SWAP_BASE_OUT_DISCRIMINATOR,
+    SWAP_BASE_OUT_V2_DISCRIMINATOR,
     RaydiumAmmV4Params,
     build_buy_instructions as build_raydium_amm_v4_buy_instructions,
 )
@@ -102,7 +102,7 @@ async def test_public_raydium_cpmm_builder_wires_fixed_output_buy():
 
 @pytest.mark.asyncio
 async def test_trading_factory_raydium_cpmm_wires_fixed_output_buy():
-    result = await RaydiumCpmmExecutor().execute_buy(
+    result = await RaydiumCpmmExecutor().build_buy_instructions(
         {
             "payer": pk(99),
             "output_mint": pk(2),
@@ -126,7 +126,7 @@ async def test_trading_factory_raydium_cpmm_wires_fixed_output_buy():
     assert int.from_bytes(data[16:24], "little") == 42
 
 
-def test_raydium_amm_v4_uses_market_account_order():
+def test_raydium_amm_v4_uses_v2_without_market_accounts():
     ixs = build_raydium_amm_v4_buy_instructions(
         payer=pk(99),
         output_mint=pk(2),
@@ -156,12 +156,12 @@ def test_raydium_amm_v4_uses_market_account_order():
     )
     ix = ixs[-1]
 
-    assert len(ix.accounts) == 18
-    assert bytes(ix.data)[0:1] == SWAP_BASE_OUT_DISCRIMINATOR
-    assert ix.accounts[3].pubkey == pk(5)
-    assert ix.accounts[4].pubkey == pk(6)
-    assert ix.accounts[7].pubkey == pk(7)
-    assert ix.accounts[14].pubkey == pk(14)
+    assert len(ix.accounts) == 8
+    assert bytes(ix.data)[0:1] == SWAP_BASE_OUT_V2_DISCRIMINATOR
+    assert ix.accounts[3].pubkey == pk(3)
+    assert ix.accounts[4].pubkey == pk(4)
+    assert ix.accounts[7].pubkey == pk(99)
+    assert ix.accounts[7].is_signer and not ix.accounts[7].is_writable
 
 
 def test_raydium_amm_v4_rejects_buy_output_mint_mismatch():
@@ -217,10 +217,10 @@ def test_meteora_damm_v2_uses_swap2_partial_fill():
     ix = ixs[-1]
     data = bytes(ix.data)
 
-    assert len(ix.accounts) == 13
+    assert len(ix.accounts) == 14
     assert data[:8] == SWAP2_DISCRIMINATOR
     assert data[24] == SWAP_MODE_PARTIAL_FILL
-    assert ix.accounts[12].pubkey == METEORA_DAMM_V2_PROGRAM_ID
+    assert ix.accounts[13].pubkey == METEORA_DAMM_V2_PROGRAM_ID
 
 
 def test_meteora_damm_v2_accepts_sol_alias_for_wsol_input():
@@ -266,7 +266,7 @@ def test_pumpfun_v2_buy_uses_current_27_account_layout():
 def test_pumpfun_v2_fixed_output_uses_buy_v2():
     ixs = build_pumpfun_buy_instructions(
         payer=pk(99),
-        input_mint=SOL_TOKEN_ACCOUNT,
+        input_mint=WSOL_TOKEN_ACCOUNT,
         output_mint=pk(2),
         input_amount=100_000,
         fixed_output_amount=42,
@@ -284,7 +284,7 @@ def test_pumpfun_v2_fixed_output_uses_buy_v2():
 def test_pumpfun_v2_regular_wsol_buy_wraps_max_quote_budget():
     ixs = build_pumpfun_buy_instructions(
         payer=pk(99),
-        input_mint=SOL_TOKEN_ACCOUNT,
+        input_mint=WSOL_TOKEN_ACCOUNT,
         output_mint=pk(2),
         input_amount=100_000,
         slippage_bps=1000,

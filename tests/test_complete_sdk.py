@@ -135,33 +135,35 @@ class TestBondingCurveAccount:
     """Tests for BondingCurveAccount"""
 
     def test_initial_state(self):
-        curve = BondingCurveAccount()
+        curve = BondingCurveAccount.from_dev_trade(bytes(32), bytes(32), 0, 0, bytes(32))
         assert curve.virtual_token_reserves == 1073000000000000
         assert curve.virtual_sol_reserves == 30000000000
         assert curve.complete is False
 
     def test_get_buy_price(self):
-        curve = BondingCurveAccount()
+        curve = BondingCurveAccount.from_dev_trade(bytes(32), bytes(32), 0, 0, bytes(32))
         tokens = curve.get_buy_price(1_000_000)
         assert tokens > 0
 
     def test_get_sell_price(self):
-        curve = BondingCurveAccount()
+        curve = BondingCurveAccount.from_dev_trade(bytes(32), bytes(32), 0, 0, bytes(32))
         sol = curve.get_sell_price(1_000_000_000, 100)
         assert sol > 0
 
-    def test_complete_curve_returns_zero(self):
+    def test_complete_curve_returns_error(self):
         curve = BondingCurveAccount(complete=True)
-        assert curve.get_buy_price(1_000_000) == 0
-        assert curve.get_sell_price(1_000_000_000, 100) == 0
+        with pytest.raises(ValueError, match="Curve is complete"):
+            curve.get_buy_price(1_000_000)
+        with pytest.raises(ValueError, match="Curve is complete"):
+            curve.get_sell_price(1_000_000_000, 100)
 
     def test_market_cap(self):
-        curve = BondingCurveAccount()
+        curve = BondingCurveAccount.from_dev_trade(bytes(32), bytes(32), 0, 0, bytes(32))
         market_cap = curve.get_market_cap_sol()
         assert market_cap > 0
 
     def test_token_price(self):
-        curve = BondingCurveAccount()
+        curve = BondingCurveAccount.from_dev_trade(bytes(32), bytes(32), 0, 0, bytes(32))
         price = curve.get_token_price()
         assert price > 0
 
@@ -303,7 +305,7 @@ class TestCalculations:
     def test_pumpfun_sell(self):
         sol = get_sell_sol_amount_from_token_amount(
             1_000_000_000, 30_000_000_000,
-            1_073_000_000_000_000, 1_000_000_000,
+            1_073_000_000_000_000, False,
         )
         assert sol > 0
 
@@ -398,7 +400,7 @@ class TestIntegration:
         strategy = create_gas_fee_strategy()
         
         # Create bonding curve
-        curve = BondingCurveAccount()
+        curve = BondingCurveAccount.from_dev_trade(bytes(32), bytes(32), 0, 0, bytes(32))
         
         # Calculate tokens for 1 SOL
         sol_amount = 1_000_000_000  # 1 SOL

@@ -31,16 +31,99 @@ class BondingCurveAccount:
     
     discriminator: int = 0
     account: bytes = b'\x00' * 32
-    virtual_token_reserves: int = INITIAL_VIRTUAL_TOKEN_RESERVES
-    virtual_sol_reserves: int = INITIAL_VIRTUAL_SOL_RESERVES
-    real_token_reserves: int = INITIAL_REAL_TOKEN_RESERVES
+    virtual_token_reserves: int = 0
+    virtual_sol_reserves: int = 0
+    real_token_reserves: int = 0
     real_sol_reserves: int = 0
-    token_total_supply: int = TOKEN_TOTAL_SUPPLY
+    token_total_supply: int = 0
     complete: bool = False
     creator: bytes = b'\x00' * 32
     is_mayhem_mode: bool = False
     is_cashback_coin: bool = False
+    quote_mint: bytes = bytes(32)
     
+    def __post_init__(self):
+        self._validate_reserves()
+
+    def _validate_reserves(self):
+        for value in (self.virtual_token_reserves, self.virtual_sol_reserves,
+                      self.real_token_reserves, self.real_sol_reserves, self.token_total_supply):
+            self._u64(value)
+
+    @staticmethod
+    def normalize_quote_mint(mint):
+        from solders.pubkey import Pubkey
+        raw = bytes(mint)
+        if len(raw) != 32:
+            raise ValueError("Quote mint must be a 32-byte public key")
+        if raw in (bytes(32), bytes(Pubkey.from_string("So11111111111111111111111111111111111111111"))):
+            raw = bytes(Pubkey.from_string("So11111111111111111111111111111111111111112"))
+        return Pubkey.from_bytes(raw) if isinstance(mint, Pubkey) else raw
+
+    def effective_quote_mint(self):
+        return self.normalize_quote_mint(self.quote_mint)
+
+    @staticmethod
+    def initial_virtual_quote_reserves_for_quote_mint(mint):
+        from solders.pubkey import Pubkey
+        return 4_292_000_000 if bytes(mint) == bytes(Pubkey.from_string("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")) else 30_000_000_000
+
+    def virtual_quote_reserves(self):
+        self._validate_reserves()
+        return self.virtual_sol_reserves
+
+    def real_quote_reserves(self):
+        self._validate_reserves()
+        return self.real_sol_reserves
+
+    def with_quote_mint(self, mint):
+        self._validate_reserves()
+        normalized = self.normalize_quote_mint(mint)
+        previous = self.initial_virtual_quote_reserves_for_quote_mint(self.effective_quote_mint())
+        if self.virtual_sol_reserves == min((1 << 64)-1, previous + self.real_sol_reserves):
+            self.virtual_sol_reserves = min((1 << 64)-1, self.initial_virtual_quote_reserves_for_quote_mint(normalized) + self.real_sol_reserves)
+        self.quote_mint = normalized
+        return self
+
+    def get_creator_vault_pda(self):
+        from solders.pubkey import Pubkey
+        from ..instruction.pumpfun_builder import get_creator_vault_pda
+        return get_creator_vault_pda(Pubkey.from_bytes(bytes(self.creator)))
+
+    @classmethod
+    def from_dev_trade_with_quote_mint(cls, bonding_curve, mint, dev_token_amount,
+                                     dev_quote_amount, creator, is_mayhem_mode,
+                                     is_cashback_coin, quote_mint):
+        token, quote = cls._u64(dev_token_amount), cls._u64(dev_quote_amount)
+        if token > INITIAL_REAL_TOKEN_RESERVES:
+            raise ValueError("Dev trade exceeds initial real token reserves")
+        normalized = cls.normalize_quote_mint(quote_mint)
+        curve = cls.from_trade_with_quote_mint(
+            bonding_curve, mint, creator, INITIAL_VIRTUAL_TOKEN_RESERVES-token,
+            cls.initial_virtual_quote_reserves_for_quote_mint(normalized)+quote,
+            INITIAL_REAL_TOKEN_RESERVES-token, quote, is_mayhem_mode,
+            is_cashback_coin, normalized)
+        return curve
+
+    @classmethod
+    def from_trade_with_quote_mint(cls, bonding_curve, mint, creator,
+                                  virtual_token_reserves, virtual_quote_reserves,
+                                  real_token_reserves, real_quote_reserves,
+                                  is_mayhem_mode, is_cashback_coin, quote_mint):
+        account = bonding_curve
+        if bytes(bonding_curve) == bytes(32):
+            from solders.pubkey import Pubkey
+            from ..instruction.pumpfun_builder import get_bonding_curve_pda
+            account = bytes(get_bonding_curve_pda(Pubkey.from_bytes(bytes(mint))))
+        return cls(account=account, creator=creator,
+                   virtual_token_reserves=virtual_token_reserves,
+                   virtual_sol_reserves=virtual_quote_reserves,
+                   real_token_reserves=real_token_reserves,
+                   real_sol_reserves=real_quote_reserves,
+                   token_total_supply=TOKEN_TOTAL_SUPPLY,
+                   is_mayhem_mode=is_mayhem_mode, is_cashback_coin=is_cashback_coin,
+                   quote_mint=cls.normalize_quote_mint(quote_mint))
+
     @classmethod
     def from_dev_trade(
         cls,
@@ -53,22 +136,10 @@ class BondingCurveAccount:
         is_cashback_coin: bool = False,
     ) -> "BondingCurveAccount":
         """Create from dev trade data"""
-        account = bonding_curve if bonding_curve != bytes(32) else bytes(32)  # Would use get_bonding_curve_pda
-        
-        return cls(
-            discriminator=0,
-            account=account,
-            virtual_token_reserves=INITIAL_VIRTUAL_TOKEN_RESERVES - dev_token_amount,
-            virtual_sol_reserves=INITIAL_VIRTUAL_SOL_RESERVES + dev_sol_amount,
-            real_token_reserves=INITIAL_REAL_TOKEN_RESERVES - dev_token_amount,
-            real_sol_reserves=dev_sol_amount,
-            token_total_supply=TOKEN_TOTAL_SUPPLY,
-            complete=False,
-            creator=creator,
-            is_mayhem_mode=is_mayhem_mode,
-            is_cashback_coin=is_cashback_coin,
-        )
-    
+        return cls.from_dev_trade_with_quote_mint(
+            bonding_curve, mint, dev_token_amount, dev_sol_amount, creator,
+            is_mayhem_mode, is_cashback_coin, bytes(32))
+
     @classmethod
     def from_trade(
         cls,
@@ -83,101 +154,79 @@ class BondingCurveAccount:
         is_cashback_coin: bool = False,
     ) -> "BondingCurveAccount":
         """Create from trade data"""
-        account = bonding_curve if bonding_curve != bytes(32) else bytes(32)
-        
-        return cls(
-            discriminator=0,
-            account=account,
-            virtual_token_reserves=virtual_token_reserves,
-            virtual_sol_reserves=virtual_sol_reserves,
-            real_token_reserves=real_token_reserves,
-            real_sol_reserves=real_sol_reserves,
-            token_total_supply=TOKEN_TOTAL_SUPPLY,
-            complete=False,
-            creator=creator,
-            is_mayhem_mode=is_mayhem_mode,
-            is_cashback_coin=is_cashback_coin,
-        )
-    
+        return cls.from_trade_with_quote_mint(
+            bonding_curve, mint, creator, virtual_token_reserves,
+            virtual_sol_reserves, real_token_reserves, real_sol_reserves,
+            is_mayhem_mode, is_cashback_coin, bytes(32))
+
+    @staticmethod
+    def _u64(value: int) -> int:
+        if type(value) is not int or not 0 <= value < 1 << 64:
+            raise ValueError("Expected u64 integer")
+        return value
+
     def get_buy_price(self, amount: int) -> int:
-        """Calculate tokens received for given SOL amount"""
+        """Raw curve price (no fee), matching Rust BondingCurveAccount."""
+        self._validate_reserves()
+        self._u64(amount)
         if self.complete:
             raise ValueError("Curve is complete")
-        
-        return get_buy_token_amount_from_sol_amount(
-            self.virtual_token_reserves,
-            self.virtual_sol_reserves,
-            self.real_token_reserves,
-            self.creator,
-            amount,
-        )
-    
-    def get_sell_price(self, amount: int) -> int:
-        """Calculate SOL received for given token amount"""
+        if amount == 0:
+            return 0
+        reserve = self.virtual_sol_reserves * self.virtual_token_reserves // (self.virtual_sol_reserves + amount) + 1
+        if reserve > self.virtual_token_reserves:
+            raise ValueError("Invalid curve reserves")
+        return min((self.virtual_token_reserves - reserve) & ((1 << 64) - 1), self.real_token_reserves)
+
+    def get_sell_price(self, amount: int, fee_basis_points: int = 95) -> int:
+        self._validate_reserves()
+        self._u64(amount)
+        self._u64(fee_basis_points)
         if self.complete:
             raise ValueError("Curve is complete")
-        
-        return get_sell_sol_amount_from_token_amount(
-            self.virtual_token_reserves,
-            self.virtual_sol_reserves,
-            self.creator,
-            amount,
-        )
-    
-    def get_market_cap_sol(self) -> float:
-        """Calculate current market cap in SOL"""
-        if self.virtual_token_reserves == 0:
-            return 0.0
-        
-        price_per_token = self.virtual_sol_reserves / self.virtual_token_reserves
-        return price_per_token * self.token_total_supply / 1e9
-    
-    def get_buy_out_price(self, amount: int) -> int:
-        """Calculate price to buy out all remaining tokens"""
-        if self.complete:
-            raise ValueError("Curve is complete")
-        
-        # Rough estimate: current price * amount
+        if amount == 0:
+            return 0
+        gross = amount * self.virtual_sol_reserves // (self.virtual_token_reserves + amount)
+        fee = gross * fee_basis_points // 10000
+        if fee > gross:
+            raise ValueError("Fee exceeds output")
+        return (gross - fee) & ((1 << 64) - 1)
+
+    def get_market_cap_sol(self) -> int:
+        """Market cap in quote atoms, matching Rust's u64 return value."""
+        self._validate_reserves()
         if self.virtual_token_reserves == 0:
             return 0
-        
-        price_ratio = self.virtual_sol_reserves / self.virtual_token_reserves
-        return int(price_ratio * amount)
+        return (self.token_total_supply * self.virtual_sol_reserves // self.virtual_token_reserves) & ((1 << 64) - 1)
+
+    def get_buy_out_price(self, amount: int, fee_basis_points: int = 95) -> int:
+        self._validate_reserves()
+        self._u64(amount)
+        self._u64(fee_basis_points)
+        tokens = max(amount, self.real_sol_reserves)
+        if tokens >= self.virtual_token_reserves:
+            raise ValueError("Invalid buyout reserves")
+        value = tokens * self.virtual_sol_reserves // (self.virtual_token_reserves - tokens) + 1
+        return (value + value * fee_basis_points // 10000) & ((1 << 64) - 1)
 
     def get_token_price(self) -> float:
-        """Calculate the current token price in SOL.
-        100% from Rust: src/common/bonding_curve.rs get_token_price
-        """
         v_sol = self.virtual_sol_reserves / 100_000_000.0
         v_tokens = self.virtual_token_reserves / 100_000.0
         if v_tokens == 0:
-            return 0.0
+            return float('nan') if v_sol == 0 else float('inf')
         return v_sol / v_tokens
 
     def get_final_market_cap_sol(self, fee_basis_points: int = 95) -> int:
-        """Calculate the final market cap in SOL after all tokens are sold.
-        100% from Rust: src/common/bonding_curve.rs get_final_market_cap_sol
-        """
-        total_sell_value = self._get_buy_out_price_internal(self.real_token_reserves, fee_basis_points)
-        total_virtual_value = self.virtual_sol_reserves + total_sell_value
-        total_virtual_tokens = self.virtual_token_reserves - self.real_token_reserves
-
-        if total_virtual_tokens == 0:
+        value = self.get_buy_out_price(self.real_token_reserves, fee_basis_points)
+        tokens = self.virtual_token_reserves - self.real_token_reserves
+        if tokens < 0:
+            raise ValueError("Invalid curve reserves")
+        if tokens == 0:
             return 0
-
-        return (self.token_total_supply * total_virtual_value) // total_virtual_tokens
+        return (self.token_total_supply * (self.virtual_sol_reserves + value) // tokens) & ((1 << 64) - 1)
 
     def _get_buy_out_price_internal(self, amount: int, fee_basis_points: int) -> int:
-        """Internal helper for buy out price calculation"""
-        sol_tokens = max(amount, self.real_sol_reserves)
-
-        if self.virtual_token_reserves <= sol_tokens:
-            return 0
-
-        total_sell_value = (sol_tokens * self.virtual_sol_reserves) // (self.virtual_token_reserves - sol_tokens) + 1
-        fee = (total_sell_value * fee_basis_points) // 10000
-
-        return total_sell_value + fee
+        return self.get_buy_out_price(amount, fee_basis_points)
 
     def get_creator_vault_pda(self) -> bytes:
         """Get the creator vault PDA for this bonding curve"""
@@ -187,90 +236,31 @@ class BondingCurveAccount:
 
 # ===== Decoding Functions - from Rust: src/instruction/utils/pumpfun.rs =====
 
-BONDING_CURVE_ACCOUNT_SIZE = 8 + 8 + 8 + 8 + 8 + 8 + 1 + 32 + 1 + 1  # 77 bytes after discriminator
+BONDING_CURVE_ACCOUNT_SIZE = 115  # discriminator + full pinned Rust V2 body
 
 
 def decode_bonding_curve_account(data: bytes) -> Optional[BondingCurveAccount]:
-    """
-    Decode a BondingCurveAccount from on-chain account data.
-    Data format (after 8-byte discriminator):
-    - virtual_token_reserves: u64 (8 bytes)
-    - virtual_sol_reserves: u64 (8 bytes)
-    - real_token_reserves: u64 (8 bytes)
-    - real_sol_reserves: u64 (8 bytes)
-    - token_total_supply: u64 (8 bytes)
-    - complete: bool (1 byte)
-    - creator: Pubkey (32 bytes)
-    - is_mayhem_mode: bool (1 byte)
-    - is_cashback_coin: bool (1 byte)
+    """Decode a prefixed account or exact 75/107-byte legacy/V2 Borsh body.
 
-    Args:
-        data: Raw account data (with or without discriminator)
-
-    Returns:
-        BondingCurveAccount if successful, None if data is invalid
+    A missing legacy quote key remains zero (native); partial keys are rejected.
+    Extended prefixed V2 accounts are accepted without dropping quote metadata.
     """
     import struct
-
-    # Handle data with or without discriminator
-    if len(data) < BONDING_CURVE_ACCOUNT_SIZE:
+    discriminator = bytes([23, 183, 248, 55, 96, 216, 172, 96])
+    if len(data) in (75, 107) and data[:8] != discriminator:
+        body = data
+    else:
+        if len(data) < 83 or 83 < len(data) < 115 or data[:8] != discriminator:
+            return None
+        body = data[8:]
+    if any(body[i] > 1 for i in (40, 73, 74)):
         return None
-
-    try:
-        offset = 0
-
-        # Check if data starts with discriminator (8 bytes)
-        if len(data) >= 8 + BONDING_CURVE_ACCOUNT_SIZE:
-            # Skip discriminator
-            offset = 8
-
-        # virtual_token_reserves: u64
-        virtual_token_reserves = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-
-        # virtual_sol_reserves: u64
-        virtual_sol_reserves = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-
-        # real_token_reserves: u64
-        real_token_reserves = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-
-        # real_sol_reserves: u64
-        real_sol_reserves = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-
-        # token_total_supply: u64
-        token_total_supply = struct.unpack_from('<Q', data, offset)[0]
-        offset += 8
-
-        # complete: bool
-        complete = data[offset] == 1
-        offset += 1
-
-        # creator: Pubkey (32 bytes)
-        creator = data[offset:offset + 32]
-        offset += 32
-
-        # is_mayhem_mode: bool
-        is_mayhem_mode = data[offset] == 1
-        offset += 1
-
-        # is_cashback_coin: bool
-        is_cashback_coin = data[offset] == 1
-
-        return BondingCurveAccount(
-            discriminator=0,
-            account=b'\x00' * 32,  # Will be set by caller if needed
-            virtual_token_reserves=virtual_token_reserves,
-            virtual_sol_reserves=virtual_sol_reserves,
-            real_token_reserves=real_token_reserves,
-            real_sol_reserves=real_sol_reserves,
-            token_total_supply=token_total_supply,
-            complete=complete,
-            creator=creator,
-            is_mayhem_mode=is_mayhem_mode,
-            is_cashback_coin=is_cashback_coin,
-        )
-    except Exception:
-        return None
+    reserves = struct.unpack_from('<5Q', body)
+    return BondingCurveAccount(
+        virtual_token_reserves=reserves[0], virtual_sol_reserves=reserves[1],
+        real_token_reserves=reserves[2], real_sol_reserves=reserves[3],
+        token_total_supply=reserves[4], complete=bool(body[40]),
+        creator=body[41:73], is_mayhem_mode=bool(body[73]),
+        is_cashback_coin=bool(body[74]),
+        quote_mint=body[75:107] if len(body) >= 107 else bytes(32),
+    )

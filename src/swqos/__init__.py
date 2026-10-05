@@ -27,6 +27,7 @@ from .clients import (
     SwqosConfig,
     TradeError,
     create_swqos_client,
+    create_cached_wire_submit,
 )
 
 from .advanced_clients import (
@@ -79,7 +80,7 @@ from .providers import (
     SwqosManager,
 )
 
-# SwqosClientFactory.get_supported_types() is the Rust v4.0.21 parity provider
+# SwqosClientFactory.get_supported_types() is the Rust v5.0.2 parity provider
 # surface. NextBlock is still Rust-blacklisted; Triton/QuickNode/Syndica/
 # Figment/Alchemy remain source-compatible legacy classes, not parity trading
 # providers.
@@ -109,6 +110,7 @@ __all__ = [
     "SwqosConfig",
     "TradeError",
     "create_swqos_client",
+    "create_cached_wire_submit",
     # Advanced clients
     "AdvancedJitoClient",
     "AdvancedBloxrouteClient",

@@ -39,6 +39,7 @@ def legacy_pumpswap_fee_basis_points(has_coin_creator: bool) -> PumpSwapFeeBasis
 
 
 def effective_quote_reserves(quote_vault_balance: int, virtual_quote_reserves: int) -> int:
+    """Add the signed i128 offset; zero is valid, but trade quotes require liquidity."""
     if isinstance(virtual_quote_reserves, bool):
         raise TypeError("virtual_quote_reserves must be the signed i128 event or Pool value")
     if not 0 <= quote_vault_balance <= U64_MAX:
@@ -46,7 +47,7 @@ def effective_quote_reserves(quote_vault_balance: int, virtual_quote_reserves: i
     if not I128_MIN <= virtual_quote_reserves <= I128_MAX:
         raise ValueError(f"Invalid i128 virtual quote reserves: {virtual_quote_reserves}")
     effective = quote_vault_balance + virtual_quote_reserves
-    if not 0 < effective <= U64_MAX:
+    if not 0 <= effective <= U64_MAX:
         raise ValueError(
             "Invalid effective quote reserves: "
             f"raw={quote_vault_balance}, virtual={virtual_quote_reserves}"
@@ -100,34 +101,26 @@ def ceil_div(a: int, b: int) -> int:
     return (a + b - 1) // b
 
 
+def _u64(value: int, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if not 0 <= value <= U64_MAX:
+        raise ValueError(f"{name} must fit u64")
+    return value
+
+
 def calculate_with_slippage_buy(amount: int, slippage_bps: int) -> int:
-    """
-    Calculate maximum acceptable output for a buy with slippage.
-    Returns amount + (amount * slippage_bps / 10000)
-    
-    100% from Rust: src/utils/calc/common.rs calculate_with_slippage_buy
-    
-    Note: Basis points are clamped to MAX_SLIPPAGE_BASIS_POINTS (9999 = 99.99%)
-    to prevent the amount from doubling when slippage_bps = 10000.
-    """
-    # Clamp basis points to max 9999 (99.99%) to prevent amount doubling at 100%
-    bps = slippage_bps if slippage_bps <= MAX_SLIPPAGE_BASIS_POINTS else MAX_SLIPPAGE_BASIS_POINTS
-    return amount + (amount * bps) // 10000
+    """Rust 5.0.6: clamp slippage, use wide intermediates, saturate u64 budget."""
+    _u64(amount, "amount")
+    bps = min(_u64(slippage_bps, "slippage_bps"), MAX_SLIPPAGE_BASIS_POINTS)
+    return min(U64_MAX, amount + amount * bps // 10000)
 
 
 def calculate_with_slippage_sell(amount: int, slippage_bps: int) -> int:
-    """
-    Calculate minimum acceptable output for a sell with slippage.
-    Returns amount - (amount * slippage_bps / 10000)
-    
-    100% from Rust: src/utils/calc/common.rs calculate_with_slippage_sell
-    
-    Note: Returns 1 if amount <= slippage_bps / 10000 to ensure minimum output.
-    """
-    # Rust: if amount <= basis_points / 10000 { 1 } else { ... }
-    if amount <= slippage_bps // 10000:
-        return 1
-    return amount - (amount * slippage_bps) // 10000
+    """Rust 5.0.6: zero stays zero; subtract the floored, clamped slippage."""
+    _u64(amount, "amount")
+    bps = min(_u64(slippage_bps, "slippage_bps"), MAX_SLIPPAGE_BASIS_POINTS)
+    return amount - amount * bps // 10000
 
 
 # ===== PumpFun Calculations =====
@@ -139,47 +132,9 @@ def get_buy_token_amount_from_sol_amount(
     real_token_reserves: int,
     has_creator: bool = False,
 ) -> int:
-    """
-    Calculate the amount of tokens received for a given SOL amount on PumpFun.
-    
-    100% from Rust: src/utils/calc/pumpfun.rs get_buy_token_amount_from_sol_amount
-    
-    Args:
-        sol_amount: SOL amount in lamports
-        virtual_sol_reserves: Virtual SOL reserves
-        virtual_token_reserves: Virtual token reserves
-        real_token_reserves: Real token reserves
-        has_creator: Whether there is a creator (affects fee)
-    """
-    if sol_amount == 0 or virtual_token_reserves == 0:
-        return 0
-
-    # Calculate total fee basis points
-    total_fee_basis_points = PUMPFUN_FEE_BASIS_POINTS
-    if has_creator:
-        total_fee_basis_points += PUMPFUN_CREATOR_FEE
-
-    # Rust: input_amount = amount * 10000 / (total_fee + 10000)
-    input_amount = (sol_amount * 10000) // (total_fee_basis_points + 10000)
-    
-    # Rust: denominator = virtual_sol_reserves + input_amount
-    denominator = virtual_sol_reserves + input_amount
-    
-    # Rust: tokens_received = input_amount * virtual_token_reserves / denominator
-    tokens_received = (input_amount * virtual_token_reserves) // denominator
-
-    # Cap at real token reserves
-    tokens_received = min(tokens_received, real_token_reserves)
-
-    # Special handling for small amounts (matching Rust exactly)
-    LAMPORTS_PER_SOL = 1_000_000_000
-    if tokens_received <= 100 * 1_000_000:
-        if sol_amount > LAMPORTS_PER_SOL // 100:  # > 0.01 SOL
-            tokens_received = 25547619 * 1_000_000
-        else:
-            tokens_received = 255476 * 1_000_000
-
-    return tokens_received
+    from .pumpfun_exact import buy_exact
+    if type(has_creator) is not bool: raise ValueError("has_creator must be bool")
+    return buy_exact(virtual_token_reserves,virtual_sol_reserves,real_token_reserves,sol_amount,95+(30 if has_creator else 0))
 
 
 def get_sell_sol_amount_from_token_amount(
@@ -189,39 +144,9 @@ def get_sell_sol_amount_from_token_amount(
     has_creator: bool = False,
     real_sol_reserves: Optional[int] = None,
 ) -> int:
-    """
-    Calculate the amount of SOL received for selling tokens on PumpFun.
-    
-    100% from Rust: src/utils/calc/pumpfun.rs get_sell_sol_amount_from_token_amount
-    
-    Args:
-        token_amount: Token amount to sell
-        virtual_sol_reserves: Virtual SOL reserves
-        virtual_token_reserves: Virtual token reserves
-        has_creator: Whether there is a creator (affects fee)
-    """
-    if token_amount == 0 or virtual_token_reserves == 0:
-        return 0
-
-    # Rust: numerator = amount * virtual_sol_reserves
-    numerator = token_amount * virtual_sol_reserves
-    
-    # Rust: denominator = virtual_token_reserves + amount
-    denominator = virtual_token_reserves + token_amount
-    
-    # Rust: sol_cost = numerator / denominator
-    sol_cost = numerator // denominator
-
-    # Calculate total fee basis points
-    total_fee_basis_points = PUMPFUN_FEE_BASIS_POINTS
-    if has_creator:
-        total_fee_basis_points += PUMPFUN_CREATOR_FEE
-
-    # Rust: fee = compute_fee(sol_cost, total_fee_basis_points)
-    fee = compute_fee(sol_cost, total_fee_basis_points)
-
-    # Rust: sol_cost.saturating_sub(fee)
-    return max(0, sol_cost - fee)
+    from .pumpfun_exact import sell_exact
+    if type(has_creator) is not bool: raise ValueError("has_creator must be bool")
+    return sell_exact(virtual_token_reserves,virtual_sol_reserves,token_amount,95+(30 if has_creator else 0))
 
 
 # ===== PumpSwap Result Types =====
@@ -277,6 +202,17 @@ class SellQuoteInputResult:
 
 # ===== PumpSwap Calculations =====
 # 100% from Rust: src/utils/calc/pumpswap.rs
+
+def _pumpswap_inputs(amount, slippage, base_reserve, quote_reserve, fees):
+    for name, value in (("amount", amount), ("slippage", slippage), ("base_reserve", base_reserve),
+                        ("quote_reserve", quote_reserve), ("lp_fee", fees.lp_fee_basis_points),
+                        ("protocol_fee", fees.protocol_fee_basis_points), ("creator_fee", fees.coin_creator_fee_basis_points)):
+        _u64(value, name)
+
+
+def _pumpswap_fee(amount, rate):
+    return _u64(compute_fee(amount, rate), "fee")
+
 
 def buy_base_input_internal(
     base: Optional[int] = None,
@@ -335,27 +271,31 @@ def buy_base_input_internal_with_fees(
             "virtual_quote_reserves are required"
         )
 
+    _pumpswap_inputs(base, slippage_basis_points, base_reserve, quote_reserve, fee_basis_points)
     if base_reserve == 0 or quote_reserve == 0:
-        return BuyBaseInputResult(0, 0, 0)
+        raise ValueError("Invalid reserves, depleted pool, or insufficient amount after fees")
     effective_quote_reserve = effective_quote_reserves(
         quote_reserve, virtual_quote_reserves
     )
+    if effective_quote_reserve == 0:
+        raise ValueError("Invalid effective quote reserves: depleted pool")
     if base > base_reserve:
-        return BuyBaseInputResult(0, 0, 0)
+        raise ValueError("Invalid reserves, depleted pool, or insufficient amount after fees")
 
     # Rust: quote_amount_in = ceil_div(quote_reserve * base, base_reserve - base)
     numerator = effective_quote_reserve * base
     denominator = base_reserve - base
     if denominator == 0:
-        return BuyBaseInputResult(0, 0, 0)
+        raise ValueError("Invalid reserves, depleted pool, or insufficient amount after fees")
     
-    quote_amount_in = ceil_div(numerator, denominator)
+    quote_amount_in = _u64(ceil_div(numerator, denominator), "raw quote amount")
 
-    lp_fee = compute_fee(quote_amount_in, fee_basis_points.lp_fee_basis_points)
-    protocol_fee = compute_fee(quote_amount_in, fee_basis_points.protocol_fee_basis_points)
-    coin_creator_fee = compute_fee(quote_amount_in, fee_basis_points.coin_creator_fee_basis_points)
+    lp_fee = _pumpswap_fee(quote_amount_in, fee_basis_points.lp_fee_basis_points)
+    protocol_fee = _pumpswap_fee(quote_amount_in, fee_basis_points.protocol_fee_basis_points)
+    coin_creator_fee = _pumpswap_fee(quote_amount_in, fee_basis_points.coin_creator_fee_basis_points)
 
     total_quote = quote_amount_in + lp_fee + protocol_fee + coin_creator_fee
+    _u64(total_quote, "total quote amount")
     max_quote = calculate_with_slippage_buy(total_quote, slippage_basis_points)
 
     return BuyBaseInputResult(
@@ -396,34 +336,40 @@ def buy_quote_input_internal_with_fees(
     
     100% from Rust: src/utils/calc/pumpswap.rs buy_quote_input_internal
     """
+    _pumpswap_inputs(quote, slippage_basis_points, base_reserve, quote_reserve, fee_basis_points)
     if base_reserve == 0 or quote_reserve == 0:
-        return BuyQuoteInputResult(0, 0, 0)
+        raise ValueError("Invalid reserves, depleted pool, or insufficient amount after fees")
     effective_quote_reserve = effective_quote_reserves(
         quote_reserve, virtual_quote_reserves
     )
+    if effective_quote_reserve == 0:
+        raise ValueError("Invalid effective quote reserves: depleted pool")
 
     total_fee_bps = (
         fee_basis_points.lp_fee_basis_points
         + fee_basis_points.protocol_fee_basis_points
         + fee_basis_points.coin_creator_fee_basis_points
     )
-    denominator = 10000 + total_fee_bps
+    _u64(total_fee_bps, "total fee basis points")
+    denominator = _u64(10000 + total_fee_bps, "fee denominator")
 
     # Rust: effective_quote = quote * 10000 / denominator
     effective_quote = (quote * 10000) // denominator
-    lp_fee = compute_fee(effective_quote, fee_basis_points.lp_fee_basis_points)
-    protocol_fee = compute_fee(effective_quote, fee_basis_points.protocol_fee_basis_points)
-    coin_creator_fee = compute_fee(effective_quote, fee_basis_points.coin_creator_fee_basis_points)
+    lp_fee = _pumpswap_fee(effective_quote, fee_basis_points.lp_fee_basis_points)
+    protocol_fee = _pumpswap_fee(effective_quote, fee_basis_points.protocol_fee_basis_points)
+    coin_creator_fee = _pumpswap_fee(effective_quote, fee_basis_points.coin_creator_fee_basis_points)
     total_with_fees = effective_quote + lp_fee + protocol_fee + coin_creator_fee
     if total_with_fees > quote:
-        effective_quote = max(0, effective_quote - (total_with_fees - quote))
-    input_amount = max(0, effective_quote - 1)
+        effective_quote -= total_with_fees - quote
+    if effective_quote <= 0:
+        raise ValueError("Quote input is too small after fees")
+    input_amount = effective_quote - 1
 
     # Rust: base_amount_out = base_reserve * effective_quote / (quote_reserve + effective_quote)
     numerator = base_reserve * input_amount
     denominator_effective = effective_quote_reserve + input_amount
     if denominator_effective == 0:
-        return BuyQuoteInputResult(0, effective_quote, 0)
+        raise ValueError("Invalid reserves, depleted pool, or insufficient amount after fees")
 
     base_amount_out = numerator // denominator_effective
     max_quote = calculate_with_slippage_buy(quote, slippage_basis_points)
@@ -492,27 +438,30 @@ def sell_base_input_internal_with_fees(
             "virtual_quote_reserves are required"
         )
 
+    _pumpswap_inputs(base, slippage_basis_points, base_reserve, quote_reserve, fee_basis_points)
     if base_reserve == 0 or quote_reserve == 0:
-        return SellBaseInputResult(0, 0, 0)
+        raise ValueError("Invalid reserves, depleted pool, or insufficient amount after fees")
     effective_quote_reserve = effective_quote_reserves(
         quote_reserve, virtual_quote_reserves
     )
+    if effective_quote_reserve == 0:
+        raise ValueError("Invalid effective quote reserves: depleted pool")
 
     # Rust: quote_amount_out = (quote_reserve * base) / (base_reserve + base)
     numerator = effective_quote_reserve * base
     denominator = base_reserve + base
     if denominator == 0:
-        return SellBaseInputResult(0, 0, 0)
+        raise ValueError("Invalid reserves, depleted pool, or insufficient amount after fees")
     
     quote_amount_out = numerator // denominator
 
-    lp_fee = compute_fee(quote_amount_out, fee_basis_points.lp_fee_basis_points)
-    protocol_fee = compute_fee(quote_amount_out, fee_basis_points.protocol_fee_basis_points)
-    coin_creator_fee = compute_fee(quote_amount_out, fee_basis_points.coin_creator_fee_basis_points)
+    lp_fee = _pumpswap_fee(quote_amount_out, fee_basis_points.lp_fee_basis_points)
+    protocol_fee = _pumpswap_fee(quote_amount_out, fee_basis_points.protocol_fee_basis_points)
+    coin_creator_fee = _pumpswap_fee(quote_amount_out, fee_basis_points.coin_creator_fee_basis_points)
 
-    total_fees = lp_fee + protocol_fee + coin_creator_fee
+    total_fees = _u64(lp_fee + protocol_fee + coin_creator_fee, "total fees")
     if total_fees > quote_amount_out:
-        return SellBaseInputResult(0, 0, quote_amount_out)
+        raise ValueError("Invalid reserves, depleted pool, or insufficient amount after fees")
     if quote_amount_out - lp_fee > quote_reserve:
         raise ValueError("Insufficient real quote reserves to cover the sell output")
     
@@ -556,13 +505,16 @@ def sell_quote_input_internal_with_fees(
     
     100% from Rust: src/utils/calc/pumpswap.rs sell_quote_input_internal
     """
+    _pumpswap_inputs(quote, slippage_basis_points, base_reserve, quote_reserve, fee_basis_points)
     if base_reserve == 0 or quote_reserve == 0:
-        return SellQuoteInputResult(0, 0, 0)
+        raise ValueError("Invalid reserves, depleted pool, or insufficient amount after fees")
     if quote > quote_reserve:
-        return SellQuoteInputResult(0, 0, 0)
+        raise ValueError("Invalid reserves, depleted pool, or insufficient amount after fees")
     effective_quote_reserve = effective_quote_reserves(
         quote_reserve, virtual_quote_reserves
     )
+    if effective_quote_reserve == 0:
+        raise ValueError("Invalid effective quote reserves: depleted pool")
 
     total_fee_bps = (
         fee_basis_points.lp_fee_basis_points
@@ -575,22 +527,22 @@ def sell_quote_input_internal_with_fees(
     if denominator <= 0:
         raise ValueError("Total fee basis points must be less than 10,000")
     
-    raw_quote = ceil_div(quote * 10000, denominator)
+    raw_quote = _u64(ceil_div(quote * 10000, denominator), "raw quote amount")
 
-    lp_fee = compute_fee(raw_quote, fee_basis_points.lp_fee_basis_points)
+    lp_fee = _pumpswap_fee(raw_quote, fee_basis_points.lp_fee_basis_points)
     if raw_quote - lp_fee > quote_reserve:
         raise ValueError("Insufficient real quote reserves to cover the sell output")
 
     if raw_quote >= effective_quote_reserve:
-        return SellQuoteInputResult(raw_quote, 0, 0)
+        raise ValueError("Invalid reserves, depleted pool, or insufficient amount after fees")
 
     # Rust: base_amount_in = ceil_div(base_reserve * raw_quote, quote_reserve - raw_quote)
     numerator = base_reserve * raw_quote
     denominator = effective_quote_reserve - raw_quote
     if denominator == 0:
-        return SellQuoteInputResult(raw_quote, 0, 0)
+        raise ValueError("Invalid reserves, depleted pool, or insufficient amount after fees")
     
-    base_amount_in = ceil_div(numerator, denominator)
+    base_amount_in = _u64(ceil_div(numerator, denominator), "base amount")
     min_quote = calculate_with_slippage_sell(quote, slippage_basis_points)
 
     return SellQuoteInputResult(

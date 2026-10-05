@@ -1,7 +1,7 @@
 """
 SWQoS provider implementations.
 
-The factory exposes the Rust v4.0.21 provider set. Legacy extended RPC client
+The factory exposes the Rust v5.0.2 provider set. Legacy extended RPC client
 classes are kept for source compatibility, but they are not Rust-parity SWQoS
 providers and are not created by the factory.
 """
@@ -45,6 +45,8 @@ class SwqosType(Enum):
     SPEEDLANDING = "Speedlanding"
     HELIUS = "Helius"
     SOLAMI = "Solami"
+    LUNAR_LANDER = "LunarLander"
+    GLAIVE = "Glaive"
     TRITON = "Triton"
     QUICKNODE = "QuickNode"
     SYNDICA = "Syndica"
@@ -1043,16 +1045,18 @@ class SwqosClientFactory:
         SwqosType.SPEEDLANDING: _SenderBackedProviderClient,
         SwqosType.HELIUS: _SenderBackedProviderClient,
         SwqosType.SOLAMI: _SenderBackedProviderClient,
+        SwqosType.LUNAR_LANDER: _SenderBackedProviderClient,
+        SwqosType.GLAIVE: _SenderBackedProviderClient,
     }
 
     @classmethod
     def create_client(cls, config: SwqosConfig) -> SwqosClient:
         """Create SWQOS client based on config type"""
         if config.swqos_type in SWQOS_BLACKLISTED_TYPES:
-            raise ValueError(f"SWQOS type is blacklisted by Rust v4.0.21 parity: {config.swqos_type}")
+            raise ValueError(f"SWQOS type is blacklisted by Rust v5.0.2 parity: {config.swqos_type}")
         client_class = cls._CLIENT_MAP.get(config.swqos_type)
         if client_class is None:
-            raise ValueError(f"Unsupported SWQOS type for Rust v4.0.21 parity: {config.swqos_type}")
+            raise ValueError(f"Unsupported SWQOS type for Rust v5.0.2 parity: {config.swqos_type}")
         return client_class(config)
 
     @classmethod

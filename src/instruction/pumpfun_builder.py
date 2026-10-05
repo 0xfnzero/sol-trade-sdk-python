@@ -195,8 +195,38 @@ def _is_usable_pubkey(value: Optional[Pubkey]) -> bool:
     return value is not None and value != DEFAULT_PUBKEY and value != PHANTOM_DEFAULT_CREATOR_VAULT
 
 
+STANDARD_BONDING_FEE_RECIPIENTS = (FEE_RECIPIENT,
+    Pubkey.from_string("7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R9jP2RJ"),
+    Pubkey.from_string("7hTckgnGnLQR6sdH7YkqFTAA7VwTfYFaZ6EhEsU3saCX"),
+    Pubkey.from_string("9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz"),
+    Pubkey.from_string("AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY"),
+    Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM"),
+    Pubkey.from_string("FWsW1xNtWscwNmKv6wVsU1iTzRN6wmmk3MjxRP5tT7hz"),
+    Pubkey.from_string("G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP"),
+)
+
+def reconcile_mayhem_mode_for_trade(flag, recipient):
+    if flag is not None and type(flag) is not bool:
+        raise ValueError("Mayhem flag must be boolean")
+    if recipient == DEFAULT_PUBKEY:
+        return flag if flag is not None else False
+    mayhem = recipient in MAYHEM_FEE_RECIPIENTS
+    if flag is None:
+        return mayhem
+    if mayhem and not flag:
+        return True
+    if recipient == FEE_RECIPIENT and flag:
+        return False
+    return flag
+
+def fee_recipient_ok_for_bonding_curve_mode(recipient, mayhem):
+    reserved = recipient in MAYHEM_FEE_RECIPIENTS
+    normal = recipient in STANDARD_BONDING_FEE_RECIPIENTS
+    return reserved or (not normal and recipient != DEFAULT_PUBKEY) if mayhem else normal or (not reserved and recipient != DEFAULT_PUBKEY)
+
+
 def _pump_fun_fee_recipient(params: "PumpFunParams") -> Pubkey:
-    if _is_usable_pubkey(params.fee_recipient):
+    if fee_recipient_ok_for_bonding_curve_mode(params.fee_recipient, params.is_mayhem_mode):
         return params.fee_recipient
     return get_mayhem_fee_recipient_random() if params.is_mayhem_mode else FEE_RECIPIENT
 
@@ -239,13 +269,12 @@ def _effective_pump_mint_token_program(mint: Pubkey, params: "PumpFunParams") ->
 
 
 def _effective_quote_mint(params: "PumpFunParams") -> Pubkey:
-    if not _is_usable_pubkey(params.quote_mint) or params.quote_mint == SOL_TOKEN_ACCOUNT:
-        return WSOL_TOKEN_ACCOUNT
-    return params.quote_mint
+    quote = params.quote_mint if _is_usable_pubkey(params.quote_mint) else params.curve_quote_mint
+    return WSOL_TOKEN_ACCOUNT if not _is_usable_pubkey(quote) or quote == SOL_TOKEN_ACCOUNT else quote
 
 
-def _uses_v2_layout(params: "PumpFunParams") -> bool:
-    return _is_usable_pubkey(params.quote_mint) and params.quote_mint != SOL_TOKEN_ACCOUNT
+def _uses_v2_layout(params: "PumpFunParams", settlement_mint: Pubkey) -> bool:
+    return not _is_sol_quote_mint(_effective_quote_mint(params)) or settlement_mint == WSOL_TOKEN_ACCOUNT
 
 
 def _is_sol_quote_mint(mint: Pubkey) -> bool:
@@ -301,6 +330,7 @@ class PumpFunParams:
     close_token_account_when_sell: bool = False
     fee_recipient: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
     quote_mint: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
+    curve_quote_mint: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
 
 
 # ============================================
@@ -314,28 +344,8 @@ def get_buy_token_amount_from_sol_amount(
     creator: Pubkey,
     sol_amount: int,
 ) -> int:
-    """
-    Calculate the token amount received for a given SOL amount on PumpFun.
-    Uses the bonding curve formula.
-    """
-    if sol_amount == 0 or virtual_token_reserves == 0:
-        return 0
-
-    total_fee_bps = FEE_BASIS_POINTS + (
-        CREATOR_FEE_BASIS_POINTS if _is_usable_pubkey(creator) else 0
-    )
-    input_amount = (sol_amount * 10_000) // (total_fee_bps + 10_000)
-    denominator = virtual_sol_reserves + input_amount
-    if denominator == 0:
-        return 0
-
-    tokens_received = (input_amount * virtual_token_reserves) // denominator
-    tokens_received = min(tokens_received, real_token_reserves)
-
-    if tokens_received <= 100 * 1_000_000:
-        tokens_received = 25_547_619 * 1_000_000 if sol_amount > 10_000_000 else 255_476 * 1_000_000
-
-    return tokens_received
+    from ..calc.pumpfun_exact import buy_exact
+    return buy_exact(virtual_token_reserves,virtual_sol_reserves,real_token_reserves,sol_amount,FEE_BASIS_POINTS+(CREATOR_FEE_BASIS_POINTS if _is_usable_pubkey(creator) else 0))
 
 
 def get_sell_sol_amount_from_token_amount(
@@ -392,7 +402,9 @@ def build_buy_instructions(
     Returns:
         List of instructions for the buy operation
     """
-    if _uses_v2_layout(params):
+    if input_mint!=Pubkey.default() and not _uses_v2_layout(params,input_mint) and not _is_sol_quote_mint(input_mint):
+        raise ValueError("PumpFun native input_mint does not match quote_mint")
+    if _uses_v2_layout(params, input_mint):
         return build_buy_v2_instructions(
             payer=payer,
             output_mint=output_mint,
@@ -543,7 +555,9 @@ def build_sell_instructions(
     Returns:
         List of instructions for the sell operation
     """
-    if _uses_v2_layout(params):
+    if output_mint!=Pubkey.default() and not _uses_v2_layout(params,output_mint) and not _is_sol_quote_mint(output_mint):
+        raise ValueError("PumpFun native output_mint does not match quote_mint")
+    if _uses_v2_layout(params, output_mint):
         return build_sell_v2_instructions(
             payer=payer,
             input_mint=input_mint,
@@ -956,57 +970,25 @@ async def fetch_bonding_curve_account(
     if data is None or len(data) == 0:
         return None
     
-    # Bonding curve data starts after 8-byte discriminator
-    offset = 8
-    
-    # virtual_token_reserves: u64
-    virtual_token_reserves = struct.unpack_from('<Q', data, offset)[0]
-    offset += 8
-    
-    # virtual_sol_reserves: u64
-    virtual_sol_reserves = struct.unpack_from('<Q', data, offset)[0]
-    offset += 8
-    
-    # real_token_reserves: u64
-    real_token_reserves = struct.unpack_from('<Q', data, offset)[0]
-    offset += 8
-    
-    # real_sol_reserves: u64
-    real_sol_reserves = struct.unpack_from('<Q', data, offset)[0]
-    offset += 8
-    
-    # token_total_supply: u64
-    offset += 8  # skip
-    
-    # complete: bool
-    complete = data[offset] == 1
-    offset += 1
-    
-    # creator: Pubkey (32 bytes)
-    creator = Pubkey.from_bytes(data[offset:offset + 32])
-    offset += 32
-    
-    # is_mayhem_mode: bool
-    is_mayhem_mode = data[offset] == 1
-    offset += 1
-    
-    # is_cashback_coin: bool
-    is_cashback_coin = data[offset] == 1
-    
+    from ..common.bonding_curve import decode_bonding_curve_account
+    curve = decode_bonding_curve_account(data)
+    if curve is None:
+        raise ValueError("Invalid PumpFun bonding curve account layout")
+    creator = Pubkey.from_bytes(curve.creator)
     params = PumpFunParams(
         bonding_curve_account=bonding_curve_pda,
-        virtual_token_reserves=virtual_token_reserves,
-        virtual_sol_reserves=virtual_sol_reserves,
-        real_token_reserves=real_token_reserves,
-        real_sol_reserves=real_sol_reserves,
-        complete=complete,
+        virtual_token_reserves=curve.virtual_token_reserves,
+        virtual_sol_reserves=curve.virtual_sol_reserves,
+        real_token_reserves=curve.real_token_reserves,
+        real_sol_reserves=curve.real_sol_reserves,
+        complete=curve.complete,
         creator=creator,
-        is_mayhem_mode=is_mayhem_mode,
-        is_cashback_coin=is_cashback_coin,
+        is_mayhem_mode=curve.is_mayhem_mode,
+        is_cashback_coin=curve.is_cashback_coin,
+        curve_quote_mint=Pubkey.from_bytes(curve.quote_mint),
         creator_vault=get_creator_vault_pda(creator),
         token_program=TOKEN_PROGRAM_2022,
     )
-    
     return (params, bonding_curve_pda)
 
 

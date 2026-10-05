@@ -8,7 +8,7 @@ PumpFun, PumpSwap, Bonk, Raydium CPMM, Raydium AMM V4, and Meteora DAMM V2.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Protocol, runtime_checkable
 from dataclasses import dataclass, field, replace
 import asyncio
 import time
@@ -37,6 +37,11 @@ class DexType(Enum):
     PUMPFUN = "PumpFun"
     PUMPSWAP = "PumpSwap"
     BONK = "Bonk"
+    LAUNCH_LAB = "LaunchLab"
+    STONK_FUN = "StonkFun"
+    RAYDIUM_CLMM = "RaydiumClmm"
+    ORCA_WHIRLPOOL = "OrcaWhirlpool"
+    METEORA_DLMM = "MeteoraDlmm"
     RAYDIUM_CPMM = "RaydiumCpmm"
     RAYDIUM_AMM_V4 = "RaydiumAmmV4"
     METEORA_DAMM_V2 = "MeteoraDammV2"
@@ -105,6 +110,8 @@ class SwqosType(Enum):
     SOYAS = "Soyas"
     SPEEDLANDING = "Speedlanding"
     SOLAMI = "Solami"
+    LUNAR_LANDER = "LunarLander"
+    GLAIVE = "Glaive"
 
 
 class SwqosTransport(Enum):
@@ -145,14 +152,14 @@ ASSOCIATED_TOKEN_PROGRAM = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25e
 RENT = Pubkey.from_string("SysvarRent111111111111111111111111111111111")
 
 # DEX Programs
-PUMPFUN_PROGRAM = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKopJFfWcCzNfXt3D")
-PUMPSWAP_PROGRAM = Pubkey.from_string("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwq52pCSbAhL")
-BONK_PROGRAM = Pubkey.from_string("bonk2zCzQaobPKMKsM5Rut46yHp3zQD1ntUk8Ld8ARq")
-RAYDIUM_CPMM_PROGRAM = Pubkey.from_string("CPMMoo8L3F4NbTUBBfMTm5L2AhwDtLd6P4VeXvgQA2Po")
+PUMPFUN_PROGRAM = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+PUMPSWAP_PROGRAM = Pubkey.from_string("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
+BONK_PROGRAM = Pubkey.from_string("LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj")
+RAYDIUM_CPMM_PROGRAM = Pubkey.from_string("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C")
 RAYDIUM_AMM_V4_PROGRAM = Pubkey.from_string("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
 
 # Fee recipients
-FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4Cs9tM")
+FEE_RECIPIENT = Pubkey.from_string("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV")
 
 # Default values
 DEFAULT_SLIPPAGE = 500  # 5%
@@ -256,21 +263,7 @@ class DurableNonceInfo:
     recent_blockhash: str
 
 
-@dataclass
-class BondingCurveAccount:
-    """Bonding curve account state"""
-
-    discriminator: int
-    account: Pubkey
-    virtual_token_reserves: int
-    virtual_sol_reserves: int
-    real_token_reserves: int
-    real_sol_reserves: int
-    token_total_supply: int
-    complete: bool
-    creator: Pubkey
-    is_mayhem_mode: bool
-    is_cashback_coin: bool
+from .common.bonding_curve import BondingCurveAccount
 
 
 @dataclass
@@ -335,6 +328,22 @@ class SellAmount:
 
 
 # ============== Protocol Params ==============
+
+def _parser_exact_integer(value: Any, field_name: str, bits: int = 64, signed: bool = False) -> int:
+    if value is None or value == "":
+        return 0
+    if type(value) is int:
+        result = value
+    elif type(value) is str and value.isascii() and (value.isdigit() or value.startswith('-') and value[1:].isdigit()):
+        result = int(value)
+    else:
+        raise ValueError(f"{field_name} must be an exact decimal integer")
+    minimum = -(1 << (bits - 1)) if signed else 0
+    maximum = (1 << (bits - (1 if signed else 0))) - 1
+    if not minimum <= result <= maximum:
+        raise ValueError(f"{field_name} outside {'i' if signed else 'u'}{bits} range")
+    return result
+
 
 def _pumpfun_quote_mint_for_layout(quote_mint: Pubkey) -> Pubkey:
     if quote_mint == Pubkey.default() or quote_mint == SOL_TOKEN_ACCOUNT:
@@ -406,7 +415,47 @@ class PumpFunParams:
     def with_quote_mint(self, quote_mint: Pubkey) -> "PumpFunParams":
         """Set PumpFun quote mint. The instruction layout is selected from this value."""
         self.quote_mint = _pumpfun_quote_mint_for_layout(quote_mint)
+        self.bonding_curve.with_quote_mint(WSOL_TOKEN_ACCOUNT if self.quote_mint == Pubkey.default() else self.quote_mint)
         return self
+
+    @classmethod
+    def from_dev_trade(
+        cls,
+        mint: Pubkey,
+        token_amount: int,
+        max_sol_cost: int,
+        creator: Pubkey,
+        bonding_curve: Pubkey,
+        associated_bonding_curve: Pubkey,
+        creator_vault: Pubkey,
+        close_token_account_when_sell: Optional[bool] = None,
+        fee_recipient: Optional[Pubkey] = None,
+        token_program: Optional[Pubkey] = None,
+        is_cashback_coin: bool = False,
+        quote_mint: Optional[Pubkey] = None,
+        mayhem_mode: Optional[bool] = None,
+    ) -> "PumpFunParams":
+        """Reconstruct an initial curve from a dev trade (not a current fee quote)."""
+        from .instruction.pumpfun_builder import MAYHEM_FEE_RECIPIENTS
+        mint, creator, bonding_curve, associated_bonding_curve, creator_vault = (
+            _pubkey_from_parser(value) for value in
+            (mint, creator, bonding_curve, associated_bonding_curve, creator_vault)
+        )
+        recipient = _pubkey_from_parser(fee_recipient)
+        quote = _pubkey_from_parser(quote_mint)
+        token = _parser_exact_integer(token_amount, "token_amount")
+        paid = _parser_exact_integer(max_sol_cost, "max_sol_cost")
+        if token > 793_100_000_000_000:
+            raise ValueError("Dev trade exceeds initial real token reserves")
+        initial = 4_292_000_000 if quote == USDC_TOKEN_ACCOUNT else 30_000_000_000
+        return cls.from_trade(
+            bonding_curve, associated_bonding_curve, mint, quote, creator, creator_vault,
+            1_073_000_000_000_000 - token, initial + paid,
+            793_100_000_000_000 - token, paid, close_token_account_when_sell,
+            recipient, TOKEN_PROGRAM if token_program is None else _pubkey_from_parser(token_program),
+            is_cashback_coin,
+            recipient in MAYHEM_FEE_RECIPIENTS if mayhem_mode is None else mayhem_mode,
+        )
 
     @classmethod
     def from_trade(
@@ -428,19 +477,25 @@ class PumpFunParams:
         mayhem_mode: Optional[bool],
     ) -> "PumpFunParams":
         """Build PumpFun params from already-decoded trade event fields."""
+        from .instruction.pumpfun_builder import reconcile_mayhem_mode_for_trade
+        mayhem_mode = reconcile_mayhem_mode_for_trade(mayhem_mode, fee_recipient)
+        if bonding_curve == Pubkey.default() and mint != Pubkey.default():
+            from .instruction.pumpfun_builder import get_bonding_curve_pda
+            bonding_curve = get_bonding_curve_pda(mint)
         return cls(
             bonding_curve=BondingCurveAccount(
                 discriminator=0,
                 account=bonding_curve,
-                virtual_token_reserves=int(virtual_token_reserves),
-                virtual_sol_reserves=int(virtual_quote_reserves),
-                real_token_reserves=int(real_token_reserves),
-                real_sol_reserves=int(real_quote_reserves),
-                token_total_supply=0,
+                virtual_token_reserves=_parser_exact_integer(virtual_token_reserves, "virtual_token_reserves"),
+                virtual_sol_reserves=_parser_exact_integer(virtual_quote_reserves, "virtual_quote_reserves"),
+                real_token_reserves=_parser_exact_integer(real_token_reserves, "real_token_reserves"),
+                real_sol_reserves=_parser_exact_integer(real_quote_reserves, "real_quote_reserves"),
+                token_total_supply=1_000_000_000_000_000,
                 complete=False,
                 creator=creator,
                 is_mayhem_mode=bool(mayhem_mode) if mayhem_mode is not None else False,
                 is_cashback_coin=is_cashback_coin,
+                quote_mint=WSOL_TOKEN_ACCOUNT if quote_mint in (Pubkey.default(), SOL_TOKEN_ACCOUNT) else quote_mint,
             ),
             associated_bonding_curve=associated_bonding_curve,
             creator_vault=creator_vault,
@@ -467,10 +522,8 @@ class PumpFunParams:
         real_quote_value = _parser_value(event, "real_quote_reserves", missing)
         if legacy_sol_quote or real_quote_value is missing:
             real_quote_value = _parser_value(event, "real_sol_reserves", 0)
-        virtual_quote_reserves = int(
-            virtual_quote_value or 0
-        )
-        real_quote_reserves = int(real_quote_value or 0)
+        virtual_quote_reserves = _parser_exact_integer(virtual_quote_value, "virtual_quote_reserves")
+        real_quote_reserves = _parser_exact_integer(real_quote_value, "real_quote_reserves")
         return cls.from_trade(
             bonding_curve=_pubkey_from_parser(_parser_value(event, "bonding_curve")),
             associated_bonding_curve=_pubkey_from_parser(
@@ -480,15 +533,15 @@ class PumpFunParams:
             quote_mint=quote_mint,
             creator=_pubkey_from_parser(_parser_value(event, "creator")),
             creator_vault=_pubkey_from_parser(_parser_value(event, "creator_vault")),
-            virtual_token_reserves=int(_parser_value(event, "virtual_token_reserves", 0) or 0),
+            virtual_token_reserves=_parser_exact_integer(_parser_value(event, "virtual_token_reserves"), "virtual_token_reserves"),
             virtual_quote_reserves=virtual_quote_reserves,
-            real_token_reserves=int(_parser_value(event, "real_token_reserves", 0) or 0),
+            real_token_reserves=_parser_exact_integer(_parser_value(event, "real_token_reserves"), "real_token_reserves"),
             real_quote_reserves=real_quote_reserves,
             close_token_account_when_sell=close_token_account_when_sell,
             fee_recipient=_pubkey_from_parser(_parser_value(event, "fee_recipient")),
             token_program=_pubkey_from_parser(_parser_value(event, "token_program")),
             is_cashback_coin=bool(_parser_value(event, "is_cashback_coin", False)),
-            mayhem_mode=bool(_parser_value(event, "mayhem_mode", False)),
+            mayhem_mode=_parser_value(event, "mayhem_mode", None),
         )
 
 
@@ -638,9 +691,9 @@ class PumpSwapParams:
         )
         fee_basis_points = (
             PumpSwapFeeBasisPoints(
-                int(_parser_value(event, "lp_fee_basis_points", 0) or 0),
-                int(_parser_value(event, "protocol_fee_basis_points", 0) or 0),
-                int(_parser_value(event, "coin_creator_fee_basis_points", 0) or 0),
+                _parser_exact_integer(_parser_value(event, "lp_fee_basis_points"), "lp_fee_basis_points"),
+                _parser_exact_integer(_parser_value(event, "protocol_fee_basis_points"), "protocol_fee_basis_points"),
+                _parser_exact_integer(_parser_value(event, "coin_creator_fee_basis_points"), "coin_creator_fee_basis_points"),
             )
             if has_fee_basis_points
             else None
@@ -655,9 +708,9 @@ class PumpSwapParams:
             pool_quote_token_account=_pubkey_from_parser(
                 _parser_value(event, "pool_quote_token_account")
             ),
-            pool_base_token_reserves=int(_parser_value(event, "pool_base_token_reserves", 0) or 0),
-            pool_quote_token_reserves=int(_parser_value(event, "pool_quote_token_reserves", 0) or 0),
-            virtual_quote_reserves=int(_parser_value(event, "virtual_quote_reserves", 0) or 0),
+            pool_base_token_reserves=_parser_exact_integer(_parser_value(event, "pool_base_token_reserves"), "pool_base_token_reserves"),
+            pool_quote_token_reserves=_parser_exact_integer(_parser_value(event, "pool_quote_token_reserves"), "pool_quote_token_reserves"),
+            virtual_quote_reserves=_parser_exact_integer(_parser_value(event, "virtual_quote_reserves"), "virtual_quote_reserves", 128, True),
             coin_creator_vault_ata=_pubkey_from_parser(
                 _parser_value(event, "coin_creator_vault_ata")
             ),
@@ -723,18 +776,20 @@ class RaydiumAmmV4Params:
     pc_mint: Pubkey
     token_coin: Pubkey
     token_pc: Pubkey
-    amm_open_orders: Pubkey
-    amm_target_orders: Pubkey
-    serum_program: Pubkey
-    serum_market: Pubkey
-    serum_bids: Pubkey
-    serum_asks: Pubkey
-    serum_event_queue: Pubkey
-    serum_coin_vault_account: Pubkey
-    serum_pc_vault_account: Pubkey
-    serum_vault_signer: Pubkey
-    coin_reserve: int
-    pc_reserve: int
+    amm_open_orders: Pubkey = Pubkey.default()
+    amm_target_orders: Pubkey = Pubkey.default()
+    serum_program: Pubkey = Pubkey.default()
+    serum_market: Pubkey = Pubkey.default()
+    serum_bids: Pubkey = Pubkey.default()
+    serum_asks: Pubkey = Pubkey.default()
+    serum_event_queue: Pubkey = Pubkey.default()
+    serum_coin_vault_account: Pubkey = Pubkey.default()
+    serum_pc_vault_account: Pubkey = Pubkey.default()
+    serum_vault_signer: Pubkey = Pubkey.default()
+    coin_reserve: int = 0
+    pc_reserve: int = 0
+    swap_fee_numerator: int = 25
+    swap_fee_denominator: int = 10000
 
 
 @dataclass
@@ -762,6 +817,13 @@ DexParamEnum = Union[
 
 
 # ============== Trade Params ==============
+
+
+@runtime_checkable
+class TradeRiskGate(Protocol):
+    """Optional pre-buy risk gate (buy paths only)."""
+
+    def check_buy(self, params: "TradeBuyParams") -> Any: ...
 
 
 @dataclass
@@ -1244,7 +1306,17 @@ def simple_sell_params_to_trade_sell_params(params: SimpleSellParams) -> TradeSe
 
 
 class TradingClient:
-    """Main trading client for Solana DEX operations"""
+    """Main trading client for Solana DEX operations."""
+
+    def prepare_cached_trade(self, request):
+        from .trading.cached_trade import prepare_cached_trade
+
+        return prepare_cached_trade(request)
+
+    async def execute_cached_trade(self, request, signers, submit):
+        from .trading.cached_trade import CachedTradeExecutor
+
+        return await CachedTradeExecutor(request.dex_type).execute(request, signers, submit)
 
     def __init__(self, payer: Keypair, config: TradeConfig):
         """
@@ -1260,6 +1332,12 @@ class TradingClient:
         self.middlewares: List[Any] = []
         self.log_enabled = config.log_enabled
         self.middleware_manager = config.middleware_manager
+        self.risk_gate: Optional["TradeRiskGate"] = None
+
+    def with_risk_gate(self, risk_gate: "TradeRiskGate") -> "TradingClient":
+        """Attach a pre-buy risk gate (buy paths only)."""
+        self.risk_gate = risk_gate
+        return self
 
     async def close(self) -> None:
         """Close the client connection"""
@@ -1442,6 +1520,11 @@ class TradingClient:
             validate_slippage(params.slippage_basis_points)
         if params.fixed_output_token_amount is not None:
             validate_amount(params.fixed_output_token_amount, "fixed_output_token_amount")
+
+        if self.risk_gate is not None:
+            result = self.risk_gate.check_buy(params)
+            if hasattr(result, "__await__"):
+                await result
 
         if not params.recent_blockhash and not params.durable_nonce:
             return TradeResult(
@@ -2016,6 +2099,7 @@ __all__ = [
     "NonceCache",
     "BondingCurveAccount",
     "TradeResult",
+    "TradeRiskGate",
     # Protocol Params
     "PumpFunParams",
     "PumpSwapFeeBasisPoints",
@@ -2106,3 +2190,51 @@ __all__ = [
     "ContextExpiredError",
     "create_hot_path_executor",
 ]
+
+from .serialization.v1 import V1Config, CompiledV1Message, compile_v1_message, sign_v1_transaction
+from .instruction.stonkfun import TokenTransferFee, LaunchLabQuoteState, LaunchLabQuote, StonkFunCurveAccounts, LaunchLabAccountBytes, quote_launchlab_exact_in, build_launchlab_curve_exact_in, decode_launchlab_curve, build_stonkfun_curve_exact_in, decode_stonkfun_curve
+from .instruction.native_hops import SwapV2Args, RaydiumClmmSwapV2Accounts, WhirlpoolSwapV2Accounts, MeteoraDlmmSwap2Accounts, build_raydium_clmm_swap_v2, build_whirlpool_swap_v2, build_meteora_dlmm_swap2
+from .instruction.token_mint_state import token_transfer_fee_for_epoch
+from .trading.subscription_cache import (
+    CachedAccount, CacheReadContext, PoolTradeHint, AccountCacheSnapshot, SubscriptionAccountCache,
+)
+__all__ += ["CachedAccount", "CacheReadContext", "PoolTradeHint", "AccountCacheSnapshot", "SubscriptionAccountCache"]
+
+from .instruction.cached_cpmm import CachedCpmmState, CpmmQuote, quote_cached_cpmm_exact_in, build_cached_cpmm_exact_in
+__all__ += ["CachedCpmmState", "CpmmQuote", "quote_cached_cpmm_exact_in", "build_cached_cpmm_exact_in"]
+from .calc.clmm import (
+    ClmmPool, ClmmTick, ClmmSwapStep, ClmmSwapResult, clmm_sqrt_price_at_tick,
+    clmm_tick_at_sqrt_price, clmm_swap_step, clmm_swap_exact_in,
+)
+from .trading.cached_clmm import CachedClmmQuote, prepare_cached_clmm
+from .trading.cached_route import CachedRouteLeg, PreparedCachedRoute, prepare_cached_route
+__all__ += ["CachedRouteLeg", "PreparedCachedRoute", "prepare_cached_route"]
+__all__ += [
+    "ClmmPool", "ClmmTick", "ClmmSwapStep", "ClmmSwapResult", "clmm_sqrt_price_at_tick",
+    "clmm_tick_at_sqrt_price", "clmm_swap_step", "clmm_swap_exact_in",
+    "CachedClmmQuote", "prepare_cached_clmm",
+]
+from .calc.whirlpool import WhirlpoolAdaptiveFee, WhirlpoolSwapResult, whirlpool_sqrt_price_at_tick, whirlpool_tick_at_sqrt_price, whirlpool_swap_exact_in
+from .trading.cached_whirlpool import CachedWhirlpoolQuote, prepare_cached_whirlpool, decode_whirlpool_ticks
+__all__ += ["WhirlpoolAdaptiveFee", "WhirlpoolSwapResult", "whirlpool_sqrt_price_at_tick", "whirlpool_tick_at_sqrt_price", "whirlpool_swap_exact_in", "CachedWhirlpoolQuote", "prepare_cached_whirlpool", "decode_whirlpool_ticks"]
+from .trading.native_sol import NativeSolRoute, settle_cached_route_with_native_sol
+__all__ += ["NativeSolRoute", "settle_cached_route_with_native_sol"]
+
+from .calc.dlmm import DlmmStaticFee, DlmmVariableFee, DlmmBin, DlmmPool, DlmmQuote, InsufficientDlmmArrays, dlmm_swap_exact_in
+from .trading.cached_dlmm import CachedDlmmQuote, decode_dlmm_bins, prepare_cached_dlmm
+__all__ += ["DlmmStaticFee", "DlmmVariableFee", "DlmmBin", "DlmmPool", "DlmmQuote", "InsufficientDlmmArrays", "dlmm_swap_exact_in", "CachedDlmmQuote", "decode_dlmm_bins", "prepare_cached_dlmm"]
+
+from .trading.cached_trade import CachedTradeRequest,PreparedCachedTrade,CachedTradeExecutor,prepare_cached_trade
+__all__ += ["CachedTradeRequest","PreparedCachedTrade","CachedTradeExecutor","prepare_cached_trade"]
+
+from .trading.factory import TradeExecutorFactory
+__all__ += ["TradeExecutorFactory"]
+
+from .trading.cached_amm_v4 import CachedAmmV4State, AmmV4Quote, cached_amm_v4, quote_cached_amm_v4_exact_in, prepare_cached_amm_v4
+__all__ += ["CachedAmmV4State", "AmmV4Quote", "cached_amm_v4", "quote_cached_amm_v4_exact_in", "prepare_cached_amm_v4"]
+
+from .trading.subscription_readiness import SubscriptionReadiness, CacheNotReadyError
+__all__ += ["SubscriptionReadiness", "CacheNotReadyError"]
+
+from .trading.route_candidates import candidate_routes
+__all__ += ["candidate_routes"]

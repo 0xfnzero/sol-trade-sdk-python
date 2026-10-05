@@ -85,6 +85,8 @@ MIN_TIP_NEXT_BLOCK = 0.001
 MIN_TIP_SOYAS = 0.001
 MIN_TIP_SPEEDLANDING = 0.001
 MIN_TIP_SOLAMI = 0.0001
+MIN_TIP_LUNARLANDER = 0.001
+MIN_TIP_GLAIVE = 0.0001
 MIN_TIP_DEFAULT = 0.00001
 
 
@@ -269,6 +271,28 @@ SOLAMI_TIP_ACCOUNTS = [
     "uiuaQsxA47JybQAVN4FTfYuoEDkMiXV1r591Aewbeam",
 ]
 
+LUNARLANDER_TIP_ACCOUNTS = [
+    "moon17L6BgxXRX5uHKudAmqVF96xia9h8ygcmG2sL3F",
+    "moon26Sek222Md7ZydcAGxoKG832DK36CkLrS3PQY4c",
+    "moon7fwyajcVstMoBnVy7UBcTx87SBtNoGGAaH2Cb8V",
+    "moonBtH9HvLHjLqi9ivyrMVKgFUsSfrz9BwQ9khhn1u",
+    "moonCJg8476LNFLptX1qrK8PdRsA1HD1R6XWyu9MB93",
+    "moonF2sz7qwAtdETnrgxNbjonnhGGjd6r4W4UC9284s",
+    "moonKfftMiGSak3cezvhEqvkPSzwrmQxQHXuspC96yj",
+    "moonQBUKBpkifLcTd78bfxxt4PYLwmJ5admLW6cBBs8",
+    "moonXwpKwoVkMegt5Bc776cSW793X1irL5hHV1vJ3JA",
+    "moonZ6u9E2fgk6eWd82621eLPHt9zuJuYECXAYjMY1C",
+]
+
+GLAIVE_TIP_ACCOUNTS = [
+    "GLaiv4GMRYQmthatDS98uQT4HoucgxWT8NeJz6oSwxeU",
+    "GLaivL5uPrDpvd1wTtvat38KGqb5WLhEdqQfnmNd3oNr",
+    "GLaivinAWh21NaJMhtExtD5G2gZs1xnvaYVZmwqobWZL",
+    "GLaivJSUL71FcocYa8tks5vpVyYzvaDMHtyrzfQF2ABr",
+    "GLaivRU6eDKrta3p3psFAWPEFLzCjeMHGpPUuQqTjtyv",
+    "GLaivq5dU8qHayz9Qf13LjPfVy3SmUhbmickfGiZdmfh",
+]
+
 
 def _random_tip_account(accounts: List[str]) -> str:
     """Randomly select a tip account from the list"""
@@ -276,12 +300,43 @@ def _random_tip_account(accounts: List[str]) -> str:
 
 
 def _signature_from_serialized_transaction(transaction: bytes) -> str:
+    """V1 signatures trail the message; legacy/v0 signatures precede it."""
+    if transaction and transaction[0] == 129:
+        def invalid():
+            raise TradeError(code=400, message="Malformed or non-single-signature V1 transaction")
+        if not 106 <= len(transaction) <= 4096 or transaction[1] != 1:
+            invalid()
+        mask = int.from_bytes(transaction[4:8], "little")
+        instructions, count = transaction[40:42]
+        if mask & ~31 or mask & 3 in (1, 2) or not 1 <= count <= 64 or instructions > 64 or transaction[2] != 0 or transaction[3] > count - 1:
+            invalid()
+        offset = 42 + count * 32 + (8 if mask & 3 else 0) + sum(4 for bit in (4, 8, 16) if mask & bit)
+        headers = offset
+        offset += instructions * 4
+        end = len(transaction) - 64
+        if offset > end:
+            invalid()
+        if len({bytes(transaction[42+32*i:74+32*i]) for i in range(count)}) != count:
+            invalid()
+        if mask & 16:
+            heap=int.from_bytes(transaction[headers-4:headers],"little")
+            if not 32768 <= heap <= 262144 or heap % 1024: invalid()
+        for i in range(instructions):
+            h = headers + i * 4
+            program, accounts = transaction[h:h + 2]
+            if not 0 < program < count or offset + accounts > end:
+                invalid()
+            if any(index >= count for index in transaction[offset:offset + accounts]):
+                invalid()
+            offset += accounts + int.from_bytes(transaction[h + 2:h + 4], "little")
+            if offset > end:
+                invalid()
+        if offset != end:
+            invalid()
+        return base58.b58encode(transaction[offset:]).decode("ascii")
     if len(transaction) < 65 or transaction[0] != 1:
-        raise TradeError(
-            code=400,
-            message="Only single-signature versioned transactions are supported for SWQOS submit",
-        )
-    return str(base58.b58encode(transaction[1:65]).decode("ascii"))
+        raise TradeError(code=400, message="Only single-signature transactions are supported for SWQOS submit")
+    return base58.b58encode(transaction[1:65]).decode("ascii")
 
 
 # ===== Endpoints by Region =====
@@ -492,6 +547,58 @@ SOLAMI_ENDPOINTS: Dict[SwqosRegion, str] = {
     SwqosRegion.LONDON: "beam.solami.dev:11000",
     SwqosRegion.LOS_ANGELES: "beam.solami.dev:11000",
     SwqosRegion.DEFAULT: "beam.solami.dev:11000",
+}
+
+LUNARLANDER_ENDPOINTS: Dict[SwqosRegion, str] = {
+    SwqosRegion.NEW_YORK: "http://nyc-1.prod.lunar-lander.hellomoon.io",
+    SwqosRegion.FRANKFURT: "http://fra-1.prod.lunar-lander.hellomoon.io",
+    SwqosRegion.AMSTERDAM: "http://ams-1.prod.lunar-lander.hellomoon.io",
+    SwqosRegion.DUBLIN: "http://ams-1.prod.lunar-lander.hellomoon.io",
+    SwqosRegion.SLC: "http://ash-2.prod.lunar-lander.hellomoon.io",
+    SwqosRegion.TOKYO: "http://tyo-1.prod.lunar-lander.hellomoon.io",
+    SwqosRegion.SINGAPORE: "http://tyo-1.prod.lunar-lander.hellomoon.io",
+    SwqosRegion.LONDON: "http://fra-1.prod.lunar-lander.hellomoon.io",
+    SwqosRegion.LOS_ANGELES: "http://nyc-1.prod.lunar-lander.hellomoon.io",
+    SwqosRegion.DEFAULT: "http://nyc-1.prod.lunar-lander.hellomoon.io",
+}
+
+LUNARLANDER_QUIC_ENDPOINTS: Dict[SwqosRegion, str] = {
+    SwqosRegion.NEW_YORK: "nyc-1.prod.lunar-lander.hellomoon.io:16888",
+    SwqosRegion.FRANKFURT: "fra-1.prod.lunar-lander.hellomoon.io:16888",
+    SwqosRegion.AMSTERDAM: "ams-1.prod.lunar-lander.hellomoon.io:16888",
+    SwqosRegion.DUBLIN: "ams-1.prod.lunar-lander.hellomoon.io:16888",
+    SwqosRegion.SLC: "ash-2.prod.lunar-lander.hellomoon.io:16888",
+    SwqosRegion.TOKYO: "tyo-1.prod.lunar-lander.hellomoon.io:16888",
+    SwqosRegion.SINGAPORE: "tyo-1.prod.lunar-lander.hellomoon.io:16888",
+    SwqosRegion.LONDON: "fra-1.prod.lunar-lander.hellomoon.io:16888",
+    SwqosRegion.LOS_ANGELES: "nyc-1.prod.lunar-lander.hellomoon.io:16888",
+    SwqosRegion.DEFAULT: "nyc-1.prod.lunar-lander.hellomoon.io:16888",
+}
+
+GLAIVE_ENDPOINTS: Dict[SwqosRegion, str] = {
+    SwqosRegion.NEW_YORK: "http://ny.glaive.trade",
+    SwqosRegion.FRANKFURT: "http://fra.glaive.trade",
+    SwqosRegion.AMSTERDAM: "http://ams1.glaive.trade",
+    SwqosRegion.DUBLIN: "http://lon.glaive.trade",
+    SwqosRegion.SLC: "http://ny.glaive.trade",
+    SwqosRegion.TOKYO: "http://ams1.glaive.trade",
+    SwqosRegion.SINGAPORE: "http://fra.glaive.trade",
+    SwqosRegion.LONDON: "http://lon.glaive.trade",
+    SwqosRegion.LOS_ANGELES: "http://ny.glaive.trade",
+    SwqosRegion.DEFAULT: "http://ams1.glaive.trade",
+}
+
+GLAIVE_QUIC_ENDPOINTS: Dict[SwqosRegion, str] = {
+    SwqosRegion.NEW_YORK: "ny.glaive.trade:4000",
+    SwqosRegion.FRANKFURT: "fra.glaive.trade:4000",
+    SwqosRegion.AMSTERDAM: "ams1.glaive.trade:4000",
+    SwqosRegion.DUBLIN: "lon.glaive.trade:4000",
+    SwqosRegion.SLC: "ny.glaive.trade:4000",
+    SwqosRegion.TOKYO: "ams1.glaive.trade:4000",
+    SwqosRegion.SINGAPORE: "fra.glaive.trade:4000",
+    SwqosRegion.LONDON: "lon.glaive.trade:4000",
+    SwqosRegion.LOS_ANGELES: "ny.glaive.trade:4000",
+    SwqosRegion.DEFAULT: "ams1.glaive.trade:4000",
 }
 
 
@@ -2660,7 +2767,7 @@ class SolamiClient(SwqosClient):
     Solami SWQOS client.
 
     Transport: QUIC with self-signed Ed25519 cert, ALPN "solana-tpu".
-    Endpoint:  host:port (Rust v4.0.21 defaults every region to beam.solami.dev:11000)
+    Endpoint:  host:port (Rust v5.0.2 defaults every region to beam.solami.dev:11000)
     SNI:       "solami-beam"
     Requires:  pip install aioquic cryptography
     """
@@ -2716,6 +2823,360 @@ class SolamiClient(SwqosClient):
         return MIN_TIP_SOLAMI
 
 
+class LunarLanderClient(SwqosClient, HTTPClientMixin):
+    """LunarLander HTTP: POST /send-bin with x-api-key."""
+
+    def __init__(self, rpc_url: str, endpoint: str, api_key: Optional[str] = None):
+        self.rpc_url = rpc_url
+        self.endpoint = endpoint.rstrip("/")
+        self.api_key = api_key or ""
+        self._tip_account = _random_tip_account(LUNARLANDER_TIP_ACCOUNTS)
+
+    async def send_transaction(
+        self,
+        trade_type: TradeType,
+        transaction: bytes,
+        wait_confirmation: bool = False,
+    ) -> str:
+        url = f"{self.endpoint}/send-bin"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                data=transaction,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "x-api-key": self.api_key,
+                },
+            ) as resp:
+                body = await resp.read()
+                if resp.status >= 400:
+                    raise TradeError(
+                        code=resp.status,
+                        message=f"LunarLander send failed: {resp.status} {body[:200]!r}",
+                    )
+        return _signature_from_serialized_transaction(transaction)
+
+    async def send_transactions(
+        self,
+        trade_type: TradeType,
+        transactions: List[bytes],
+        wait_confirmation: bool = False,
+    ) -> List[str]:
+        out = []
+        for tx in transactions:
+            out.append(await self.send_transaction(trade_type, tx, wait_confirmation))
+        return out
+
+    def get_tip_account(self) -> str:
+        return self._tip_account
+
+    def get_swqos_type(self) -> SwqosType:
+        return SwqosType.LUNAR_LANDER
+
+    def min_tip_sol(self) -> float:
+        return MIN_TIP_LUNARLANDER
+
+
+class LunarLanderQuicClient(SwqosClient):
+    """LunarLander QUIC best-effort (default in Rust when transport unset)."""
+
+    def __init__(
+        self,
+        rpc_url: str,
+        endpoint: str,
+        api_key: str = "",
+        mev_protection: bool = False,
+    ):
+        self.rpc_url = rpc_url
+        parts = endpoint.rsplit(":", 1)
+        self._host = parts[0]
+        self._port = int(parts[1]) if len(parts) == 2 else 16888
+        self.api_key = api_key
+        self.mev_protection = mev_protection
+        self._tip_account = _random_tip_account(LUNARLANDER_TIP_ACCOUNTS)
+
+    async def send_transaction(
+        self,
+        trade_type: TradeType,
+        transaction: bytes,
+        wait_confirmation: bool = False,
+    ) -> str:
+        if len(transaction) > 1232:
+            raise TradeError(
+                400, f"LunarLander QUIC transaction too large: {len(transaction)} > 1232"
+            )
+        if not _QUIC_AVAILABLE:
+            raise TradeError(501, "QUIC not available: install sol-trade-sdk[quic].")
+        # Client cert CN = API key; ALPN lunar-lander-tpu.
+        private_key = ec.generate_private_key(ec.SECP256R1())
+        public_key = private_key.public_key()
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, self.api_key or "lunar")])
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(public_key)
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(
+                datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+            )
+            .not_valid_after(
+                datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365)
+            )
+            .sign(private_key, hashes.SHA256())
+        )
+        from aioquic.quic.configuration import QuicConfiguration
+
+        cfg = QuicConfiguration(
+            alpn_protocols=["lunar-lander-tpu"],
+            is_client=True,
+            verify_mode=ssl.CERT_NONE,
+        )
+        cfg.certificate = cert
+        cfg.private_key = private_key
+
+        class _Proto(QuicConnectionProtocol):
+            def __init__(inner_self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                inner_self._tx = transaction
+                inner_self._done = asyncio.Event()
+
+            def quic_event_received(inner_self, event: Any) -> None:
+                if isinstance(event, ProtocolNegotiated):
+                    stream_id = inner_self._quic.get_next_available_stream_id(
+                        is_unidirectional=True
+                    )
+                    inner_self._quic.send_stream_data(
+                        stream_id, inner_self._tx, end_stream=True
+                    )
+                    inner_self._done.set()
+                elif isinstance(event, ConnectionTerminated):
+                    inner_self._done.set()
+
+            async def wait_done(inner_self) -> None:
+                await inner_self._done.wait()
+
+        async with quic_connect(
+            self._host, self._port, configuration=cfg, create_protocol=_Proto
+        ) as protocol:
+            await protocol.wait_done()
+            await asyncio.sleep(0.05)
+        return _signature_from_serialized_transaction(transaction)
+
+    async def send_transactions(
+        self,
+        trade_type: TradeType,
+        transactions: List[bytes],
+        wait_confirmation: bool = False,
+    ) -> List[str]:
+        out = []
+        for tx in transactions:
+            out.append(await self.send_transaction(trade_type, tx, wait_confirmation))
+        return out
+
+    def get_tip_account(self) -> str:
+        return self._tip_account
+
+    def get_swqos_type(self) -> SwqosType:
+        return SwqosType.LUNAR_LANDER
+
+    def min_tip_sol(self) -> float:
+        return MIN_TIP_LUNARLANDER
+
+
+def _validate_glaive_api_key(api_key: str) -> str:
+    key = (api_key or "").strip()
+    try:
+        parsed = uuid.UUID(key)
+    except Exception as exc:
+        raise ValueError("Glaive API key must be a valid UUID v4") from exc
+    if parsed.version != 4:
+        raise ValueError("Glaive API key must be a UUID v4")
+    return key
+
+
+def _build_glaive_auth_frame(api_key: str, mev_protection: bool) -> bytes:
+    parsed = uuid.UUID(_validate_glaive_api_key(api_key))
+    frame = bytearray(17)
+    frame[:16] = parsed.bytes
+    if mev_protection:
+        frame[16] = 1 << 0
+    return bytes(frame)
+
+
+def _build_glaive_binary_url(endpoint: str, api_key: str, mev_protection: bool) -> str:
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Glaive HTTP endpoint must use http or https")
+    path = (parsed.path or "").rstrip("/")
+    if not path.endswith("/binary"):
+        path = "/binary" if path in ("", "/") else f"{path}/binary"
+    query = {"api-key": api_key}
+    if mev_protection:
+        query["mev-protect"] = "true"
+    return f"{parsed.scheme}://{parsed.netloc}{path}?{urlencode(query)}"
+
+
+class GlaiveClient(SwqosClient, HTTPClientMixin):
+    """Glaive HTTP binary submit."""
+
+    def __init__(
+        self,
+        rpc_url: str,
+        endpoint: str,
+        api_key: str,
+        mev_protection: bool = False,
+    ):
+        key = _validate_glaive_api_key(api_key)
+        self.rpc_url = rpc_url
+        self.submit_url = _build_glaive_binary_url(endpoint, key, mev_protection)
+        self._tip_account = _random_tip_account(GLAIVE_TIP_ACCOUNTS)
+
+    async def send_transaction(
+        self,
+        trade_type: TradeType,
+        transaction: bytes,
+        wait_confirmation: bool = False,
+    ) -> str:
+        expected = _signature_from_serialized_transaction(transaction)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                self.submit_url,
+                data=transaction,
+                headers={"Content-Type": "application/octet-stream"},
+            ) as resp:
+                body = await resp.read()
+                try:
+                    parsed = json.loads(body)
+                except Exception as exc:
+                    raise TradeError(
+                        code=500, message=f"Glaive returned invalid JSON: {body[:200]!r}"
+                    ) from exc
+                if isinstance(parsed, dict) and parsed.get("error"):
+                    err = parsed["error"]
+                    msg = err.get("message") if isinstance(err, dict) else str(err)
+                    raise TradeError(code=500, message=f"Glaive rejected transaction: {msg}")
+                if resp.status >= 400:
+                    raise TradeError(code=resp.status, message=f"Glaive HTTP {resp.status}")
+                result = parsed.get("result") if isinstance(parsed, dict) else None
+                if result != expected:
+                    raise TradeError(
+                        code=500,
+                        message="Glaive returned a signature that does not match the submitted transaction",
+                    )
+        return expected
+
+    async def send_transactions(
+        self,
+        trade_type: TradeType,
+        transactions: List[bytes],
+        wait_confirmation: bool = False,
+    ) -> List[str]:
+        out = []
+        for tx in transactions:
+            out.append(await self.send_transaction(trade_type, tx, wait_confirmation))
+        return out
+
+    def get_tip_account(self) -> str:
+        return self._tip_account
+
+    def get_swqos_type(self) -> SwqosType:
+        return SwqosType.GLAIVE
+
+    def min_tip_sol(self) -> float:
+        return MIN_TIP_GLAIVE
+
+
+class GlaiveQuicClient(SwqosClient):
+    """Glaive QUIC (SNI glaive-intake, default when transport unset)."""
+
+    def __init__(
+        self,
+        rpc_url: str,
+        endpoint: str,
+        api_key: str,
+        mev_protection: bool = False,
+    ):
+        key = _validate_glaive_api_key(api_key)
+        self.rpc_url = rpc_url
+        parts = endpoint.rsplit(":", 1)
+        self._host = parts[0]
+        self._port = int(parts[1]) if len(parts) == 2 else 4000
+        self._auth_frame = _build_glaive_auth_frame(key, mev_protection)
+        self._tip_account = _random_tip_account(GLAIVE_TIP_ACCOUNTS)
+
+    async def send_transaction(
+        self,
+        trade_type: TradeType,
+        transaction: bytes,
+        wait_confirmation: bool = False,
+    ) -> str:
+        if len(transaction) > 1232:
+            raise TradeError(
+                code=400,
+                message=f"Glaive QUIC transaction too large: {len(transaction)} > 1232",
+            )
+        if not _QUIC_AVAILABLE:
+            raise TradeError(501, "QUIC not available: install sol-trade-sdk[quic].")
+        cfg = _make_solana_tpu_quic_config("glaive-intake")
+        cfg.server_name = "glaive-intake"
+
+        class _Proto(QuicConnectionProtocol):
+            def __init__(inner_self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                inner_self._auth = self._auth_frame
+                inner_self._tx = transaction
+                inner_self._done = asyncio.Event()
+
+            def quic_event_received(inner_self, event: Any) -> None:
+                if isinstance(event, ProtocolNegotiated):
+                    auth_id = inner_self._quic.get_next_available_stream_id(
+                        is_unidirectional=True
+                    )
+                    inner_self._quic.send_stream_data(
+                        auth_id, inner_self._auth, end_stream=True
+                    )
+                    tx_id = inner_self._quic.get_next_available_stream_id(
+                        is_unidirectional=True
+                    )
+                    inner_self._quic.send_stream_data(
+                        tx_id, inner_self._tx, end_stream=True
+                    )
+                    inner_self._done.set()
+                elif isinstance(event, ConnectionTerminated):
+                    inner_self._done.set()
+
+            async def wait_done(inner_self) -> None:
+                await inner_self._done.wait()
+
+        async with quic_connect(
+            self._host, self._port, configuration=cfg, create_protocol=_Proto
+        ) as protocol:
+            await protocol.wait_done()
+            await asyncio.sleep(0.05)
+        return _signature_from_serialized_transaction(transaction)
+
+    async def send_transactions(
+        self,
+        trade_type: TradeType,
+        transactions: List[bytes],
+        wait_confirmation: bool = False,
+    ) -> List[str]:
+        out = []
+        for tx in transactions:
+            out.append(await self.send_transaction(trade_type, tx, wait_confirmation))
+        return out
+
+    def get_tip_account(self) -> str:
+        return self._tip_account
+
+    def get_swqos_type(self) -> SwqosType:
+        return SwqosType.GLAIVE
+
+    def min_tip_sol(self) -> float:
+        return MIN_TIP_GLAIVE
+
+
 # ===== Client Factory =====
 
 
@@ -2750,7 +3211,7 @@ class ClientFactory:
     def create_client(config: SwqosConfig, rpc_url: str) -> SwqosClient:
         """Create a SWQOS client from configuration"""
         if is_swqos_type_blacklisted(config.type):
-            raise ValueError(f"SWQOS type is blacklisted by Rust v4.0.21 parity: {config.type}")
+            raise ValueError(f"SWQOS type is blacklisted by Rust v5.0.2 parity: {config.type}")
         region = ClientFactory._normalize_region(config.region)
         swqos_type = getattr(config.type, "value", config.type)
 
@@ -2947,6 +3408,54 @@ class ClientFactory:
             )
             return SolamiClient(rpc_url, endpoint, config.api_key)
 
+        elif swqos_type in (SwqosType.LUNAR_LANDER.value, "LunarLander"):
+            transport = getattr(config, "transport", None)
+            transport_value = getattr(transport, "value", transport)
+            if transport_value == "Grpc":
+                raise ValueError("LunarLander does not support the gRPC transport")
+            use_quic = transport is None or transport_value == "Quic"
+            if use_quic:
+                endpoint = config.custom_url or LUNARLANDER_QUIC_ENDPOINTS.get(
+                    region, LUNARLANDER_QUIC_ENDPOINTS[SwqosRegion.DEFAULT]
+                )
+                if config.custom_url and str(config.custom_url).startswith("http"):
+                    parsed = urlparse(config.custom_url)
+                    endpoint = f"{parsed.hostname}:16888"
+                return LunarLanderQuicClient(
+                    rpc_url,
+                    endpoint,
+                    config.api_key or "",
+                    bool(getattr(config, "mev_protection", False)),
+                )
+            endpoint = config.custom_url or LUNARLANDER_ENDPOINTS.get(
+                region, LUNARLANDER_ENDPOINTS[SwqosRegion.DEFAULT]
+            )
+            return LunarLanderClient(rpc_url, endpoint, config.api_key)
+
+        elif swqos_type in (SwqosType.GLAIVE.value, "Glaive"):
+            transport = getattr(config, "transport", None)
+            transport_value = getattr(transport, "value", transport) if transport else "Quic"
+            if transport is None:
+                transport_value = "Quic"
+            if transport_value == "Grpc":
+                raise ValueError("Glaive does not support the gRPC transport")
+            if transport_value == "Quic":
+                endpoint = config.custom_url or GLAIVE_QUIC_ENDPOINTS.get(
+                    region, GLAIVE_QUIC_ENDPOINTS[SwqosRegion.DEFAULT]
+                )
+                if config.custom_url and str(config.custom_url).startswith("http"):
+                    parsed = urlparse(config.custom_url)
+                    endpoint = f"{parsed.hostname}:4000"
+                return GlaiveQuicClient(
+                    rpc_url, endpoint, config.api_key or "", bool(config.mev_protection)
+                )
+            endpoint = config.custom_url or GLAIVE_ENDPOINTS.get(
+                region, GLAIVE_ENDPOINTS[SwqosRegion.DEFAULT]
+            )
+            return GlaiveClient(
+                rpc_url, endpoint, config.api_key or "", bool(config.mev_protection)
+            )
+
         elif swqos_type == SwqosType.DEFAULT.value:
             return DefaultClient(rpc_url)
 
@@ -2974,3 +3483,20 @@ def create_swqos_client(
         mev_protection=mev_protection,
     )
     return ClientFactory.create_client(config, rpc_url)
+
+
+def create_cached_wire_submit(client):
+    """Adapt a raw-byte SWQOS client to CachedTradeExecutor; never polls confirmation."""
+    async def submit(wire, direction):
+        if direction not in ("Buy", "Sell"):
+            raise TradeError(code=400, message="Explicit Buy/Sell required")
+        expected = _signature_from_serialized_transaction(wire)
+        returned = await client.send_transaction(
+            TradeType.BUY if direction == "Buy" else TradeType.SELL,
+            bytes(wire),
+            False,
+        )
+        if returned != expected:
+            raise TradeError(code=400,message="Submission signature does not match raw transaction")
+        return returned
+    return submit

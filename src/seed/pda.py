@@ -5,16 +5,16 @@ High-performance PDA computation with caching.
 
 from typing import Optional, Tuple, List
 from dataclasses import dataclass
-from hashlib import sha256
+from solders.pubkey import Pubkey
 import base58
 
 # ===== Constants =====
 
-PUMPFUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKFJdMZzMMTrWr1Bv"
-PUMPSWAP_PROGRAM_ID = "pAMMBay6oceH9fJKFRHoe4LvJhu5yQJtezhkEL5DHyJ"
+PUMPFUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+PUMPSWAP_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
 RAYDIUM_AMM_V4_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
 RAYDIUM_CPMM_PROGRAM_ID = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"
-METEORA_DAMM_V2_PROGRAM_ID = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
+METEORA_DAMM_V2_PROGRAM_ID = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
@@ -27,64 +27,21 @@ class PDA:
     bump: int
 
 
-def find_program_address(
-    seeds: List[bytes],
-    program_id: str,
-) -> Tuple[bytes, int]:
-    """
-    Find a program-derived address.
+def _validate_seeds(seeds, maximum):
+    if len(seeds) > maximum or any(not isinstance(s, bytes) or len(s) > 32 for s in seeds):
+        raise ValueError("Invalid Solana PDA seed count or length")
 
-    Args:
-        seeds: List of seed bytes
-        program_id: Program ID as base58 string
+def find_program_address(seeds: List[bytes], program_id: str) -> Tuple[bytes, int]:
+    _validate_seeds(seeds, 15)
+    key, bump = Pubkey.find_program_address(seeds, Pubkey.from_string(program_id))
+    return bytes(key), bump
 
-    Returns:
-        Tuple of (pubkey bytes, bump seed)
-    """
-    program_bytes = base58.b58decode(program_id)
-
-    for bump in range(256, 0, -1):
-        try:
-            address = create_program_address(
-                seeds + [bytes([bump])],
-                program_id,
-            )
-            return address, bump
-        except ValueError:
-            continue
-
-    raise ValueError("Unable to find valid PDA")
-
-
-def create_program_address(
-    seeds: List[bytes],
-    program_id: str,
-) -> bytes:
-    """
-    Create a program-derived address without bump.
-
-    Args:
-        seeds: List of seed bytes
-        program_id: Program ID as base58 string
-
-    Returns:
-        Pubkey bytes
-    """
-    program_bytes = base58.b58decode(program_id)
-
-    # Concatenate seeds and program ID
-    data = b"".join(seeds) + program_bytes
-
-    # Hash
-    h = sha256(data).digest()
-
-    # Check if on ed25519 curve (invalid for PDA)
-    # Simplified check - in production use proper ed25519 check
-    if h[31] & 0x80:
-        raise ValueError("Invalid seeds: address on curve")
-
-    return h
-
+def create_program_address(seeds: List[bytes], program_id: str) -> bytes:
+    _validate_seeds(seeds, 16)
+    try:
+        return bytes(Pubkey.create_program_address(seeds, Pubkey.from_string(program_id)))
+    except Exception as error:
+        raise ValueError("Invalid Solana PDA seeds or program") from error
 
 # ===== PumpFun PDAs =====
 
@@ -108,19 +65,13 @@ def get_global_account_pda() -> PDA:
 
 
 def get_fee_recipient_pda(is_mayhem_mode: bool = False) -> PDA:
-    """Get the fee recipient PDA"""
-    seed = b"fee_recipient_mayhem" if is_mayhem_mode else b"fee_recipient"
-    pubkey, bump = find_program_address(
-        [seed],
-        PUMPFUN_PROGRAM_ID,
-    )
-    return PDA(pubkey=pubkey, bump=bump)
+    raise ValueError("PumpFun fee recipient is a configured address, not a PDA; read current Global config")
 
 
 def get_event_authority_pda() -> PDA:
     """Get the event authority PDA"""
     pubkey, bump = find_program_address(
-        [b"event"],
+        [b"__event_authority"],
         PUMPFUN_PROGRAM_ID,
     )
     return PDA(pubkey=pubkey, bump=bump)
@@ -138,15 +89,11 @@ def get_user_volume_accumulator_pda(user: str) -> PDA:
 
 # ===== PumpSwap PDAs =====
 
-def get_pumpswap_pool_pda(base_mint: str, quote_mint: str) -> PDA:
-    """Get the PumpSwap pool PDA"""
-    base_bytes = base58.b58decode(base_mint)
-    quote_bytes = base58.b58decode(quote_mint)
-    pubkey, bump = find_program_address(
-        [b"pool", base_bytes, quote_bytes],
-        PUMPSWAP_PROGRAM_ID,
-    )
-    return PDA(pubkey=pubkey, bump=bump)
+def get_pumpswap_pool_pda(base_mint: str, quote_mint: str, index: int, creator: str) -> PDA:
+    if type(index) is not int or not 0 <= index <= 65535:
+        raise ValueError("PumpSwap pool requires u16 index and creator")
+    key, bump = find_program_address([b"pool",index.to_bytes(2,"little"),bytes(Pubkey.from_string(creator)),bytes(Pubkey.from_string(base_mint)),bytes(Pubkey.from_string(quote_mint))],PUMPSWAP_PROGRAM_ID)
+    return PDA(key,bump)
 
 
 # ===== Raydium PDAs =====
@@ -179,14 +126,7 @@ def get_raydium_cpmm_pool_pda(
 # ===== Meteora PDAs =====
 
 def get_meteora_pool_pda(token_a_mint: str, token_b_mint: str) -> PDA:
-    """Get the Meteora pool PDA"""
-    a_bytes = base58.b58decode(token_a_mint)
-    b_bytes = base58.b58decode(token_b_mint)
-    pubkey, bump = find_program_address(
-        [b"pool", a_bytes, b_bytes],
-        METEORA_DAMM_V2_PROGRAM_ID,
-    )
-    return PDA(pubkey=pubkey, bump=bump)
+    raise ValueError("DAMM v2 pool cannot be derived from two mints alone; provide the observed pool address")
 
 
 # ===== Associated Token Account =====

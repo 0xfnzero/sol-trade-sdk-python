@@ -161,7 +161,7 @@ def test_pumpswap_uses_quote_token_program_for_fee_vault_atas():
 
 def fee_config_bytes() -> bytes:
     data = bytearray()
-    data.extend(bytes(8))  # discriminator
+    data.extend(bytes([143,52,146,187,219,123,76,155]))  # discriminator
     data.extend(b"\x01")  # bump
     data.extend(bytes(Pubkey.new_unique()))  # admin
     data.extend((30).to_bytes(8, "little"))
@@ -373,3 +373,33 @@ async def test_params_from_pool_address_accepts_solana_rpc_style_responses():
     built = await params_from_pool_address(fetcher, pool_address)
 
     assert built.fee_basis_points == PumpSwapFeeBasisPoints(20, 5, 75)
+
+def test_fee_config_rejects_other_account_discriminators():
+    data=bytearray(fee_config_bytes());data[0]^=1
+    assert decode_fee_config(bytes(data)) is None
+    assert decode_fee_config(bytes(data[:7])) is None
+
+
+def test_fixed_output_preserves_explicit_input_budget_and_direction():
+    import pytest
+    for amount in (1, 1_000_000):
+        ix=build_buy_instructions(BuildBuyParams(payer=Pubkey.new_unique(),input_amount=amount,fixed_output_amount=123,slippage_basis_points=300,protocol_params=params(),create_output_mint_ata=False))[-1]
+        assert int.from_bytes(ix.data[8:16],'little')==123
+        assert int.from_bytes(ix.data[16:24],'little')==amount
+    reverse=params(base_mint=WSOL_TOKEN_ACCOUNT,quote_mint=Pubkey.new_unique())
+    ix=build_sell_instructions(BuildSellParams(payer=Pubkey.new_unique(),input_amount=1,fixed_output_amount=123,slippage_basis_points=300,protocol_params=reverse,create_output_mint_ata=False))[-1]
+    assert int.from_bytes(ix.data[8:16],'little')==123
+    assert int.from_bytes(ix.data[16:24],'little')==1
+    with pytest.raises(ValueError):
+        build_buy_instructions(BuildBuyParams(payer=Pubkey.new_unique(),input_amount=1,fixed_output_amount=123,slippage_basis_points=300,protocol_params=reverse))
+    with pytest.raises(ValueError):
+        build_sell_instructions(BuildSellParams(payer=Pubkey.new_unique(),input_amount=1,fixed_output_amount=123,slippage_basis_points=300,protocol_params=params()))
+    with pytest.raises(ValueError):
+        build_buy_instructions(BuildBuyParams(payer=Pubkey.new_unique(),input_amount=1,fixed_output_amount=1_000_000_000_000,slippage_basis_points=300,protocol_params=params()))
+
+
+def test_explicit_global_config_fee_recipient():
+    recipient=Pubkey.new_unique()
+    for build,request_type in ((build_buy_instructions,BuildBuyParams),(build_sell_instructions,BuildSellParams)):
+        ix=build(request_type(payer=Pubkey.new_unique(),input_amount=1_000_000,slippage_basis_points=100,protocol_params=params(protocol_fee_recipient_override=recipient),create_output_mint_ata=False))[-1]
+        assert ix.accounts[9].pubkey==recipient

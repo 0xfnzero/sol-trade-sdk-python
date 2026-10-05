@@ -8,6 +8,11 @@ Security fixes applied:
 - Bounds checking
 """
 
+try:
+    from .pumpfun_exact import buy_exact, sell_exact
+except ImportError:  # Existing standalone calc import support.
+    from pumpfun_exact import buy_exact, sell_exact
+
 from typing import Tuple
 import sys
 
@@ -117,64 +122,8 @@ def get_buy_token_amount_from_sol_amount(
     creator: bytes,
     amount: int,
 ) -> int:
-    """
-    Calculate token amount received for given SOL amount using bonding curve formula.
-
-    Args:
-        virtual_token_reserves: Virtual token reserves
-        virtual_sol_reserves: Virtual SOL reserves
-        real_token_reserves: Actual token reserves
-        creator: Creator pubkey (affects fee)
-        amount: SOL amount in lamports
-
-    Returns:
-        Token amount received
-
-    Raises:
-        CalculationError: If inputs are invalid or calculation overflows
-    """
-    # Validate all inputs
-    _validate_amount(amount, "amount")
-    _validate_reserves(virtual_token_reserves, virtual_sol_reserves)
-    _validate_amount(real_token_reserves, "real_token_reserves")
     _validate_creator(creator)
-
-    if amount == 0:
-        return 0
-
-    # Calculate total fee
-    has_creator = creator != bytes(32)
-    total_fee_basis_points = FEE_BASIS_POINTS + (CREATOR_FEE if has_creator else 0)
-
-    # Check for overflow in fee calculation
-    _check_overflow(amount, 10_000, "multiply")
-
-    # Calculate input amount after fees
-    input_amount = (amount * 10_000) // (total_fee_basis_points + 10_000)
-
-    # Check denominator
-    _check_overflow(virtual_sol_reserves, input_amount, "add")
-    denominator = virtual_sol_reserves + input_amount
-
-    if denominator == 0:
-        raise CalculationError("Denominator would be zero")
-
-    # Check for overflow in token calculation
-    _check_overflow(input_amount, virtual_token_reserves, "multiply")
-    tokens_received = (input_amount * virtual_token_reserves) // denominator
-
-    # Cap at real reserves
-    tokens_received = min(tokens_received, real_token_reserves)
-
-    # Special handling for small amounts (using integer comparison only)
-    if tokens_received <= 100 * 1_000_000:
-        min_amount_threshold = LAMPORTS_PER_SOL // 100  # 0.01 SOL in lamports
-        if amount > min_amount_threshold:
-            tokens_received = 25547619 * 1_000_000
-        else:
-            tokens_received = 255476 * 1_000_000
-
-    return tokens_received
+    return buy_exact(virtual_token_reserves,virtual_sol_reserves,real_token_reserves,amount,95+(30 if creator!=bytes(32) else 0))
 
 
 def get_sell_sol_amount_from_token_amount(
@@ -183,49 +132,8 @@ def get_sell_sol_amount_from_token_amount(
     creator: bytes,
     amount: int,
 ) -> int:
-    """
-    Calculate SOL amount received for given token amount.
-
-    Args:
-        virtual_token_reserves: Virtual token reserves
-        virtual_sol_reserves: Virtual SOL reserves
-        creator: Creator pubkey (affects fee)
-        amount: Token amount
-
-    Returns:
-        SOL amount in lamports (after fees)
-
-    Raises:
-        CalculationError: If inputs are invalid or calculation overflows
-    """
-    # Validate all inputs
-    _validate_amount(amount, "amount")
-    _validate_reserves(virtual_token_reserves, virtual_sol_reserves)
     _validate_creator(creator)
-
-    if amount == 0:
-        return 0
-
-    # Check for overflow in numerator
-    _check_overflow(amount, virtual_sol_reserves, "multiply")
-    numerator = amount * virtual_sol_reserves
-
-    # Check denominator
-    _check_overflow(virtual_token_reserves, amount, "add")
-    denominator = virtual_token_reserves + amount
-
-    if denominator == 0:
-        raise CalculationError("Denominator would be zero")
-
-    sol_cost = numerator // denominator
-
-    # Calculate fee
-    has_creator = creator != bytes(32)
-    total_fee_basis_points = FEE_BASIS_POINTS + (CREATOR_FEE if has_creator else 0)
-    fee = compute_fee(sol_cost, total_fee_basis_points)
-
-    result = sol_cost - fee
-    return max(0, result)
+    return sell_exact(virtual_token_reserves,virtual_sol_reserves,amount,95+(30 if creator!=bytes(32) else 0))
 
 
 def calculate_with_slippage_buy(amount: int, slippage_basis_points: int) -> int:

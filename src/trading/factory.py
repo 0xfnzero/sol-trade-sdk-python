@@ -12,6 +12,8 @@ from abc import ABC, abstractmethod
 
 from solders.pubkey import Pubkey
 
+from .. import _parser_exact_integer
+
 from .params import (
     DexType,
     TradeType,
@@ -72,6 +74,7 @@ def _pumpfun_bonding_to_builder_params(
     fee_sharing_creator_vault_if_active: Any = None,
 ):
     """将 `BondingCurveAccount` 等运行时对象映射为 `pumpfun_builder.PumpFunParams`。"""
+    from .. import _parser_exact_integer
     from ..instruction.pumpfun_builder import (
         PumpFunParams as PfbParams,
         TOKEN_PROGRAM as SPL_TOKEN,
@@ -96,11 +99,11 @@ def _pumpfun_bonding_to_builder_params(
 
     return PfbParams(
         bonding_curve_account=bonding_pk,
-        virtual_token_reserves=int(getattr(bonding_curve, "virtual_token_reserves", 0)),
-        virtual_sol_reserves=int(getattr(bonding_curve, "virtual_sol_reserves", 0)),
-        real_token_reserves=int(getattr(bonding_curve, "real_token_reserves", 0)),
-        real_sol_reserves=int(getattr(bonding_curve, "real_sol_reserves", 0)),
-        token_total_supply=int(getattr(bonding_curve, "token_total_supply", 0)),
+        virtual_token_reserves=_parser_exact_integer(getattr(bonding_curve, "virtual_token_reserves", 0), "virtual_token_reserves"),
+        virtual_sol_reserves=_parser_exact_integer(getattr(bonding_curve, "virtual_sol_reserves", 0), "virtual_sol_reserves"),
+        real_token_reserves=_parser_exact_integer(getattr(bonding_curve, "real_token_reserves", 0), "real_token_reserves"),
+        real_sol_reserves=_parser_exact_integer(getattr(bonding_curve, "real_sol_reserves", 0), "real_sol_reserves"),
+        token_total_supply=_parser_exact_integer(getattr(bonding_curve, "token_total_supply", 0), "token_total_supply"),
         complete=bool(getattr(bonding_curve, "complete", False)),
         creator=creator_pk,
         is_mayhem_mode=bool(getattr(bonding_curve, "is_mayhem_mode", False)),
@@ -111,6 +114,7 @@ def _pumpfun_bonding_to_builder_params(
         close_token_account_when_sell=close_token_account,
         fee_recipient=_to_pubkey(fee_recipient) if fee_recipient is not None else Pubkey.default(),
         quote_mint=_to_pubkey(quote_mint) if quote_mint is not None else Pubkey.default(),
+        curve_quote_mint=_to_pubkey(getattr(bonding_curve, "quote_mint", bytes(32))),
         observed_trade_creator=(
             _to_pubkey(observed_trade_creator) if observed_trade_creator is not None else None
         ),
@@ -139,9 +143,9 @@ class TradeExecutor(ABC):
 class PumpFunExecutor(TradeExecutor):
     """PumpFun trade executor（`pumpfun_builder`）"""
 
-    async def execute_buy(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def build_buy_instructions(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute buy on PumpFun"""
-        from ..instruction.pumpfun_builder import build_buy_instructions as pfb_buy
+        from ..instruction.pumpfun_builder import build_buy_instructions as pfb_buy, _effective_quote_mint
 
         pfb_params = _pumpfun_bonding_to_builder_params(
             bonding_curve=params["bonding_curve"],
@@ -157,7 +161,7 @@ class PumpFunExecutor(TradeExecutor):
         instructions = pfb_buy(
             _to_pubkey(params["payer"]),
             _to_pubkey(params["output_mint"]),
-            int(params["input_amount"]),
+            _parser_exact_integer(params["input_amount"], "input_amount"),
             pfb_params,
             slippage_bps=int(params.get("slippage_basis_points", 100)),
             create_output_ata=bool(params.get("create_output_mint_ata", True)),
@@ -165,19 +169,21 @@ class PumpFunExecutor(TradeExecutor):
             close_input_ata=bool(params.get("close_input_mint_ata", False)),
             fixed_output_amount=params.get("fixed_output_amount"),
             use_exact_sol_amount=bool(params.get("use_exact_sol_amount", True)),
-            input_mint=_to_pubkey(params.get("input_mint", params.get("quote_mint", bytes(32)))),
+            input_mint=_to_pubkey(params.get("input_mint", _effective_quote_mint(pfb_params))),
         )
 
         return {
-            "success": True,
+            "prepared": True,
+            "submitted": False,
+            "confirmed": False,
             "instructions": instructions,
             "dex": "PumpFun",
             "type": "buy",
         }
 
-    async def execute_sell(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def build_sell_instructions(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute sell on PumpFun"""
-        from ..instruction.pumpfun_builder import build_sell_instructions as pfb_sell
+        from ..instruction.pumpfun_builder import build_sell_instructions as pfb_sell, _effective_quote_mint
 
         close_tok = bool(params.get("close_token_account", False))
         pfb_params = _pumpfun_bonding_to_builder_params(
@@ -194,28 +200,37 @@ class PumpFunExecutor(TradeExecutor):
         instructions = pfb_sell(
             _to_pubkey(params["payer"]),
             _to_pubkey(params["input_mint"]),
-            int(params["token_amount"]),
+            _parser_exact_integer(params["token_amount"], "token_amount"),
             pfb_params,
             slippage_bps=int(params.get("slippage_basis_points", 100)),
             create_output_ata=bool(params.get("create_output_mint_ata", False)),
             close_output_ata=bool(params.get("close_output_mint_ata", False)),
             close_input_ata=close_tok,
             fixed_output_amount=params.get("fixed_output_amount"),
-            output_mint=_to_pubkey(params.get("output_mint", params.get("quote_mint", bytes(32)))),
+            output_mint=_to_pubkey(params.get("output_mint", _effective_quote_mint(pfb_params))),
         )
 
         return {
-            "success": True,
+            "prepared": True,
+            "submitted": False,
+            "confirmed": False,
             "instructions": instructions,
             "dex": "PumpFun",
             "type": "sell",
         }
 
 
+    async def execute_buy(self, params):
+        return await UnifiedTradeExecutor(DexType.PUMP_FUN).execute_buy(params)
+
+    async def execute_sell(self, params):
+        return await UnifiedTradeExecutor(DexType.PUMP_FUN).execute_sell(params)
+
+
 class PumpSwapExecutor(TradeExecutor):
     """PumpSwap trade executor（`pumpswap_builder`）"""
 
-    async def execute_buy(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def build_buy_instructions(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute buy on PumpSwap"""
         from ..instruction.pumpswap_builder import (
             build_buy_instructions as psb_buy,
@@ -267,13 +282,15 @@ class PumpSwapExecutor(TradeExecutor):
         instructions = psb_buy(builder_params)
 
         return {
-            "success": True,
+            "prepared": True,
+            "submitted": False,
+            "confirmed": False,
             "instructions": instructions,
             "dex": "PumpSwap",
             "type": "buy",
         }
 
-    async def execute_sell(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def build_sell_instructions(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute sell on PumpSwap"""
         from ..instruction.pumpswap_builder import (
             build_sell_instructions as psb_sell,
@@ -324,11 +341,20 @@ class PumpSwapExecutor(TradeExecutor):
         instructions = psb_sell(builder_params)
 
         return {
-            "success": True,
+            "prepared": True,
+            "submitted": False,
+            "confirmed": False,
             "instructions": instructions,
             "dex": "PumpSwap",
             "type": "sell",
         }
+
+
+    async def execute_buy(self, params):
+        return await UnifiedTradeExecutor(DexType.PUMP_SWAP).execute_buy(params)
+
+    async def execute_sell(self, params):
+        return await UnifiedTradeExecutor(DexType.PUMP_SWAP).execute_sell(params)
 
 
 class RaydiumCpmmExecutor(TradeExecutor):
@@ -373,7 +399,7 @@ class RaydiumCpmmExecutor(TradeExecutor):
             ),
         )
 
-    async def execute_buy(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def build_buy_instructions(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute buy on Raydium CPMM"""
         from ..instruction.raydium_cpmm_builder import build_buy_instructions
 
@@ -390,13 +416,15 @@ class RaydiumCpmmExecutor(TradeExecutor):
         )
 
         return {
-            "success": True,
+            "prepared": True,
+            "submitted": False,
+            "confirmed": False,
             "instructions": instructions,
             "dex": "RaydiumCpmm",
             "type": "buy",
         }
 
-    async def execute_sell(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def build_sell_instructions(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute sell on Raydium CPMM"""
         from ..instruction.raydium_cpmm_builder import build_sell_instructions
 
@@ -413,30 +441,70 @@ class RaydiumCpmmExecutor(TradeExecutor):
         )
 
         return {
-            "success": True,
+            "prepared": True,
+            "submitted": False,
+            "confirmed": False,
             "instructions": instructions,
             "dex": "RaydiumCpmm",
             "type": "sell",
         }
 
 
-class TradeExecutorFactory:
-    """Factory for creating trade executors"""
+    async def execute_buy(self, params):
+        return await UnifiedTradeExecutor(DexType.RAYDIUM_CPMM).execute_buy(params)
 
-    _executors = {
-        DexType.PUMP_FUN: PumpFunExecutor,
-        DexType.PUMP_SWAP: PumpSwapExecutor,
-        DexType.RAYDIUM_CPMM: RaydiumCpmmExecutor,
-        # Add more executors as needed
-    }
+    async def execute_sell(self, params):
+        return await UnifiedTradeExecutor(DexType.RAYDIUM_CPMM).execute_sell(params)
+
+
+class UnifiedTradeExecutor(TradeExecutor):
+    """Real shared cached execution; legacy instruction-only helpers stay explicit."""
+    def __init__(self, dex_type): self.dex_type = dex_type
+
+    async def _execute(self, direction, params):
+        from .cached_trade import CachedTradeExecutor, value
+        if not isinstance(params, dict) or not {"request", "signers", "submit"} <= params.keys():
+            raise ValueError("Provide request, signers and raw-wire submit")
+        request = params["request"]
+        if value(request.dex_type) != value(self.dex_type): raise ValueError("Factory/request protocol mismatch")
+        if value(request.trade_type) != direction: raise ValueError("Factory/request trade direction mismatch")
+        receipt = await CachedTradeExecutor(self.dex_type).execute(request, params["signers"], params["submit"])
+        return dict(receipt, success=receipt["submitted"])
+
+    async def execute_buy(self, params): return await self._execute("Buy", params)
+    async def execute_sell(self, params): return await self._execute("Sell", params)
+
+
+class TradeExecutorFactory:
+    """Factory for legacy instruction builders and native cached executors."""
+
+    @classmethod
+    def get_supported_cached_dex_types(cls):
+        from .cached_trade import PROGRAMS
+
+        return [DexType(v) for v in PROGRAMS]
+
+    @classmethod
+    def create_cached_executor(cls, dex_type):
+        from .cached_trade import CachedTradeExecutor, PROGRAMS, value
+
+        if value(dex_type) not in PROGRAMS:
+            raise ValueError("Protocol has no native cached trade executor")
+        return CachedTradeExecutor(dex_type)
+
+    _executors = {}  # Explicit custom overrides only; built-ins share the real execution core.
+
+    @classmethod
+    def get_supported_dex_types(cls):
+        return list(DexType)
 
     @classmethod
     def create_executor(cls, dex_type: DexType) -> TradeExecutor:
-        """Create trade executor for given DEX type"""
-        executor_class = cls._executors.get(dex_type)
-        if not executor_class:
-            raise ValueError(f"No executor available for DEX type: {dex_type}")
-        return executor_class()
+        dex_type = DexType(dex_type)
+        custom = cls._executors.get(dex_type)
+        if custom is not None:
+            return custom()
+        return UnifiedTradeExecutor(dex_type)
 
     @classmethod
     def register_executor(cls, dex_type: DexType, executor_class: type):
@@ -445,7 +513,16 @@ class TradeExecutorFactory:
 
 
 class TradingClient:
-    """High-level trading client"""
+    """High-level trading client with an explicit cache-only entry point."""
+
+    def prepare_cached_trade(self, request):
+        from .cached_trade import prepare_cached_trade
+
+        return prepare_cached_trade(request)
+
+    async def execute_cached_trade(self, request, signers, submit):
+        executor = TradeExecutorFactory.create_cached_executor(request.dex_type)
+        return await executor.execute(request, signers, submit)
 
     def __init__(self):
         self.executors: Dict[DexType, TradeExecutor] = {}

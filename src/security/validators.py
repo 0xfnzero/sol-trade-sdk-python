@@ -22,20 +22,22 @@ class ValidationError(Exception):
 KNOWN_PROGRAM_IDS = {
     # PumpFun
     "pumpfun": [
-        "6EF8rrecthR5Dkzon8Nwu78hRvfCKopJFfWcCzNfXt3D",  # Mainnet
+        "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",  # Mainnet
     ],
     # PumpSwap
     "pumpswap": [
-        "pAMMBay6oceH9fJKBRdGP4LmVn7LKwEqT7dPWn1oLKs",  # Mainnet
+        "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",  # Mainnet
     ],
     # Raydium
     "raydium": [
-        "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",  # CPMM
+        "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+        "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",  # CLMM
         "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # AMM V4
     ],
     # Meteora
     "meteora": [
-        "MERLuDFBMmsHnsBPZw2sDQZHvXFM4sPkHePSuUZnPdK",  # DAMM V2
+        "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+        "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",  # DAMM V2
     ],
     # System programs
     "system": [

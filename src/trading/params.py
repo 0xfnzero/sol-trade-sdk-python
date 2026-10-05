@@ -13,6 +13,11 @@ class DexType(Enum):
     PUMP_FUN = "PumpFun"
     PUMP_SWAP = "PumpSwap"
     BONK = "Bonk"
+    LAUNCH_LAB = "LaunchLab"
+    STONK_FUN = "StonkFun"
+    RAYDIUM_CLMM = "RaydiumClmm"
+    ORCA_WHIRLPOOL = "OrcaWhirlpool"
+    METEORA_DLMM = "MeteoraDlmm"
     RAYDIUM_CPMM = "RaydiumCpmm"
     RAYDIUM_AMM_V4 = "RaydiumAmmV4"
     METEORA_DAMM_V2 = "MeteoraDammV2"
@@ -26,120 +31,8 @@ class TradeType(Enum):
     CREATE_AND_BUY = "CreateAndBuy"
 
 
-@dataclass
-class PumpFunParams:
-    """
-    PumpFun protocol specific parameters.
-
-    **Creator Rewards Sharing**: Some coins use a dynamic `creator_vault` (fee-sharing config).
-    Always use the latest on-chain creator/vault when building params for **sell**; do not reuse
-    cached params from buy.
-    """
-    bonding_curve: Any = None  # BondingCurveAccount
-    associated_bonding_curve: bytes = field(default_factory=lambda: bytes(32))
-    creator_vault: bytes = field(default_factory=lambda: bytes(32))
-    token_program: bytes = field(default_factory=lambda: bytes(32))
-    close_token_account_when_sell: Optional[bool] = None
-
-    @classmethod
-    def immediate_sell(
-        cls,
-        creator_vault: bytes,
-        token_program: bytes,
-        close_token_account_when_sell: bool = False,
-    ) -> "PumpFunParams":
-        """Create params for immediate sell"""
-        from ..common.bonding_curve import BondingCurveAccount
-        return cls(
-            bonding_curve=BondingCurveAccount(),
-            associated_bonding_curve=bytes(32),
-            creator_vault=creator_vault,
-            token_program=token_program,
-            close_token_account_when_sell=close_token_account_when_sell,
-        )
-
-    @classmethod
-    def from_dev_trade(
-        cls,
-        mint: bytes,
-        token_amount: int,
-        max_sol_cost: int,
-        creator: bytes,
-        bonding_curve: bytes,
-        associated_bonding_curve: bytes,
-        creator_vault: bytes,
-        close_token_account_when_sell: Optional[bool] = None,
-        fee_recipient: bytes = field(default_factory=lambda: bytes(32)),
-        token_program: bytes = field(default_factory=lambda: bytes(32)),
-        is_cashback_coin: bool = False,
-    ) -> "PumpFunParams":
-        """Create from dev trade data"""
-        from ..common.bonding_curve import BondingCurveAccount
-        from ..instruction.pumpfun_builder import MAYHEM_FEE_RECIPIENTS
-
-        is_mayhem_mode = bytes(fee_recipient) in {bytes(p) for p in MAYHEM_FEE_RECIPIENTS}
-        bonding_curve_account = BondingCurveAccount.from_dev_trade(
-            bonding_curve,
-            mint,
-            token_amount,
-            max_sol_cost,
-            creator,
-            is_mayhem_mode,
-            is_cashback_coin,
-        )
-        return cls(
-            bonding_curve=bonding_curve_account,
-            associated_bonding_curve=associated_bonding_curve,
-            creator_vault=creator_vault,
-            close_token_account_when_sell=close_token_account_when_sell,
-            token_program=token_program,
-        )
-
-    @classmethod
-    def from_trade(
-        cls,
-        bonding_curve: bytes,
-        associated_bonding_curve: bytes,
-        mint: bytes,
-        creator: bytes,
-        creator_vault: bytes,
-        virtual_token_reserves: int,
-        virtual_sol_reserves: int,
-        real_token_reserves: int,
-        real_sol_reserves: int,
-        close_token_account_when_sell: Optional[bool] = None,
-        fee_recipient: bytes = field(default_factory=lambda: bytes(32)),
-        token_program: bytes = field(default_factory=lambda: bytes(32)),
-        is_cashback_coin: bool = False,
-    ) -> "PumpFunParams":
-        """Create from trade data"""
-        from ..common.bonding_curve import BondingCurveAccount
-        from ..instruction.pumpfun_builder import MAYHEM_FEE_RECIPIENTS
-
-        is_mayhem_mode = bytes(fee_recipient) in {bytes(p) for p in MAYHEM_FEE_RECIPIENTS}
-        bonding_curve_account = BondingCurveAccount.from_trade(
-            bonding_curve,
-            mint,
-            creator,
-            virtual_token_reserves,
-            virtual_sol_reserves,
-            real_token_reserves,
-            real_sol_reserves,
-            is_mayhem_mode,
-            is_cashback_coin,
-        )
-        return cls(
-            bonding_curve=bonding_curve_account,
-            associated_bonding_curve=associated_bonding_curve,
-            creator_vault=creator_vault,
-            close_token_account_when_sell=close_token_account_when_sell,
-            token_program=token_program,
-        )
-
-    def with_creator_vault(self, creator_vault: bytes) -> "PumpFunParams":
-        """Override creator_vault with a value from gRPC/event"""
-        self.creator_vault = creator_vault
-        return self
+# Use the validated public core; quote/creator metadata must survive every entry point.
+from .. import PumpFunParams
 
 
 @dataclass

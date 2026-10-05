@@ -139,6 +139,17 @@ class BonkParams:
 # Bonk Calculation Functions
 # ============================================
 
+MAX_SLIPPAGE_BASIS_POINTS: int = 9999
+
+
+def _clamp_slippage_bps(slippage_bps: int) -> int:
+    if slippage_bps > MAX_SLIPPAGE_BASIS_POINTS:
+        return MAX_SLIPPAGE_BASIS_POINTS
+    if slippage_bps < 0:
+        return 0
+    return slippage_bps
+
+
 def get_amount_in_net(
     amount_in: int,
     protocol_fee_rate: int,
@@ -152,36 +163,6 @@ def get_amount_in_net(
     return amount_in - protocol_fee - platform_fee - share_fee
 
 
-def get_amount_out(
-    amount_in: int,
-    protocol_fee_rate: int,
-    platform_fee_rate: int,
-    share_fee_rate: int,
-    virtual_base: int,
-    virtual_quote: int,
-    real_base: int,
-    real_quote: int,
-    slippage_bps: int,
-) -> int:
-    """
-    Calculate output amount for a given input amount on Bonk.
-    """
-    amount_in_net = get_amount_in_net(
-        amount_in, protocol_fee_rate, platform_fee_rate, share_fee_rate
-    )
-
-    input_reserve = virtual_quote + real_quote
-    output_reserve = virtual_base - real_base
-
-    numerator = amount_in_net * output_reserve
-    denominator = input_reserve + amount_in_net
-    amount_out = numerator // denominator
-
-    # Apply slippage
-    amount_out = amount_out - (amount_out * slippage_bps) // 10000
-    return amount_out
-
-
 def get_buy_token_amount_from_sol_amount(
     amount_in: int,
     virtual_base: int,
@@ -192,18 +173,19 @@ def get_buy_token_amount_from_sol_amount(
 ) -> int:
     """
     Calculate the token amount received for a given SOL amount on Bonk.
+    100% from Rust: src/utils/calc/bonk.rs get_buy_token_amount_from_sol_amount
     """
-    return get_amount_out(
-        amount_in,
-        PROTOCOL_FEE_RATE,
-        PLATFORM_FEE_RATE,
-        SHARE_FEE_RATE,
-        virtual_base,
-        virtual_quote,
-        real_base,
-        real_quote,
-        slippage_bps,
+    bps = _clamp_slippage_bps(slippage_bps)
+    amount_in_net = get_amount_in_net(
+        amount_in, PROTOCOL_FEE_RATE, PLATFORM_FEE_RATE, SHARE_FEE_RATE
     )
+    input_reserve = virtual_quote + real_quote
+    output_reserve = virtual_base - real_base
+    denominator = input_reserve + amount_in_net
+    if denominator == 0:
+        return 0
+    amount_out = (amount_in_net * output_reserve) // denominator
+    return amount_out - (amount_out * bps) // 10000
 
 
 def get_sell_sol_amount_from_token_amount(
@@ -216,20 +198,37 @@ def get_sell_sol_amount_from_token_amount(
 ) -> int:
     """
     Calculate the SOL amount received for a given token amount on Bonk.
-    For sell, we swap base -> quote.
+    100% from Rust: src/utils/calc/bonk.rs get_sell_sol_amount_from_token_amount
     """
-    # For sell: base is input, quote is output
-    # So we swap virtual_base with virtual_quote roles
-    return get_amount_out(
-        amount_in,
-        PROTOCOL_FEE_RATE,
-        PLATFORM_FEE_RATE,
-        SHARE_FEE_RATE,
-        virtual_quote,  # Swapped
-        virtual_base,   # Swapped
-        real_quote,     # Swapped
-        real_base,      # Swapped
-        slippage_bps,
+    bps = _clamp_slippage_bps(slippage_bps)
+    input_reserve = virtual_base - real_base
+    output_reserve = virtual_quote + real_quote
+    denominator = input_reserve + amount_in
+    if denominator == 0:
+        return 0
+    sol_amount_out = (amount_in * output_reserve) // denominator
+    protocol_fee = (sol_amount_out * PROTOCOL_FEE_RATE) // 10000
+    platform_fee = (sol_amount_out * PLATFORM_FEE_RATE) // 10000
+    share_fee = (sol_amount_out * SHARE_FEE_RATE) // 10000
+    sol_amount_net = sol_amount_out - protocol_fee - platform_fee - share_fee
+    return sol_amount_net - (sol_amount_net * bps) // 10000
+
+
+def get_amount_out(
+    amount_in: int,
+    protocol_fee_rate: int,
+    platform_fee_rate: int,
+    share_fee_rate: int,
+    virtual_base: int,
+    virtual_quote: int,
+    real_base: int,
+    real_quote: int,
+    slippage_bps: int,
+) -> int:
+    """Buy-path helper kept for compatibility."""
+    _ = protocol_fee_rate, platform_fee_rate, share_fee_rate
+    return get_buy_token_amount_from_sol_amount(
+        amount_in, virtual_base, virtual_quote, real_base, real_quote, slippage_bps
     )
 
 

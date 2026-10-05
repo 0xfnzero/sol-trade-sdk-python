@@ -41,7 +41,17 @@ class SwqosType(Enum):
     SPEEDLANDING = "Speedlanding"
     HELIUS = "Helius"
     SOLAMI = "Solami"
+    LUNAR_LANDER = "LunarLander"
+    GLAIVE = "Glaive"
     DEFAULT = "Default"
+
+
+class SwqosTransport(Enum):
+    """SWQOS transport mode."""
+
+    HTTP = "Http"
+    GRPC = "Grpc"
+    QUIC = "Quic"
 
 
 class SwqosRegion(Enum):
@@ -259,79 +269,14 @@ class GasFeeStrategy:
 # Constants for bonding curve calculations
 INITIAL_VIRTUAL_TOKEN_RESERVES = 1073000000000000
 INITIAL_VIRTUAL_SOL_RESERVES = 30000000000
-INITIAL_REAL_TOKEN_RESERVES = 793000000000000
+INITIAL_REAL_TOKEN_RESERVES = 793100000000000
 TOKEN_TOTAL_SUPPLY = 1000000000000000
-FEE_BASIS_POINTS = 100  # 1%
-CREATOR_FEE = 50  # 0.5%
+FEE_BASIS_POINTS = 95  # Pinned fallback, not current fee discovery.
+CREATOR_FEE = 30
 
 
-@dataclass
-class BondingCurveAccount:
-    """
-    Represents the bonding curve state for PumpFun tokens.
-    Implements constant product formula for token pricing.
-    """
-    discriminator: int = 0
-    account: bytes = field(default_factory=lambda: bytes(32))
-    virtual_token_reserves: int = INITIAL_VIRTUAL_TOKEN_RESERVES
-    virtual_sol_reserves: int = INITIAL_VIRTUAL_SOL_RESERVES
-    real_token_reserves: int = INITIAL_REAL_TOKEN_RESERVES
-    real_sol_reserves: int = 0
-    token_total_supply: int = TOKEN_TOTAL_SUPPLY
-    complete: bool = False
-    creator: bytes = field(default_factory=lambda: bytes(32))
-    is_mayhem_mode: bool = False
-    is_cashback_coin: bool = False
-
-    def get_buy_price(self, amount: int) -> int:
-        """
-        Calculate the amount of tokens received for a given SOL amount.
-        Uses constant product formula: tokens = virtual_tokens - (sol_reserves * virtual_tokens) / (sol_reserves + amount)
-        """
-        if self.complete or amount == 0:
-            return 0
-
-        # n = virtual_sol_reserves * virtual_token_reserves
-        n = self.virtual_sol_reserves * self.virtual_token_reserves
-        # i = virtual_sol_reserves + amount
-        i = self.virtual_sol_reserves + amount
-        # r = n / i + 1
-        r = n // i + 1
-        # s = virtual_token_reserves - r
-        s = self.virtual_token_reserves - r
-
-        if s < self.real_token_reserves:
-            return s
-        return self.real_token_reserves
-
-    def get_sell_price(self, amount: int, fee_basis_points: int = FEE_BASIS_POINTS) -> int:
-        """
-        Calculate the amount of SOL received for selling tokens.
-        Applies fee deduction from the output.
-        """
-        if self.complete or amount == 0:
-            return 0
-
-        # n = (amount * virtual_sol_reserves) / (virtual_token_reserves + amount)
-        n = (amount * self.virtual_sol_reserves) // (self.virtual_token_reserves + amount)
-        # a = (n * fee_basis_points) / 10000
-        a = (n * fee_basis_points) // 10000
-
-        return n - a
-
-    def get_market_cap_sol(self) -> int:
-        """Calculate the current market cap in SOL"""
-        if self.virtual_token_reserves == 0:
-            return 0
-        return (self.token_total_supply * self.virtual_sol_reserves) // self.virtual_token_reserves
-
-    def get_token_price(self) -> float:
-        """Calculate the token price in SOL"""
-        if self.virtual_token_reserves == 0:
-            return 0.0
-        v_sol = self.virtual_sol_reserves / 100_000_000.0
-        v_tokens = self.virtual_token_reserves / 100_000.0
-        return v_sol / v_tokens
+# One native implementation for every public import path.
+from .bonding_curve import BondingCurveAccount
 
 
 # ===== Nonce Cache =====

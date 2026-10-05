@@ -3,6 +3,8 @@ Raydium AMM V4 instruction builder for Solana trading SDK.
 Production-grade implementation with all constants, discriminators, and PDA derivation functions.
 """
 
+from __future__ import annotations
+
 from typing import List, Optional
 from dataclasses import dataclass
 from solders.pubkey import Pubkey
@@ -27,7 +29,9 @@ from .common import (
 # Raydium AMM V4 Program ID
 # ============================================
 
-RAYDIUM_AMM_V4_PROGRAM_ID: Pubkey = Pubkey.from_string("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
+RAYDIUM_AMM_V4_PROGRAM_ID: Pubkey = Pubkey.from_string(
+    "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+)
 
 # ============================================
 # Raydium AMM V4 Constants
@@ -49,6 +53,8 @@ SWAP_FEE_DENOMINATOR: int = 10000
 # Note: Raydium AMM V4 uses single-byte discriminators
 SWAP_BASE_IN_DISCRIMINATOR: bytes = bytes([9])
 SWAP_BASE_OUT_DISCRIMINATOR: bytes = bytes([11])
+SWAP_BASE_IN_V2_DISCRIMINATOR = bytes([16])
+SWAP_BASE_OUT_V2_DISCRIMINATOR = bytes([17])
 
 # ============================================
 # Seeds
@@ -62,9 +68,11 @@ DEFAULT_PUBKEY: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
 # Raydium AMM V4 Parameters Dataclass
 # ============================================
 
+
 @dataclass
 class RaydiumAmmV4Params:
     """Parameters for Raydium AMM V4 protocol trading."""
+
     amm: Pubkey = DEFAULT_PUBKEY
     coin_mint: Pubkey = DEFAULT_PUBKEY
     pc_mint: Pubkey = DEFAULT_PUBKEY
@@ -82,6 +90,8 @@ class RaydiumAmmV4Params:
     serum_vault_signer: Pubkey = DEFAULT_PUBKEY
     coin_reserve: int = 0
     pc_reserve: int = 0
+    swap_fee_numerator: int = 25
+    swap_fee_denominator: int = 10000
 
     @property
     def is_wsol(self) -> bool:
@@ -131,302 +141,164 @@ def _ensure_expected_mint(label: str, requested: Pubkey, expected: Pubkey) -> No
 # Raydium AMM V4 Calculation Functions
 # ============================================
 
+
 def compute_swap_amount(
-    coin_reserve: int,
-    pc_reserve: int,
-    is_coin_in: bool,
-    amount_in: int,
-    slippage_bps: int,
-) -> tuple:
-    """
-    Compute swap output amount for Raydium AMM V4.
-    Returns (amount_out, min_amount_out).
-    """
-    # Apply trade fee (0.25%)
-    amount_in_after_fee = amount_in - (amount_in * TRADE_FEE_NUMERATOR) // TRADE_FEE_DENOMINATOR
+    coin_reserve,
+    pc_reserve,
+    is_coin_in,
+    amount_in,
+    slippage_bps,
+    swap_fee_numerator=25,
+    swap_fee_denominator=10000,
+):
+    from .stonkfun import unsigned, ceil
 
-    if is_coin_in:
-        # Coin -> PC
-        # out = (amount_in * pc_reserve) / (coin_reserve + amount_in)
-        numerator = amount_in_after_fee * pc_reserve
-        denominator = coin_reserve + amount_in_after_fee
-        amount_out = numerator // denominator
+    for value in (coin_reserve, pc_reserve, amount_in, swap_fee_numerator, swap_fee_denominator):
+        unsigned(value)
+    if (
+        not coin_reserve
+        or not pc_reserve
+        or not amount_in
+        or type(is_coin_in) is not bool
+        or not swap_fee_denominator
+        or swap_fee_numerator >= swap_fee_denominator
+    ):
+        raise ValueError("Invalid AMM v4 reserves, amount or swap fee")
+    unsigned(slippage_bps)
+    fee = ceil(amount_in * swap_fee_numerator, swap_fee_denominator)
+    net = amount_in - fee
+    i, o = (coin_reserve, pc_reserve) if is_coin_in else (pc_reserve, coin_reserve)
+    out = o * net // (i + net)
+    return out, out * (10000 - min(slippage_bps, 9999)) // 10000
+
+
+def _v2_pair(params, mint, buy):
+    if params.coin_mint == params.pc_mint or any(
+        k == DEFAULT_PUBKEY
+        for k in (params.amm, params.coin_mint, params.pc_mint, params.token_coin, params.token_pc)
+    ):
+        raise ValueError("Invalid AMM v4 pool accounts")
+    mint = WSOL_TOKEN_ACCOUNT if mint == SOL_TOKEN_ACCOUNT else mint
+    if mint not in (params.coin_mint, params.pc_mint):
+        raise ValueError(
+            ("output_mint" if buy else "input_mint") + " must match the Raydium AMM v4 pool side"
+        )
+    coin_in = (mint == params.pc_mint) if buy else (mint == params.coin_mint)
+    return (
+        (params.coin_mint, params.pc_mint, coin_in)
+        if coin_in
+        else (params.pc_mint, params.coin_mint, coin_in)
+    )
+
+
+def _v2_swap(params, payer, im, om, amount, slippage, coin_in, fixed):
+    from .stonkfun import unsigned
+
+    unsigned(amount)
+    if not amount:
+        raise ValueError("Amount cannot be zero")
+    if fixed is not None:
+        unsigned(fixed)
+        if not fixed:
+            raise ValueError("Exact output cannot be zero")
+        minimum = fixed
     else:
-        # PC -> Coin
-        # out = (amount_in * coin_reserve) / (pc_reserve + amount_in)
-        numerator = amount_in_after_fee * coin_reserve
-        denominator = pc_reserve + amount_in_after_fee
-        amount_out = numerator // denominator
+        _, minimum = compute_swap_amount(
+            params.coin_reserve,
+            params.pc_reserve,
+            coin_in,
+            amount,
+            slippage,
+            params.swap_fee_numerator,
+            params.swap_fee_denominator,
+        )
+    keys = [
+        TOKEN_PROGRAM,
+        params.amm,
+        AUTHORITY,
+        params.token_coin,
+        params.token_pc,
+        get_associated_token_address(payer, im, TOKEN_PROGRAM),
+        get_associated_token_address(payer, om, TOKEN_PROGRAM),
+        payer,
+    ]
+    return Instruction(
+        RAYDIUM_AMM_V4_PROGRAM_ID,
+        (SWAP_BASE_OUT_V2_DISCRIMINATOR if fixed is not None else SWAP_BASE_IN_V2_DISCRIMINATOR)
+        + struct.pack("<QQ", amount, minimum),
+        [AccountMeta(k, i == 7, i in (1, 3, 4, 5, 6)) for i, k in enumerate(keys)],
+    )
 
-    # Apply slippage
-    min_amount_out = calculate_with_slippage_sell(amount_out, slippage_bps)
-
-    return (amount_out, min_amount_out)
-
-
-# ============================================
-# Build Buy Instructions
-# ============================================
 
 def build_buy_instructions(
-    payer: Pubkey,
-    output_mint: Pubkey,
-    input_amount: int,
-    params: RaydiumAmmV4Params,
-    slippage_bps: int = DEFAULT_SLIPPAGE,
-    create_input_ata: bool = True,
-    create_output_ata: bool = True,
-    close_input_ata: bool = False,
-    fixed_output_amount: Optional[int] = None,
-) -> List[Instruction]:
-    """
-    Build Raydium AMM V4 buy instructions.
-
-    Args:
-        payer: The wallet paying for the swap
-        output_mint: The token mint to buy
-        input_amount: Amount of SOL/USDC to spend
-        params: Raydium AMM V4 protocol parameters
-        slippage_bps: Slippage tolerance in basis points
-        create_input_ata: Whether to create WSOL ATA if needed
-        create_output_ata: Whether to create output token ATA if needed
-        close_input_ata: Whether to close WSOL ATA after swap
-        fixed_output_amount: If set, use this as exact output amount
-
-    Returns:
-        List of instructions for the buy operation
-    """
-    if input_amount == 0:
-        raise ValueError("Amount cannot be zero")
-
+    payer,
+    output_mint,
+    input_amount,
+    params,
+    slippage_bps=DEFAULT_SLIPPAGE,
+    create_input_ata=True,
+    create_output_ata=True,
+    close_input_ata=False,
+    fixed_output_amount=None,
+    input_mint=None,
+):
+    """V2 independent buy. Reserves must already exclude pending PnL; no RPC."""
+    im, om, coin_in = _v2_pair(params, output_mint, True)
+    if input_mint is not None:
+        _ensure_expected_mint("input_mint", input_mint, im)
+    swap = _v2_swap(params, payer, im, om, input_amount, slippage_bps, coin_in, fixed_output_amount)
     instructions = []
-    ensure_market_accounts(params)
-
-    # Validate pool contains WSOL or USDC
-    if not params.is_wsol and not params.is_usdc:
-        raise ValueError("Pool must contain WSOL or USDC")
-
-    # Determine if coin is input (WSOL/USDC)
-    is_coin_in = params.coin_mint == WSOL_TOKEN_ACCOUNT or params.coin_mint == USDC_TOKEN_ACCOUNT
-
-    # Calculate swap amount
-    _, min_amount_out = compute_swap_amount(
-        params.coin_reserve,
-        params.pc_reserve,
-        is_coin_in,
-        input_amount,
-        slippage_bps,
-    )
-
-    if fixed_output_amount is not None:
-        minimum_amount_out = fixed_output_amount
-    else:
-        minimum_amount_out = min_amount_out
-
-    # Determine input/output mints from the pool sides
-    input_mint = params.coin_mint if is_coin_in else params.pc_mint
-    expected_output_mint = params.pc_mint if is_coin_in else params.coin_mint
-    _ensure_expected_mint("output_mint", output_mint, expected_output_mint)
-    output_mint = expected_output_mint
-
-    # Get user token accounts
-    user_source_token_account = get_associated_token_address(payer, input_mint, TOKEN_PROGRAM)
-    user_destination_token_account = get_associated_token_address(payer, output_mint, TOKEN_PROGRAM)
-
-    # Handle WSOL if needed
-    if create_input_ata and input_mint == WSOL_TOKEN_ACCOUNT:
-        instructions.extend(handle_wsol(payer, input_amount))
-    elif create_input_ata:
-        instructions.append(
-            create_associated_token_account_idempotent_instruction(
-                payer, payer, input_mint, TOKEN_PROGRAM
-            )
+    if create_input_ata:
+        instructions.extend(
+            handle_wsol(payer, input_amount)
+            if im == WSOL_TOKEN_ACCOUNT
+            else [
+                create_associated_token_account_idempotent_instruction(
+                    payer, payer, im, TOKEN_PROGRAM
+                )
+            ]
         )
-
-    # Create output ATA if needed
     if create_output_ata:
         instructions.append(
-            create_associated_token_account_idempotent_instruction(
-                payer, payer, output_mint, TOKEN_PROGRAM
-            )
+            create_associated_token_account_idempotent_instruction(payer, payer, om, TOKEN_PROGRAM)
         )
-
-    # Build instruction data (1 byte discriminator + 8 bytes amount_in + 8 bytes amount_out/min_out)
-    discriminator = (
-        SWAP_BASE_OUT_DISCRIMINATOR
-        if fixed_output_amount is not None
-        else SWAP_BASE_IN_DISCRIMINATOR
-    )
-    data = discriminator + struct.pack("<QQ", input_amount, minimum_amount_out)
-
-    # Build accounts list (18 accounts)
-    # Note: Raydium AMM V4 has specific account ordering
-    accounts = [
-        AccountMeta(TOKEN_PROGRAM, False, False),  # token_program (readonly)
-        AccountMeta(params.amm, False, True),  # amm (writable)
-        AccountMeta(AUTHORITY, False, False),  # authority (readonly)
-        AccountMeta(params.amm_open_orders, False, True),  # amm_open_orders
-        AccountMeta(params.amm_target_orders, False, True),  # amm_target_orders
-        AccountMeta(params.token_coin, False, True),  # pool_coin_token_account (writable)
-        AccountMeta(params.token_pc, False, True),  # pool_pc_token_account (writable)
-        AccountMeta(params.serum_program, False, False),  # serum_program
-        AccountMeta(params.serum_market, False, True),  # serum_market
-        AccountMeta(params.serum_bids, False, True),  # serum_bids
-        AccountMeta(params.serum_asks, False, True),  # serum_asks
-        AccountMeta(params.serum_event_queue, False, True),  # serum_event_queue
-        AccountMeta(params.serum_coin_vault_account, False, True),  # serum_coin_vault_account
-        AccountMeta(params.serum_pc_vault_account, False, True),  # serum_pc_vault_account
-        AccountMeta(params.serum_vault_signer, False, False),  # serum_vault_signer
-        AccountMeta(user_source_token_account, False, True),  # user_source_token_account (writable)
-        AccountMeta(user_destination_token_account, False, True),  # user_destination_token_account (writable)
-        AccountMeta(payer, True, False),  # user_source_owner (signer)
-    ]
-
-    instructions.append(Instruction(RAYDIUM_AMM_V4_PROGRAM_ID, data, accounts))
-
-    # Close WSOL ATA if requested
-    if close_input_ata and input_mint == WSOL_TOKEN_ACCOUNT:
+    instructions.append(swap)
+    if close_input_ata and im == WSOL_TOKEN_ACCOUNT:
         instructions.extend(close_wsol(payer))
-
     return instructions
 
 
-# ============================================
-# Build Sell Instructions
-# ============================================
-
 def build_sell_instructions(
-    payer: Pubkey,
-    input_mint: Pubkey,
-    input_amount: int,
-    params: RaydiumAmmV4Params,
-    slippage_bps: int = DEFAULT_SLIPPAGE,
-    create_output_ata: bool = True,
-    close_output_ata: bool = False,
-    close_input_ata: bool = False,
-    fixed_output_amount: Optional[int] = None,
-    output_mint: Optional[Pubkey] = None,
-) -> List[Instruction]:
-    """
-    Build Raydium AMM V4 sell instructions.
-
-    Args:
-        payer: The wallet paying for the swap
-        input_mint: The token mint to sell
-        input_amount: Amount of tokens to sell
-        params: Raydium AMM V4 protocol parameters
-        slippage_bps: Slippage tolerance in basis points
-        create_output_ata: Whether to create WSOL ATA for receiving SOL
-        close_output_ata: Whether to close WSOL ATA after swap
-        close_input_ata: Whether to close token ATA after swap
-        fixed_output_amount: If set, use this as exact output amount
-
-    Returns:
-        List of instructions for the sell operation
-    """
-    if input_amount == 0:
-        raise ValueError("Amount cannot be zero")
-
-    instructions = []
-    ensure_market_accounts(params)
-
-    # Validate pool contains WSOL or USDC
-    if not params.is_wsol and not params.is_usdc:
-        raise ValueError("Pool must contain WSOL or USDC")
-
-    # Determine if pc is output (WSOL/USDC)
-    # For sell: is_base_in = True means we're selling PC to get Coin
-    # is_base_in = False means we're selling Coin to get PC
-    is_pc_out = params.pc_mint == WSOL_TOKEN_ACCOUNT or params.pc_mint == USDC_TOKEN_ACCOUNT
-
-    # Calculate swap amount using the same direction semantics as Rust.
-    _, min_amount_out = compute_swap_amount(
-        params.coin_reserve,
-        params.pc_reserve,
-        is_pc_out,
-        input_amount,
-        slippage_bps,
-    )
-
-    if fixed_output_amount is not None:
-        minimum_amount_out = fixed_output_amount
-    else:
-        minimum_amount_out = min_amount_out
-
-    # Determine input/output mints from the pool sides
-    expected_input_mint = params.coin_mint if is_pc_out else params.pc_mint
-    expected_output_mint = params.pc_mint if is_pc_out else params.coin_mint
-    _ensure_expected_mint("input_mint", input_mint, expected_input_mint)
+    payer,
+    input_mint,
+    input_amount,
+    params,
+    slippage_bps=DEFAULT_SLIPPAGE,
+    create_output_ata=True,
+    close_output_ata=False,
+    close_input_ata=False,
+    fixed_output_amount=None,
+    output_mint=None,
+):
+    """V2 independent sell, including arbitrary stock/token pairs. No RPC."""
+    im, om, coin_in = _v2_pair(params, input_mint, False)
     if output_mint is not None:
-        _ensure_expected_mint("output_mint", output_mint, expected_output_mint)
-    input_mint = expected_input_mint
-    output_mint = expected_output_mint
-
-    # Get user token accounts
-    user_source_token_account = get_associated_token_address(payer, input_mint, TOKEN_PROGRAM)
-    user_destination_token_account = get_associated_token_address(payer, output_mint, TOKEN_PROGRAM)
-
-    # Create output ATA if needed for receiving SOL/USDC
-    if create_output_ata and output_mint == WSOL_TOKEN_ACCOUNT:
+        _ensure_expected_mint("output_mint", output_mint, om)
+    swap = _v2_swap(params, payer, im, om, input_amount, slippage_bps, coin_in, fixed_output_amount)
+    instructions = []
+    if create_output_ata:
         instructions.append(
-            create_associated_token_account_idempotent_instruction(
-                payer, payer, WSOL_TOKEN_ACCOUNT, TOKEN_PROGRAM
-            )
+            create_associated_token_account_idempotent_instruction(payer, payer, om, TOKEN_PROGRAM)
         )
-    elif create_output_ata:
-        instructions.append(
-            create_associated_token_account_idempotent_instruction(
-                payer, payer, output_mint, TOKEN_PROGRAM
-            )
-        )
-
-    # Build instruction data (1 byte discriminator + 8 bytes amount_in + 8 bytes amount_out/min_out)
-    discriminator = (
-        SWAP_BASE_OUT_DISCRIMINATOR
-        if fixed_output_amount is not None
-        else SWAP_BASE_IN_DISCRIMINATOR
-    )
-    data = discriminator + struct.pack("<QQ", input_amount, minimum_amount_out)
-
-    # Build accounts list (18 accounts)
-    accounts = [
-        AccountMeta(TOKEN_PROGRAM, False, False),  # token_program (readonly)
-        AccountMeta(params.amm, False, True),  # amm (writable)
-        AccountMeta(AUTHORITY, False, False),  # authority (readonly)
-        AccountMeta(params.amm_open_orders, False, True),  # amm_open_orders
-        AccountMeta(params.amm_target_orders, False, True),  # amm_target_orders
-        AccountMeta(params.token_coin, False, True),  # pool_coin_token_account (writable)
-        AccountMeta(params.token_pc, False, True),  # pool_pc_token_account (writable)
-        AccountMeta(params.serum_program, False, False),  # serum_program
-        AccountMeta(params.serum_market, False, True),  # serum_market
-        AccountMeta(params.serum_bids, False, True),  # serum_bids
-        AccountMeta(params.serum_asks, False, True),  # serum_asks
-        AccountMeta(params.serum_event_queue, False, True),  # serum_event_queue
-        AccountMeta(params.serum_coin_vault_account, False, True),  # serum_coin_vault_account
-        AccountMeta(params.serum_pc_vault_account, False, True),  # serum_pc_vault_account
-        AccountMeta(params.serum_vault_signer, False, False),  # serum_vault_signer
-        AccountMeta(user_source_token_account, False, True),  # user_source_token_account (writable)
-        AccountMeta(user_destination_token_account, False, True),  # user_destination_token_account (writable)
-        AccountMeta(payer, True, False),  # user_source_owner (signer)
-    ]
-
-    instructions.append(Instruction(RAYDIUM_AMM_V4_PROGRAM_ID, data, accounts))
-
-    # Close WSOL ATA if requested
-    if close_output_ata and output_mint == WSOL_TOKEN_ACCOUNT:
+    instructions.append(swap)
+    if close_output_ata and om == WSOL_TOKEN_ACCOUNT:
         instructions.extend(close_wsol(payer))
-
-    # Close token ATA if requested
     if close_input_ata:
         instructions.append(
             close_token_account_instruction(
-                TOKEN_PROGRAM,
-                user_source_token_account,
-                payer,
-                payer,
+                TOKEN_PROGRAM, get_associated_token_address(payer, im, TOKEN_PROGRAM), payer, payer
             )
         )
-
     return instructions
 
 
@@ -438,6 +310,7 @@ AMM_INFO_SIZE = 752
 @dataclass
 class RaydiumAmmFees:
     """Fee structure for Raydium AMM"""
+
     min_separate_numerator: int
     min_separate_denominator: int
     trade_fee_numerator: int
@@ -451,6 +324,7 @@ class RaydiumAmmFees:
 @dataclass
 class RaydiumAmmOutputData:
     """Output data structure for Raydium AMM"""
+
     need_take_pnl_coin: int
     need_take_pnl_pc: int
     total_pnl_pc: int
@@ -470,6 +344,7 @@ class RaydiumAmmOutputData:
 @dataclass
 class RaydiumAmmInfo:
     """Decoded Raydium AMM v4 info - matches Rust: src/instruction/utils/raydium_amm_v4_types.rs AmmInfo"""
+
     status: int
     nonce: int
     order_num: int
@@ -523,8 +398,14 @@ def decode_amm_info(data: bytes) -> RaydiumAmmInfo | None:
 
         def read_u64():
             nonlocal offset
-            val = struct.unpack_from('<Q', data, offset)[0]
+            val = struct.unpack_from("<Q", data, offset)[0]
             offset += 8
+            return val
+
+        def read_u128():
+            nonlocal offset
+            val = int.from_bytes(data[offset : offset + 16], "little")
+            offset += 16
             return val
 
         # status: u64
@@ -582,60 +463,60 @@ def decode_amm_info(data: bytes) -> RaydiumAmmInfo | None:
             punish_pc_amount=read_u64(),
             punish_coin_amount=read_u64(),
             orderbook_to_init_time=read_u64(),
-            swap_coin_in_amount=read_u64(),
-            swap_pc_out_amount=read_u64(),
+            swap_coin_in_amount=read_u128(),
+            swap_pc_out_amount=read_u128(),
             swap_take_pc_fee=read_u64(),
-            swap_pc_in_amount=read_u64(),
-            swap_coin_out_amount=read_u64(),
+            swap_pc_in_amount=read_u128(),
+            swap_coin_out_amount=read_u128(),
             swap_take_coin_fee=read_u64(),
         )
 
         # token_coin: Pubkey
-        token_coin = Pubkey.from_bytes(data[offset:offset + 32])
+        token_coin = Pubkey.from_bytes(data[offset : offset + 32])
         offset += 32
 
         # token_pc: Pubkey
-        token_pc = Pubkey.from_bytes(data[offset:offset + 32])
+        token_pc = Pubkey.from_bytes(data[offset : offset + 32])
         offset += 32
 
         # coin_mint: Pubkey
-        coin_mint = Pubkey.from_bytes(data[offset:offset + 32])
+        coin_mint = Pubkey.from_bytes(data[offset : offset + 32])
         offset += 32
 
         # pc_mint: Pubkey
-        pc_mint = Pubkey.from_bytes(data[offset:offset + 32])
+        pc_mint = Pubkey.from_bytes(data[offset : offset + 32])
         offset += 32
 
         # lp_mint: Pubkey
-        lp_mint = Pubkey.from_bytes(data[offset:offset + 32])
+        lp_mint = Pubkey.from_bytes(data[offset : offset + 32])
         offset += 32
 
         # open_orders: Pubkey
-        open_orders = Pubkey.from_bytes(data[offset:offset + 32])
+        open_orders = Pubkey.from_bytes(data[offset : offset + 32])
         offset += 32
 
         # market: Pubkey
-        market = Pubkey.from_bytes(data[offset:offset + 32])
+        market = Pubkey.from_bytes(data[offset : offset + 32])
         offset += 32
 
         # serum_dex: Pubkey
-        serum_dex = Pubkey.from_bytes(data[offset:offset + 32])
+        serum_dex = Pubkey.from_bytes(data[offset : offset + 32])
         offset += 32
 
         # target_orders: Pubkey
-        target_orders = Pubkey.from_bytes(data[offset:offset + 32])
+        target_orders = Pubkey.from_bytes(data[offset : offset + 32])
         offset += 32
 
         # withdraw_queue: Pubkey
-        withdraw_queue = Pubkey.from_bytes(data[offset:offset + 32])
+        withdraw_queue = Pubkey.from_bytes(data[offset : offset + 32])
         offset += 32
 
         # token_temp_lp: Pubkey
-        token_temp_lp = Pubkey.from_bytes(data[offset:offset + 32])
+        token_temp_lp = Pubkey.from_bytes(data[offset : offset + 32])
         offset += 32
 
         # amm_owner: Pubkey
-        amm_owner = Pubkey.from_bytes(data[offset:offset + 32])
+        amm_owner = Pubkey.from_bytes(data[offset : offset + 32])
         offset += 32
 
         # lp_amount: u64
@@ -690,14 +571,11 @@ from typing import Protocol, runtime_checkable
 @runtime_checkable
 class AmmInfoFetcher(Protocol):
     """Protocol for fetching AMM info from RPC"""
-    async def get_account_info(self, pubkey: Pubkey) -> bytes | None:
-        ...
+
+    async def get_account_info(self, pubkey: Pubkey) -> bytes | None: ...
 
 
-async def fetch_amm_info(
-    fetcher: AmmInfoFetcher,
-    amm: Pubkey
-) -> RaydiumAmmInfo | None:
+async def fetch_amm_info(fetcher: AmmInfoFetcher, amm: Pubkey) -> RaydiumAmmInfo | None:
     """
     Fetch AMM info from RPC.
     100% from Rust: src/instruction/utils/raydium_amm_v4.rs fetch_amm_info
@@ -730,6 +608,8 @@ __all__ = [
     # Discriminators
     "SWAP_BASE_IN_DISCRIMINATOR",
     "SWAP_BASE_OUT_DISCRIMINATOR",
+    "SWAP_BASE_IN_V2_DISCRIMINATOR",
+    "SWAP_BASE_OUT_V2_DISCRIMINATOR",
     # Params
     "RaydiumAmmV4Params",
     # Calculation Functions

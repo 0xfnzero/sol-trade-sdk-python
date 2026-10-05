@@ -27,7 +27,9 @@ def test_effective_quote_reserves_supports_signed_i128(effective_quote_reserves)
     assert effective_quote_reserves(1_000, 250) == 1_250
     assert effective_quote_reserves(1_000, -250) == 750
 
-    for raw, virtual in ((1_000, -1_000), (100, -101), ((1 << 64) - 1, 1)):
+    assert effective_quote_reserves(1_000, -1_000) == 0
+
+    for raw, virtual in ((100, -101), ((1 << 64) - 1, 1)):
         with pytest.raises(ValueError, match="Invalid effective quote reserves"):
             effective_quote_reserves(raw, virtual)
 
@@ -191,3 +193,15 @@ def test_pool_account_decoder_validates_discriminator_and_padded_allocations():
     assert decode_pool_account(account).virtual_quote_reserves == -123_456
     assert decode_pool_account(account + bytes(300 - len(account))).virtual_quote_reserves == -123_456
     assert decode_pool_account(bytes(8) + current) is None
+
+@pytest.mark.parametrize("api", [typed_calc, dict_calc])
+@pytest.mark.parametrize("mode", ["buy_base_input_internal_with_fees",
+    "buy_quote_input_internal_with_fees", "sell_base_input_internal_with_fees",
+    "sell_quote_input_internal_with_fees"])
+def test_negative_virtual_reserves_all_quote_modes(api, mode):
+    quote = getattr(api, mode)
+    fees = api.PumpSwapFeeBasisPoints(*FEE_VALUES)
+    assert quote(10_000, 125, 1_000_000, 1_000_000, -500_000, fees) == quote(
+        10_000, 125, 1_000_000, 500_000, 0, fees)
+    with pytest.raises(ValueError, match="Invalid effective quote reserves"):
+        quote(10_000, 125, 1_000_000, 1_000_000, -1_000_000, fees)

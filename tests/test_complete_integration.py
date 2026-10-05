@@ -67,7 +67,7 @@ def test_all_dex_params():
     print("\nTesting all DEX parameter types...")
 
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src', 'sol_trade_sdk', 'trading'))
-    from params import (
+    from sol_trade_sdk.trading.params import (
         PumpFunParams, PumpSwapParams, BonkParams,
         RaydiumCpmmParams, RaydiumAmmV4Params, MeteoraDammV2Params,
         DexType, TradeType

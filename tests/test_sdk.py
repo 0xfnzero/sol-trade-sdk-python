@@ -1021,7 +1021,7 @@ class TestRootTradingClientExecution:
 
 
 class TestSwqosSolami:
-    """Tests for Solami SWQOS parity added in Rust v4.0.21"""
+    """Tests for Solami SWQOS parity added in Rust v5.0.2"""
 
     def test_sender_factory_creates_solami_client(self):
         client = SenderClientFactory.create_client(
@@ -1573,14 +1573,14 @@ class TestBondingCurveAccount:
         """Test initial bonding curve state"""
         curve = BondingCurveAccount()
 
-        assert curve.virtual_token_reserves == 1073000000000000
-        assert curve.virtual_sol_reserves == 30000000000
-        assert curve.real_token_reserves == 793000000000000
+        assert curve.virtual_token_reserves == 0
+        assert curve.virtual_sol_reserves == 0
+        assert curve.real_token_reserves == 0
         assert curve.complete is False
 
     def test_get_buy_price(self):
         """Test calculating buy price"""
-        curve = BondingCurveAccount()
+        curve = BondingCurveAccount.from_dev_trade(bytes(32), bytes(32), 0, 0, bytes(32))
 
         # Buy with 0.001 SOL (1_000_000 lamports)
         tokens = curve.get_buy_price(1_000_000)
@@ -1588,7 +1588,7 @@ class TestBondingCurveAccount:
 
     def test_get_sell_price(self):
         """Test calculating sell price"""
-        curve = BondingCurveAccount()
+        curve = BondingCurveAccount.from_dev_trade(bytes(32), bytes(32), 0, 0, bytes(32))
 
         # Sell some tokens
         sol = curve.get_sell_price(1_000_000_000)  # 1 million tokens
@@ -1596,24 +1596,26 @@ class TestBondingCurveAccount:
 
     def test_get_market_cap_sol(self):
         """Test calculating market cap"""
-        curve = BondingCurveAccount()
+        curve = BondingCurveAccount.from_dev_trade(bytes(32), bytes(32), 0, 0, bytes(32))
 
         market_cap = curve.get_market_cap_sol()
         assert market_cap > 0
 
     def test_get_token_price(self):
         """Test calculating token price"""
-        curve = BondingCurveAccount()
+        curve = BondingCurveAccount.from_dev_trade(bytes(32), bytes(32), 0, 0, bytes(32))
 
         price = curve.get_token_price()
         assert price > 0
 
-    def test_complete_curve_returns_zero(self):
+    def test_complete_curve_returns_error(self):
         """Test that complete curves return zero for buy/sell"""
         curve = BondingCurveAccount(complete=True)
 
-        assert curve.get_buy_price(1_000_000) == 0
-        assert curve.get_sell_price(1_000_000) == 0
+        with pytest.raises(ValueError, match="Curve is complete"):
+            curve.get_buy_price(1_000_000)
+        with pytest.raises(ValueError, match="Curve is complete"):
+            curve.get_sell_price(1_000_000)
 
 
 class TestNonceCache:
