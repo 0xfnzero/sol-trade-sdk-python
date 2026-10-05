@@ -98,6 +98,14 @@ class AccountCacheSnapshot:
     def assert_usable(self):
         if self.__continuity_guard is not None: self.__continuity_guard()
 
+    def get_observation(self, key, context):
+        """Include explicit closed observations; unknown or stale keys error."""
+        self.assert_usable()
+        a = self.__accounts.get(key)
+        if a is None: raise ValueError(f"Missing cached account: {key}")
+        if a.slot > context.slot or context.slot-a.slot > context.maximum_slot_age: raise ValueError("Cached account is future or stale")
+        return a
+
     def get_optional(self, key, context, expected_owner=None):
         """Observed zero-lamport tombstone is absent; an unobserved key errors."""
         self.assert_usable()
