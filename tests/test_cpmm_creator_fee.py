@@ -64,6 +64,10 @@ def test_rust_mainnet_account_payout_and_cache_parity(c):
         f.validate_cpmm_creator_fee_collection(snapshot, altered, ctx, payer)
     with pytest.raises(ValueError):
         f.validate_cpmm_creator_fee_collection(snapshot, p, CacheReadContext(99, 0, 5), payer)
+    wrong_type = SimpleNamespace(**vars(p))
+    wrong_type.creator_payout_token0 = False
+    with pytest.raises(ValueError):
+        f.validate_cpmm_creator_fee_collection(snapshot, wrong_type, ctx, payer)
     cache.update(
         pk(c["share_pda"]),
         CachedAccount(

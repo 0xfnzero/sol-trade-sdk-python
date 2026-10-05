@@ -262,6 +262,15 @@ def prepare_cpmm_creator_fee_collection(snapshot, address, context, payer=None):
 
 
 def validate_cpmm_creator_fee_collection(snapshot, prepared, context, payer=None):
+    for name in (
+        "snapshot_slot",
+        "share_rate",
+        "creator_payout_token0",
+        "creator_payout_token1",
+        "protocol_share_token0",
+        "protocol_share_token1",
+    ):
+        _u64(getattr(prepared, name))
     if context.slot < prepared.snapshot_slot:
         raise ValueError("Collection read context moved backwards")
     for key, slot, version in prepared.account_versions:
