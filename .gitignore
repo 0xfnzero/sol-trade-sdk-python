@@ -53,3 +53,8 @@ dmypy.json
 
 # macOS
 .DS_Store
+
+# Generated reports and local tooling outputs
+/NATIVE_*EVIDENCE*.json
+.ruff_cache/
+.benchmarks/

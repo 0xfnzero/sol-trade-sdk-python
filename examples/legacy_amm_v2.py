@@ -1,4 +1,4 @@
-"""Single AMM legacy entry migrated to V2. Snapshot schema: AMM_V4_CACHE.md.
+"""Single AMM legacy entry migrated to V2. Snapshot schema: ../docs/USAGE.md#amm-v4-cache.
 Usage: PYTHONPATH=. python examples/legacy_amm_v2.py snapshot.json [--simulate] [--exact-output=N].
 Buy wraps SOL into the payer WSOL ATA; sell receives WSOL. Existing ATAs are never closed.
 Use cached_trade.py for temporary SOL accounts or multi-hop routes. No sends or hot-path RPC.
