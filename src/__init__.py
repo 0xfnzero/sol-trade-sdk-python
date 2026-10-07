@@ -2244,3 +2244,28 @@ __all__ += ['CpmmAmmConfig', 'CpmmCreatorFeeShare', 'CpmmCollectionPool', 'decod
 
 from .instruction.cpmm_creator_fee import validate_cpmm_creator_fee_collection
 __all__ += ['validate_cpmm_creator_fee_collection']
+
+from .instruction.pump_upgrade import (build_pump_upgrade_instruction, build_pump_buy_v3_instruction, build_pump_buy_exact_quote_in_v3_instruction, build_pump_sell_v3_instruction, build_pump_sweep_creator_fee_instruction, build_pump_sweep_protocol_fee_instruction, build_pump_amm_buy_v2_instruction, build_pump_amm_buy_exact_quote_in_v2_instruction, build_pump_amm_sell_v2_instruction, build_pump_amm_multi_hop_swap_instruction, build_pump_amm_sweep_creator_fee_instruction, build_pump_amm_sweep_protocol_fee_instruction)
+__all__ += ['build_pump_upgrade_instruction', 'build_pump_buy_v3_instruction', 'build_pump_buy_exact_quote_in_v3_instruction', 'build_pump_sell_v3_instruction', 'build_pump_sweep_creator_fee_instruction', 'build_pump_sweep_protocol_fee_instruction', 'build_pump_amm_buy_v2_instruction', 'build_pump_amm_buy_exact_quote_in_v2_instruction', 'build_pump_amm_sell_v2_instruction', 'build_pump_amm_multi_hop_swap_instruction', 'build_pump_amm_sweep_creator_fee_instruction', 'build_pump_amm_sweep_protocol_fee_instruction']
+
+from .calc.pump_v3 import PumpV3QuoteState, PumpV3Quote, quote_pump_buy_v3_exact_out, quote_pump_buy_v3_exact_in
+__all__ += ["PumpV3QuoteState", "PumpV3Quote", "quote_pump_buy_v3_exact_out", "quote_pump_buy_v3_exact_in"]
+
+from .instruction.pump_compact_accounts import derive_pump_v3_accounts, derive_pump_swap_v2_accounts
+__all__ += ["derive_pump_v3_accounts", "derive_pump_swap_v2_accounts"]
+
+from .instruction.pump_compact_accounts import PumpMultiHop, derive_pump_multi_hop_accounts
+
+from .instruction.pump_create_v2 import build_pump_create_v2_instruction
+__all__ += ['build_pump_create_v2_instruction','PumpMultiHop','derive_pump_multi_hop_accounts']
+
+from .calc.pump_v3 import pump_coin_initial_quote_reserves
+__all__ += ['pump_coin_initial_quote_reserves']
+
+from .instruction.pump_create_v2 import decode_pump_quote_control
+__all__ += ['decode_pump_quote_control']
+
+__all__ += ['derive_pump_v3_accounts','derive_pump_swap_v2_accounts']
+
+from .instruction.pump_compact_accounts import derive_pump_coin_quote_create_accounts
+__all__ += ['derive_pump_coin_quote_create_accounts']

@@ -61,7 +61,8 @@ def cached_pumpswap(snapshot,hint,context):
     if not all(reserves): raise ValueError('PumpSwap reserves are empty')
     effective_quote_reserve=effective_quote_reserves(reserves[1],pool.virtual_quote_reserves)
     supply=int.from_bytes(mints[0].data[36:44],'little')
-    fee=ix.compute_pumpswap_fee_basis_points(config,pool.creator,pool.base_mint,supply,reserves[0],effective_quote_reserve)
+    fee=ix.compute_pumpswap_fee_basis_points(config,pool.creator,pool.base_mint,supply,reserves[0],effective_quote_reserve,pool.quote_mint)
+    if len(global_data)>940 and global_data[940]==1 and pool.creator_fee_bps>0:fee.coin_creator_fee_basis_points=pool.creator_fee_bps
     keys=lambda start,n:tuple(Pubkey.from_bytes(global_data[start+i*32:start+(i+1)*32]) for i in range(n))
     snapshot.assert_usable()
     return CachedPumpSwapState(hint.pool,pool,*reserves,supply,*(m.owner for m in mints),*transfer_fees,

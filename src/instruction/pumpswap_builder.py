@@ -197,6 +197,7 @@ class PumpSwapFeeConfig:
     flat_fees: PumpSwapFeeBasisPoints
     fee_tiers: list[PumpSwapFeeTier]
     stable_fee_tiers: list[PumpSwapFeeTier]
+    exotic_flat_fees: PumpSwapFeeBasisPoints | None = None
 
 
 def legacy_fee_basis_points(has_coin_creator: bool) -> PumpSwapFeeBasisPoints:
@@ -431,9 +432,10 @@ def decode_fee_config(data: bytes) -> PumpSwapFeeConfig | None:
         decoded_stable_fee_tiers = _decode_fee_tiers(data, offset)
         if decoded_stable_fee_tiers is None:
             return None
-        stable_fee_tiers, _ = decoded_stable_fee_tiers
-
-        return PumpSwapFeeConfig(flat_fees, fee_tiers, stable_fee_tiers)
+        stable_fee_tiers, offset = decoded_stable_fee_tiers
+        exotic = _decode_fees(data,offset) if offset<len(data) else PumpSwapFeeBasisPoints(0,0,0)
+        if exotic is None:return None
+        return PumpSwapFeeConfig(flat_fees, fee_tiers, stable_fee_tiers, exotic)
     except Exception:
         return None
 
@@ -481,6 +483,7 @@ def compute_pumpswap_fee_basis_points(
     base_mint_supply: int | None,
     base_reserve: int,
     quote_reserve: int,
+    quote_mint: Pubkey = WSOL_TOKEN_ACCOUNT,
 ) -> PumpSwapFeeBasisPoints:
     if fee_config is None:
         return legacy_fee_basis_points(True)
@@ -495,7 +498,12 @@ def compute_pumpswap_fee_basis_points(
     if market_cap is None:
         return legacy_fee_basis_points(True)
 
-    return calculate_fee_tier(fee_config.fee_tiers, market_cap) or fee_config.flat_fees
+    native=quote_mint in (Pubkey.default(),WSOL_TOKEN_ACCOUNT,Pubkey.from_string('9pan9bMn5HatX4EJdBwg9VgCa7Uz5HL8N1m5D3NdXejP'))
+    if not native and quote_mint!=USDC_TOKEN_ACCOUNT:
+        exotic=fee_config.exotic_flat_fees
+        return exotic if exotic is not None and any((exotic.lp_fee_basis_points,exotic.protocol_fee_basis_points,exotic.coin_creator_fee_basis_points)) else fee_config.flat_fees
+    tiers=fee_config.stable_fee_tiers if not native and fee_config.stable_fee_tiers else fee_config.fee_tiers
+    return calculate_fee_tier(tiers, market_cap) or fee_config.flat_fees
 
 
 def _extract_account_data(value) -> bytes | None:
@@ -969,6 +977,11 @@ class PumpSwapPool:
     coin_creator: Pubkey
     is_mayhem_mode: bool
     is_cashback_coin: bool
+    creator_fee_bps: int = 0
+    can_edit_creator_fee: bool = False
+    is_holder_reward: bool = False
+    protocol_fees: int = 0
+    creator_fees: int = 0
     virtual_quote_reserves: int = 0
 
 
@@ -1046,6 +1059,12 @@ def decode_pool(data: bytes) -> PumpSwapPool | None:
         )
         
         return PumpSwapPool(
+            creator_fee_bps=int.from_bytes(data[253:261],"little") if len(data)>=261 else 0,
+            can_edit_creator_fee=len(data)>=262 and data[261]==1,
+            is_holder_reward=len(data)>=263 and data[262]==1,
+            protocol_fees=int.from_bytes(data[263:271],"little") if len(data)>=271 else 0,
+            creator_fees=int.from_bytes(data[271:279],"little") if len(data)>=279 else 0,
+
             pool_bump=pool_bump,
             index=index,
             creator=creator,
@@ -1464,3 +1483,6 @@ async def find_by_quote_mint(
         return pools[0]
     except Exception:
         return None
+
+def is_pump_swap_pool_boosted(pool: PumpSwapPool) -> bool:
+    return pool.virtual_quote_reserves + pool.protocol_fees + pool.creator_fees != 0

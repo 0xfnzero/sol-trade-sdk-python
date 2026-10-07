@@ -41,6 +41,16 @@ class BondingCurveAccount:
     is_mayhem_mode: bool = False
     is_cashback_coin: bool = False
     quote_mint: bytes = bytes(32)
+    creator_fee_bps: int = 0
+    can_edit_creator_fee: bool = False
+    is_holder_reward: bool = False
+    creator_fee: int = 0
+    protocol_fees: int = 0
+    depth: int = 0
+    initial_virtual_quote_reserves: int = 0
+    post_complete_base_out: int = 0
+    post_complete_quote_in: int = 0
+
     
     def __post_init__(self):
         self._validate_reserves()
@@ -257,6 +267,16 @@ def decode_bonding_curve_account(data: bytes) -> Optional[BondingCurveAccount]:
         return None
     reserves = struct.unpack_from('<5Q', body)
     return BondingCurveAccount(
+        creator_fee_bps=int.from_bytes(body[107:115], 'little') if len(body)>=115 else 0,
+        can_edit_creator_fee=bool(body[115]) if len(body)>115 else False,
+        is_holder_reward=bool(body[116]) if len(body)>116 else False,
+        creator_fee=int.from_bytes(body[117:125], 'little') if len(body)>=125 else 0,
+        protocol_fees=int.from_bytes(body[125:133], 'little') if len(body)>=133 else 0,
+        depth=body[133] if len(body)>133 else 0,
+        initial_virtual_quote_reserves=int.from_bytes(body[134:142], 'little') if len(body)>=142 else 0,
+        post_complete_base_out=int.from_bytes(body[142:150], 'little') if len(body)>=150 else 0,
+        post_complete_quote_in=int.from_bytes(body[150:158], 'little') if len(body)>=158 else 0,
+
         virtual_token_reserves=reserves[0], virtual_sol_reserves=reserves[1],
         real_token_reserves=reserves[2], real_sol_reserves=reserves[3],
         token_total_supply=reserves[4], complete=bool(body[40]),
