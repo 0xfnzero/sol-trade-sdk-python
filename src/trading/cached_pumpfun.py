@@ -134,7 +134,9 @@ def _prepare_cached_pumpfun_route_leg(snapshot,hint,context,payer,amount,slippag
     if s.quote_token_program!=token:raise ValueError('PumpFun V2 quote token program is unsupported')
     if str(s.mint).endswith('pump') and s.token_program!=token2022:raise ValueError('PumpFun mint suffix and token program mismatch')
     raw=snapshot.get(hint.pool,context,PUMPFUN_PROGRAM_ID).data
-    if len(raw)>=125 and raw[124]!=0:raise ValueError('PumpFun holder-reward account layout is not yet verified')
+    if len(raw)>=125 and raw[124]!=0:
+        holder=Pubkey.find_program_address([b'holder-rewards',bytes(s.mint)],PUMPFUN_PROGRAM_ID)[0]
+        if raw[124]!=1 or bytes(holder)!=s.curve.creator:raise ValueError('Invalid PumpFun holder-reward creator')
     config=ix.get_fee_sharing_config_pda(s.mint);sharing=snapshot.get_optional(config,context,FEE_PROGRAM)
     active=decode_pumpfun_sharing_creator_vault(sharing.data,s.mint) if sharing else None
     creator=Pubkey.from_bytes(s.curve.creator);vault=active or ix.get_creator_vault_pda(creator)

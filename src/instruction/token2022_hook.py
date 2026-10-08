@@ -1,4 +1,4 @@
-"""Offline Hook account resolution for literal keys and AccountKey PDA seeds.
+"""Offline Hook account resolution for literal keys and SPL PDA seeds.
 
 Unknown configurations fail closed; callers must refresh the mint and TLV list
 for every transfer. This helper does not enable cached DEX routes automatically.
@@ -10,14 +10,17 @@ TOKEN22 = Pubkey.from_string('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
 EXECUTE = bytes([105, 37, 101, 197, 75, 251, 102, 26])
 
 
-def resolve_hook_accounts(hook, mint, mint_owner, mint_data, meta, meta_owner, meta_data, execute_accounts):
+def resolve_hook_accounts(hook, mint, mint_owner, mint_data, meta, meta_owner, meta_data, execute_accounts, execute_data=b"", account_data=None):
     """Return extra metas, Hook program, and validation PDA, in SPL order.
 
     execute_accounts are source, mint, destination, authority, validation PDA.
-    Signer-requiring metadata and other seed/data encodings are unsupported.
+    Instruction/account seed data must be supplied from this transfer; signer metadata remains unsupported.
     """
     if mint_owner != TOKEN22 or len(mint_data) < 166 or mint_data[165] != 1 or mint_data[45] != 1:
         raise ValueError('Invalid Token-2022 mint')
+    if execute_data and (len(execute_data) != 16 or execute_data[:8] != EXECUTE):
+        raise ValueError("Invalid Execute instruction data")
+    account_data = account_data or {}
     active = None
     offset = 166
     while offset + 4 <= len(mint_data):
@@ -52,17 +55,62 @@ def resolve_hook_accounts(hook, mint, mint_owner, mint_data, meta, meta_owner, m
         config = item[1:33]
         if item[0] == 0:
             key = Pubkey.from_bytes(config)
-        elif item[0] == 1:
+        elif item[0] == 2:
+            if config[0] == 1:
+                start = config[1]
+                if any(config[2:]) or start+32 > len(execute_data):
+                    raise ValueError('Invalid instruction PubkeyData')
+                key = Pubkey.from_bytes(execute_data[start:start+32])
+            elif config[0] == 2:
+                index, start = config[1:3]
+                if any(config[3:]) or index >= len(keys):
+                    raise ValueError('Invalid account PubkeyData')
+                data = account_data.get(keys[index])
+                if data is None or start+32 > len(data):
+                    raise ValueError('Missing or invalid PubkeyData snapshot')
+                key = Pubkey.from_bytes(data[start:start+32])
+            else:
+                raise ValueError('Invalid PubkeyData configuration')
+        elif item[0] == 1 or item[0] >= 128:
+            program = hook
+            if item[0] >= 128:
+                index = item[0] - 128
+                if index >= len(keys):
+                    raise ValueError('Invalid external Hook PDA program index')
+                program = keys[index]
             seeds = []
             offset = 0
             while offset < 32 and config[offset]:
-                if config[offset] != 3 or offset+1 >= 32 or config[offset+1] >= len(keys):
-                    raise ValueError('Unsupported or invalid Hook PDA seed')
-                seeds.append(bytes(keys[config[offset+1]]))
-                offset += 2
+                kind = config[offset]
+                if kind == 1:
+                    if offset+1 >= 32 or config[offset+1] > 32 or offset+2+config[offset+1] > 32:
+                        raise ValueError('Invalid literal Hook PDA seed')
+                    length = config[offset+1]
+                    seeds.append(config[offset+2:offset+2+length]); offset += 2+length
+                elif kind == 2:
+                    if offset+2 >= 32:
+                        raise ValueError('Truncated instruction Hook PDA seed')
+                    start,length = config[offset+1:offset+3]
+                    if length > 32 or not execute_data or start+length > len(execute_data):
+                        raise ValueError('Missing or invalid Execute seed data')
+                    seeds.append(execute_data[start:start+length]); offset += 3
+                elif kind == 3:
+                    if offset+1 >= 32 or config[offset+1] >= len(keys):
+                        raise ValueError('Invalid account-key Hook PDA seed')
+                    seeds.append(bytes(keys[config[offset+1]])); offset += 2
+                elif kind == 4:
+                    if offset+3 >= 32 or config[offset+1] >= len(keys):
+                        raise ValueError('Invalid account-data Hook PDA seed')
+                    index,start,length = config[offset+1:offset+4]
+                    data = account_data.get(keys[index])
+                    if data is None or length > 32 or start+length > len(data):
+                        raise ValueError('Missing or invalid account seed data')
+                    seeds.append(data[start:start+length]); offset += 4
+                else:
+                    raise ValueError('Unsupported Hook PDA seed')
             if any(config[offset:]) or len(seeds) > 15:
                 raise ValueError('Invalid Hook PDA seed padding/count')
-            key = Pubkey.find_program_address(seeds, hook)[0]
+            key = Pubkey.find_program_address(seeds, program)[0]
         else:
             raise ValueError('Unsupported Hook account configuration')
         # Execute base accounts are readonly/non-signers in the callback; do not escalate duplicates.
