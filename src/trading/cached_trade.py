@@ -72,6 +72,8 @@ def value(v):
 
 
 def prepare_cached_trade(r):
+    if type(r.slippage_bps) is not int or not 0 <= r.slippage_bps < 10000:
+        raise ValueError("Invalid cached trade slippage: expected integer basis points in [0, 10000)")
     direction = value(r.trade_type)
     dex = value(r.dex_type)
     if direction not in ("Buy", "Sell"):

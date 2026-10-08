@@ -51,3 +51,8 @@ def test_funded_wsol_positive_simulation_evidence():
     a=r['input_account_validation']
     assert a['initialized'] and a['wallet_on_curve'] and a['ata_matches']
     assert int(a['wsol_amount'])>=10000 and int(a['wallet_lamports'])>=3000000
+
+@pytest.mark.parametrize('slippage',[-1,10000,10001,1.5,True])
+def test_explicit_threshold_still_rejects_invalid_slippage(slippage):
+    with pytest.raises(ValueError,match='slippage'):
+        prepare_cached_trade(replace(request(),slippage_bps=slippage))
