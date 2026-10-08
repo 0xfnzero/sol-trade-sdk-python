@@ -413,6 +413,9 @@ class MeteoraPoolFeesStruct:
     padding_0: bytes
     dynamic_fee: MeteoraDynamicFeeStruct
     padding_1: list[int]
+    # Current meanings of previously reserved bytes; legacy overlays stay available.
+    compounding_fee_bps: int = 0
+    init_sqrt_price: int = 0
 
 @dataclass
 class MeteoraPoolMetrics:
@@ -473,10 +476,16 @@ class MeteoraPool:
     metrics: MeteoraPoolMetrics
     padding_1: list[int]
     reward_infos: list[MeteoraRewardInfo]
+    dead_liquidity_fee_checkpoint: int = 0
+    fee_version: int = 0
+    creator: Pubkey = Pubkey.default()
+    token_a_amount: int = 0
+    token_b_amount: int = 0
+    layout_version: int = 0
 
 
 def decode_meteora_pool(data: bytes) -> MeteoraPool | None:
-    """Decode the fixed Rust 5.0.6 Borsh payload; trailing account extensions are allowed."""
+    """Decode current DAMM v2 fields and legacy overlays; allow trailing extensions."""
     if len(data)<METEORA_POOL_SIZE:return None
     offset=0
     def take(size):
@@ -578,7 +587,16 @@ def decode_meteora_pool(data: bytes) -> MeteoraPool | None:
             padding_1=[int.from_bytes(take(8),"little") for _ in range(10)],
             reward_infos=[read_RewardInfo() for _ in range(2)],
         )
-    return read_Pool()
+    pool = read_Pool()
+    pool.pool_fees.compounding_fee_bps = int.from_bytes(data[46:48], "little")
+    pool.pool_fees.init_sqrt_price = int.from_bytes(data[144:160], "little")
+    pool.dead_liquidity_fee_checkpoint = int.from_bytes(data[400:408], "little")
+    pool.fee_version = data[478]
+    pool.creator = Pubkey.from_bytes(data[640:672])
+    pool.token_a_amount = int.from_bytes(data[672:680], "little")
+    pool.token_b_amount = int.from_bytes(data[680:688], "little")
+    pool.layout_version = data[688]
+    return pool
 
 # ============================================
 # Exports
