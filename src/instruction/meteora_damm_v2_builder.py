@@ -200,7 +200,7 @@ def build_buy_instructions(
         raise ValueError("Pool must contain WSOL or USDC")
 
     # Determine if token A is input (WSOL/USDC)
-    is_a_in = params.token_a_mint == WSOL_TOKEN_ACCOUNT or params.token_a_mint == USDC_TOKEN_ACCOUNT
+    is_a_in = _mint_matches(output_mint, params.token_b_mint)
 
     # Meteora DAMM V2 requires fixed_output_amount
     if fixed_output_amount is None:
@@ -304,7 +304,7 @@ def build_sell_instructions(
         raise ValueError("Pool must contain WSOL or USDC")
 
     # Determine if token B is output (WSOL/USDC)
-    is_a_in = params.token_b_mint == WSOL_TOKEN_ACCOUNT or params.token_b_mint == USDC_TOKEN_ACCOUNT
+    is_a_in = _mint_matches(input_mint, params.token_a_mint)
 
     # Meteora DAMM V2 requires fixed_output_amount
     if fixed_output_amount is None:

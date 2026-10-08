@@ -66,3 +66,25 @@ def test_meteora_account_layout_options():
     amount1 = int.from_bytes(swap.data[16:24], "little")
     assert amount0 == 123
     assert amount1 == 1_000_000
+
+
+def test_sol_usdc_direction_uses_explicit_mints_for_both_pool_orderings():
+    from src.instruction.common import USDC_TOKEN_ACCOUNT, get_associated_token_address
+    from src.instruction.meteora_damm_v2_builder import build_sell_instructions
+    import pytest
+    payer = Keypair().pubkey()
+    for a, b in ((WSOL_TOKEN_ACCOUNT, USDC_TOKEN_ACCOUNT), (USDC_TOKEN_ACCOUNT, WSOL_TOKEN_ACCOUNT)):
+        pool = MeteoraDammV2Params(pool=Keypair().pubkey(), token_a_mint=a, token_b_mint=b,
+            token_a_vault=Keypair().pubkey(), token_b_vault=Keypair().pubkey(),
+            token_a_program=TOKEN_PROGRAM, token_b_program=TOKEN_PROGRAM)
+        for sell in (False, True):
+            src, dst = (USDC_TOKEN_ACCOUNT, WSOL_TOKEN_ACCOUNT) if sell else (WSOL_TOKEN_ACCOUNT, USDC_TOKEN_ACCOUNT)
+            builder = build_sell_instructions if sell else build_buy_instructions
+            args = dict(payer=payer, input_mint=src, output_mint=dst, input_amount=10000,
+                fixed_output_amount=1, params=pool, create_output_ata=False)
+            if not sell: args['create_input_ata'] = False
+            swap = builder(**args)[-1]
+            assert swap.accounts[2].pubkey == get_associated_token_address(payer, src, TOKEN_PROGRAM)
+            assert swap.accounts[3].pubkey == get_associated_token_address(payer, dst, TOKEN_PROGRAM)
+            with pytest.raises(ValueError):
+                builder(**{**args, 'output_mint': src})
