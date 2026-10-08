@@ -171,3 +171,28 @@ def test_official_quote_control_and_child_reserves():
     )
     with pytest.raises(ValueError):
         pump_coin_initial_quote_reserves(123, 1000, 10, 1000, 100, 100, 0, 1)
+
+
+def test_builders_match_successful_mainnet_simulations():
+    from pathlib import Path
+    import json
+    from solders.pubkey import Pubkey
+    from src.instruction.pump_upgrade import build_pump_upgrade_instruction
+
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures/pump_upgrade/simulated_instructions.json"
+        ).read_text()
+    )
+    for c in fixture["cases"]:
+        ix = build_pump_upgrade_instruction(
+            c["name"],
+            {k: Pubkey.from_string(v) for k, v in c["accounts"].items()},
+            [int(n) for n in c["args"]],
+        )
+        assert str(ix.program_id) == c["program"]
+        assert bytes(ix.data).hex() == c["data"]
+        assert [
+            {"pubkey": str(a.pubkey), "signer": a.is_signer, "writable": a.is_writable}
+            for a in ix.accounts
+        ] == c["metas"]
