@@ -1,5 +1,6 @@
 """Derive compact account roles. Token accounts must already exist; no RPC."""
 
+from dataclasses import replace
 from solders.pubkey import Pubkey
 
 PUMP = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
@@ -7,6 +8,25 @@ AMM = Pubkey.from_string("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
 FEES = Pubkey.from_string("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")
 ATA = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 WSOL = Pubkey.from_string("So11111111111111111111111111111111111111112")
+
+
+def _normalize_quote(mint):
+    if mint in (
+        Pubkey.default(),
+        Pubkey.from_string("So11111111111111111111111111111111111111111"),
+    ):
+        return WSOL
+    return mint
+
+
+def _normalize_hop(hop):
+    quote = _normalize_quote(hop.quote_mint)
+    token = (
+        Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+        if quote == WSOL
+        else hop.quote_token_program
+    )
+    return replace(hop, quote_mint=quote, quote_token_program=token)
 
 
 def _pda(program, seed, key=None):
@@ -32,6 +52,7 @@ def derive_pump_v3_accounts(
     cashback=False,
     complete=False
 ):
+    quote_mint = _normalize_quote(quote_mint)
     if cashback:
         raise ValueError("Cashback coins require Pump v2")
     if complete:
@@ -77,6 +98,7 @@ def derive_pump_swap_v2_accounts(
     *,
     cashback=False
 ):
+    quote_mint = _normalize_quote(quote_mint)
     if cashback:
         raise ValueError("Cashback pools require PumpSwap v1")
     return dict(
@@ -127,6 +149,9 @@ def derive_pump_multi_hop_accounts(
     """Uses decoded venue state; ATAs must exist. Four hops require v0 + ALT."""
     if not hops or (len(hops) >= 4 and not use_v0_with_alt):
         raise ValueError("Route requires hops and v0 with ALT for four or more hops")
+    input_mint = _normalize_quote(input_mint)
+    output_mint = _normalize_quote(output_mint)
+    hops = [_normalize_hop(h) for h in hops]
     current = input_mint
     side = None
     remaining = []
@@ -214,6 +239,7 @@ def derive_pump_coin_quote_create_accounts(
     new_mint, quote, depth, max_depth, listed_quote_mints=()
 ):
     """Additional create_v2 roles for an unlisted Pump coin quote, from decoded state."""
+    quote = _normalize_hop(quote)
     if (
         type(depth) is not int
         or type(max_depth) is not int

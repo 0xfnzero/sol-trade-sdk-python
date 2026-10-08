@@ -196,3 +196,59 @@ def test_builders_match_successful_mainnet_simulations():
             {"pubkey": str(a.pubkey), "signer": a.is_signer, "writable": a.is_writable}
             for a in ix.accounts
         ] == c["metas"]
+
+
+def test_decoded_native_aliases_match_official_accounts():
+    from src.instruction.pump_compact_accounts import derive_pump_swap_v2_accounts
+
+    user, a, b = [Pubkey(bytes([i]) * 32) for i in (1, 2, 3)]
+    token = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+    token2022 = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+    pseudo_sol = Pubkey.from_string("So11111111111111111111111111111111111111111")
+
+    def roles(base, quote, quote_token):
+        return derive_pump_v3_accounts(user, base, quote, token2022, quote_token, user)
+
+    def hop(base, quote, quote_token):
+        normalized = WSOL if quote in (Pubkey.default(), pseudo_sol) else quote
+        p = roles(base, normalized, quote_token)
+        return PumpMultiHop(
+            "curve", base, quote, p["bonding_curve"],
+            p["associated_base_bonding_curve"], p["associated_quote_bonding_curve"],
+            token2022, quote_token,
+        )
+
+    def metas(items):
+        return [
+            dict(pubkey=str(m.pubkey), signer=m.is_signer, writable=m.is_writable)
+            for m in items
+        ]
+
+    for c in json.loads((ROOT / "native_aliases.json").read_text())["cases"]:
+        alias = Pubkey.from_string(c["alias"])
+        ix = build_pump_upgrade_instruction(
+            "pump_buy_v3", roles(a, alias, token), [7, 9]
+        )
+        assert metas(ix.accounts) == c["v3"]
+        parent, child = hop(a, alias, token), hop(b, a, token2022)
+        for name, route, input_mint, output_mint in [
+            ("buy", [parent, child], alias, b),
+            ("sell", [child, parent], b, alias),
+        ]:
+            accounts, remaining = derive_pump_multi_hop_accounts(
+                user, input_mint, output_mint, user, route
+            )
+            ix = build_pump_upgrade_instruction(
+                "pump_amm_multi_hop_swap", accounts, [7, 9], remaining=remaining
+            )
+            assert metas(ix.accounts) == c[name]
+            assert parent.quote_mint == alias
+        assert metas(
+            derive_pump_coin_quote_create_accounts(b, parent, 0, 1)
+        ) == c["create"]
+        expected = derive_pump_swap_v2_accounts(
+            user, a, WSOL, token2022, token, user, user, a, b
+        )
+        assert derive_pump_swap_v2_accounts(
+            user, a, alias, token2022, token, user, user, a, b
+        ) == expected
