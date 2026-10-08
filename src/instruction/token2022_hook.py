@@ -25,6 +25,9 @@ def resolve_hook_accounts(hook, mint, mint_owner, mint_data, meta, meta_owner, m
     offset = 166
     while offset + 4 <= len(mint_data):
         kind = int.from_bytes(mint_data[offset:offset+2], 'little')
+        # SPL treats Uninitialized as the end of used TLV data.
+        if kind == 0:
+            break
         length = int.from_bytes(mint_data[offset+2:offset+4], 'little')
         end = offset + 4 + length
         if end > len(mint_data):
