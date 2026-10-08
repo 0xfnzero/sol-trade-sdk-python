@@ -197,3 +197,22 @@ def build_meteora_dlmm_swap2(a, amount_in, min_out):
         or i == 8
         or i >= 16,
     )
+
+
+def build_whirlpool_swap_v2_with_hooks(a, args, a_to_b, hook_a=(), hook_b=()):
+    """Low-level swap with resolved Hook metas; cached routes still fail closed.
+
+    Resolve each side for its actual source/destination before calling. For
+    exact-out/output transfers, amount-dependent metadata needs a full resolver.
+    """
+    base = build_whirlpool_swap_v2(a, args, a_to_b)
+    slices = []
+    extras = []
+    for kind, metas in ((0, hook_a), (1, hook_b), (6, base.accounts[15:])):
+        if len(metas) > 255:
+            raise ValueError('Whirlpool remaining slice exceeds u8')
+        if metas:
+            slices.append(bytes([kind, len(metas)]))
+            extras.extend(metas)
+    info = bytes([1]) + struct.pack('<I', len(slices)) + b''.join(slices) if slices else bytes([0])
+    return Instruction(WHIRLPOOL, bytes(base.data[:42]) + info, list(base.accounts[:15]) + extras)
