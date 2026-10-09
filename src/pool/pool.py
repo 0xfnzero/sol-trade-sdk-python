@@ -232,6 +232,15 @@ class RateLimiter:
         while not self.allow():
             time.sleep(0.001)  # Small sleep to avoid busy-waiting
 
+    async def wait_async(self) -> None:
+        """Wait for the same token bucket without blocking the event loop."""
+        if self._rate <= 0 or self._burst < 1:
+            raise ValueError("Rate and burst must permit token acquisition")
+        while not self.allow():
+            with self._lock:
+                delay = max(0.0, (1 - self._tokens) / self._rate)
+            await asyncio.sleep(delay)
+
 
 class MultiRateLimiter:
     """

@@ -4,14 +4,14 @@ Based on sol-trade-sdk Rust implementation.
 """
 
 import struct
-from typing import List, Optional
+from typing import List
 from dataclasses import dataclass
 
-# Program ID
-RAYDIUM_AMM_V4_PROGRAM = bytes.fromhex("675c1c5e5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2")
+from . import raydium_amm_v4_builder as _native
+from .common import TOKEN_PROGRAM
 
-# Discriminators
-SWAP_DISCRIMINATOR = bytes([248, 198, 158, 145, 225, 117, 135, 200])
+RAYDIUM_AMM_V4_PROGRAM = bytes(_native.RAYDIUM_AMM_V4_PROGRAM_ID)
+SWAP_DISCRIMINATOR = _native.SWAP_BASE_IN_DISCRIMINATOR
 
 
 @dataclass
@@ -65,8 +65,9 @@ class RaydiumAmmV4InstructionBuilder:
         # Raydium AMM V4 uses a simple swap instruction
         data = SWAP_DISCRIMINATOR + struct.pack("<Q", amount_in) + struct.pack("<Q", minimum_amount_out)
 
-        # Build accounts (17 accounts for swap)
+        # Legacy SwapBaseIn has 18 accounts including the token program.
         accounts = [
+            AccountMeta(bytes(TOKEN_PROGRAM), False, False),
             AccountMeta(amm, False, True),
             AccountMeta(amm_authority, False, False),
             AccountMeta(amm_open_orders, False, True),

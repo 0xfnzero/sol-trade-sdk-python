@@ -211,6 +211,67 @@ class TestHotPathState:
         assert 'prefetch_errors' in metrics
         assert 'accounts_cached' in metrics
 
+    @pytest.mark.asyncio
+    async def test_start_is_idempotent_and_stop_joins_owned_task(self, mock_rpc_client):
+        state = HotPathState(mock_rpc_client, HotPathConfig(blockhash_refresh_interval=3600))
+        try:
+            await asyncio.gather(state.start(), state.start())
+            task = state._prefetch_task
+            await asyncio.sleep(0)
+            await state.start()
+            assert state._prefetch_task is task
+            assert mock_rpc_client.get_latest_blockhash.await_count == 1
+            await state.stop()
+            assert task.done() and state._prefetch_task is None
+            assert mock_rpc_client.get_latest_blockhash.await_count == 1
+            await state.start()
+            assert state._prefetch_task is not task
+            assert mock_rpc_client.get_latest_blockhash.await_count == 2
+        finally:
+            await state.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_inflight_background_refresh(self, mock_rpc_client):
+        state = HotPathState(mock_rpc_client, HotPathConfig(blockhash_refresh_interval=0.001))
+        await state.start()
+        previous = state.get_blockhash()
+        entered = asyncio.Event()
+        async def pending():
+            entered.set()
+            await asyncio.Event().wait()
+        mock_rpc_client.get_latest_blockhash.side_effect = pending
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            task = state._prefetch_task
+            await asyncio.wait_for(state.stop(), 1)
+            assert task.done()
+            assert state.get_blockhash() == previous
+        finally:
+            await state.stop()
+
+    @pytest.mark.asyncio
+    async def test_failed_start_can_retry_and_cancelled_start_has_no_orphan(self, mock_rpc_client):
+        state = HotPathState(mock_rpc_client)
+        response = {'blockhash': 'ready', 'last_valid_block_height': 100}
+        mock_rpc_client.get_latest_blockhash.side_effect = [RuntimeError('not ready'), response]
+        with pytest.raises(RuntimeError, match='not ready'):
+            await state.start()
+        assert state._prefetch_task is None
+        await state.start()
+        await state.stop()
+        entered = asyncio.Event()
+        async def pending():
+            entered.set()
+            await asyncio.Event().wait()
+        mock_rpc_client.get_latest_blockhash.side_effect = pending
+        starting = asyncio.create_task(state.start())
+        await asyncio.wait_for(entered.wait(), 1)
+        starting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await starting
+        await state.stop()
+        assert state._prefetch_task is None
+
 
 class TestTradingContext:
     """Tests for TradingContext"""

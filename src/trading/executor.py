@@ -33,6 +33,7 @@ from ..swqos.clients import (
     TradeError,
 )
 from .confirmation_parity import (
+    is_successful_confirmation,
     extract_hints_from_logs,
     format_parsed_transaction_error,
     instruction_error_code_from_meta_err,
@@ -131,12 +132,9 @@ class TransactionBuilder:
                 keypairs.append(Keypair.from_bytes(bytes(s)))
             if not any(k.pubkey() == payer_pk for k in keypairs):
                 raise ValueError("signers 中须包含与 payer 公钥一致的 fee payer Keypair")
-            tx = Transaction.new_signed_with_payer(
-                self.instructions,
-                payer_pk,
-                keypairs,
-                bh,
-            )
+            msg = Message.new_with_blockhash(self.instructions, payer_pk, bh)
+            tx = Transaction.new_unsigned(msg)
+            tx.sign(keypairs, bh)
         else:
             msg = Message.new_with_blockhash(self.instructions, payer_pk, bh)
             tx = Transaction.new_unsigned(msg)
@@ -459,7 +457,7 @@ async def poll_for_confirmation(
 
                 if "result" in data and data["result"]["value"]:
                     status = data["result"]["value"][0]
-                    if status and status.get("confirmationStatus") in ("confirmed", "finalized"):
+                    if is_successful_confirmation(status):
                         return True
                     if status and status.get("err"):
                         meta = {}
@@ -539,7 +537,7 @@ async def poll_for_confirmation_error(
 
                 if "result" in data and data["result"]["value"]:
                     status = data["result"]["value"][0]
-                    if status and status.get("err") is None and status.get("confirmationStatus") in ("confirmed", "finalized"):
+                    if is_successful_confirmation(status):
                         return True, None
                     if status and status.get("err"):
                         meta = {}

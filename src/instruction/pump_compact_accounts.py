@@ -53,6 +53,8 @@ def derive_pump_v3_accounts(
     complete=False
 ):
     quote_mint = _normalize_quote(quote_mint)
+    if quote_mint == WSOL:
+        quote_token_program = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
     if cashback:
         raise ValueError("Cashback coins require Pump v2")
     if complete:
@@ -99,6 +101,8 @@ def derive_pump_swap_v2_accounts(
     cashback=False
 ):
     quote_mint = _normalize_quote(quote_mint)
+    if quote_mint == WSOL:
+        quote_token_program = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
     if cashback:
         raise ValueError("Cashback pools require PumpSwap v1")
     return dict(

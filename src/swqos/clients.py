@@ -1590,7 +1590,16 @@ class DefaultClient(SwqosClient, HTTPClientMixin):
                 ),
             )
 
-        return _extract_signature(data)
+        signature = _extract_signature(data)
+        if wait_confirmation:
+            # Explicit observation after acknowledgement; submission-only has no reads.
+            from ..trading.executor import poll_for_confirmation_error
+            ok, error = await poll_for_confirmation_error(self.rpc_url, signature)
+            if not ok:
+                failure = TradeError(code=500, message=error or "Transaction failed to confirm")
+                failure.signature = signature
+                raise failure
+        return signature
 
     async def send_transactions(
         self,

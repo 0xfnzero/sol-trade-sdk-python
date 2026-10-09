@@ -93,6 +93,15 @@ class HotPathMetrics:
             }
 
 
+def _client_type(client):
+    # Native providers expose get_swqos_type(); accept older attribute clients too.
+    legacy_type = getattr(client, "swqos_type", None)
+    if legacy_type is not None:
+        return legacy_type
+    getter = getattr(client, "get_swqos_type", None)
+    return getter() if getter is not None else "unknown"
+
+
 class HotPathExecutor:
     """
     Executes trades with ZERO RPC calls in the hot path.
@@ -133,7 +142,7 @@ class HotPathExecutor:
         with self._clients_lock:
             self._swqos_clients = [
                 c for c in self._swqos_clients 
-                if c.swqos_type != swqos_type
+                if _client_type(c) != swqos_type
             ]
     
     async def start(self) -> None:
@@ -249,19 +258,19 @@ class HotPathExecutor:
                 return ExecuteResult(
                     signature=sig,
                     success=True,
-                    swqos_type=client.swqos_type,
+                    swqos_type=_client_type(client),
                 )
             except asyncio.TimeoutError:
                 return ExecuteResult(
                     success=False,
                     error=f"Timeout after {opts.timeout}s",
-                    swqos_type=getattr(client, 'swqos_type', 'unknown'),
+                    swqos_type=_client_type(client),
                 )
             except Exception as e:
                 return ExecuteResult(
                     success=False,
                     error=f"{type(e).__name__}: {str(e)}",
-                    swqos_type=getattr(client, 'swqos_type', 'unknown'),
+                    swqos_type=_client_type(client),
                 )
 
         # Create proper asyncio Tasks (not just coroutines)
@@ -328,7 +337,7 @@ class HotPathExecutor:
                     return ExecuteResult(
                         signature=sig,
                         success=True,
-                        swqos_type=client.swqos_type,
+                        swqos_type=_client_type(client),
                     )
                 except Exception as e:
                     last_error = str(e)
@@ -393,15 +402,36 @@ class TransactionBuilder:
         blockhash, last_valid_height, valid = self.executor.get_blockhash()
         if not valid:
             return None, "Stale blockhash - prefetch required"
-        
-        # Transaction building would use solders/solana-py
-        # This is a placeholder - actual implementation depends on
-        # the transaction library being used
-        
-        # The key point is: NO RPC CALLS HERE
-        # blockhash comes from cache
-        
-        return None, "Transaction building requires solders/solana-py integration"
+        from solders.errors import SignerError
+        try:
+            from solders.pubkey import Pubkey
+            from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
+            from solders.system_program import ID as SYSTEM_PROGRAM
+            from ..trading.executor import TransactionBuilder as WireTransactionBuilder
+
+            if not signers:
+                raise ValueError("Signed transaction requires a fee payer signer")
+            builder = WireTransactionBuilder(bytes(Pubkey.from_string(payer)), blockhash)
+            # Nonce advance must stay first for durable nonce recognition.
+            nonce_first = bool(instructions and instructions[0].program_id == SYSTEM_PROGRAM
+                               and bytes(instructions[0].data) == b"\x04\x00\x00\x00")
+            if nonce_first:
+                builder.add_instruction(instructions[0])
+            if gas_config is not None:
+                limit = gas_config['compute_unit_limit']
+                price = gas_config['compute_unit_price']
+                if (type(limit) is not int or not 0 <= limit <= 0xffffffff
+                        or type(price) is not int or not 0 <= price < 1 << 64):
+                    raise ValueError('Invalid compute budget limit or price')
+                builder.add_instruction(set_compute_unit_limit(limit))
+                builder.add_instruction(set_compute_unit_price(price))
+            for index in range(1 if nonce_first else 0, len(instructions)):
+                builder.add_instruction(instructions[index])
+            for signer in signers:
+                builder.add_signer(bytes(signer))
+            return builder.build(), None
+        except (ValueError, TypeError, KeyError, ImportError, SignerError) as error:
+            return None, str(error)
 
 
 # ===== Convenience Factory =====

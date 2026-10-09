@@ -16,11 +16,12 @@ def validate_simulation_response(response):
     return value['err']
 
 
-def simulate(wire, slot, output=None):
+def simulate(wire, slot, output=None, *, verify_signatures=False):
+    """Enable signature verification only with the original signed blockhash."""
     r = requests.post(os.environ.get('RPC_URL', 'https://api.mainnet-beta.solana.com'),
         json=dict(jsonrpc='2.0', id=1, method='simulateTransaction', params=[
-            base64.b64encode(wire).decode(), dict(encoding='base64', sigVerify=False,
-                replaceRecentBlockhash=True, innerInstructions=True, commitment='confirmed', minContextSlot=slot)]), timeout=30)
+            base64.b64encode(wire).decode(), dict(encoding='base64', sigVerify=verify_signatures,
+                replaceRecentBlockhash=not verify_signatures, innerInstructions=True, commitment='confirmed', minContextSlot=slot)]), timeout=30)
     r.raise_for_status()
     response = r.json()
     error = validate_simulation_response(response)

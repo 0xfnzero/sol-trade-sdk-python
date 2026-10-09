@@ -4,20 +4,19 @@ Based on sol-trade-sdk Rust implementation.
 """
 
 import struct
-from typing import List, Optional, Tuple
+from typing import List
 from dataclasses import dataclass
 
-# Program ID
-BONK_PROGRAM = bytes.fromhex("5c11d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2")
+from solders.pubkey import Pubkey
+from . import bonk_builder as _native
+from .common import TOKEN_PROGRAM, SYSTEM_PROGRAM
 
-# Discriminators
-BUY_DISCRIMINATOR = bytes([102, 6, 61, 18, 1, 218, 235, 234])
-SELL_DISCRIMINATOR = bytes([51, 230, 133, 164, 1, 127, 131, 173])
-
-# Fee rates (basis points)
-PROTOCOL_FEE_RATE = 100  # 1%
-PLATFORM_FEE_RATE = 50   # 0.5%
-SHARE_FEE_RATE = 25      # 0.25%
+BONK_PROGRAM = bytes(_native.BONK_PROGRAM_ID)
+BUY_DISCRIMINATOR = _native.BUY_EXACT_IN_DISCRIMINATOR
+SELL_DISCRIMINATOR = _native.SELL_EXACT_IN_DISCRIMINATOR
+PROTOCOL_FEE_RATE = _native.PROTOCOL_FEE_RATE
+PLATFORM_FEE_RATE = _native.PLATFORM_FEE_RATE
+SHARE_FEE_RATE = _native.SHARE_FEE_RATE
 
 # Default virtual reserves
 DEFAULT_VIRTUAL_BASE = 1073025605596382
@@ -41,27 +40,34 @@ class Instruction:
 
 
 def get_pool_pda(base_mint: bytes, quote_mint: bytes) -> bytes:
-    """Get pool PDA for given base and quote mints"""
-    import hashlib
-    seed = b"pool" + base_mint + quote_mint
-    hash_result = hashlib.sha256(seed).digest()
-    return hash_result[:32]
+    return bytes(_native.get_pool_pda(Pubkey.from_bytes(base_mint), Pubkey.from_bytes(quote_mint)))
 
 
 def get_platform_associated_account(platform_config: bytes) -> bytes:
-    """Get platform associated account"""
-    import hashlib
-    seed = b"platform" + platform_config
-    hash_result = hashlib.sha256(seed).digest()
-    return hash_result[:32]
+    """Derive the platform's default WSOL quote account."""
+    return bytes(_native.get_platform_associated_account(Pubkey.from_bytes(platform_config)))
 
 
 def get_creator_associated_account(creator: bytes) -> bytes:
-    """Get creator associated account"""
-    import hashlib
-    seed = b"creator" + creator
-    hash_result = hashlib.sha256(seed).digest()
-    return hash_result[:32]
+    """Derive the creator's default WSOL quote account."""
+    return bytes(_native.get_creator_associated_account(Pubkey.from_bytes(creator)))
+
+
+def _build(discriminator, payer, pool_state, base_mint, quote_mint, base_vault,
+           quote_vault, platform_config, platform_associated_account,
+           creator_associated_account, global_config, user_base_token_account,
+           user_quote_token_account, amount_in, minimum_amount_out):
+    if amount_in == 0:
+        raise ValueError("Amount cannot be zero")
+    data = discriminator + struct.pack("<QQQ", amount_in, minimum_amount_out, SHARE_FEE_RATE)
+    keys = [payer, bytes(_native.AUTHORITY), global_config, platform_config,
+            pool_state, user_base_token_account, user_quote_token_account,
+            base_vault, quote_vault, base_mint, quote_mint, bytes(TOKEN_PROGRAM),
+            bytes(TOKEN_PROGRAM), bytes(_native.EVENT_AUTHORITY), BONK_PROGRAM,
+            bytes(SYSTEM_PROGRAM), platform_associated_account, creator_associated_account]
+    accounts = [AccountMeta(key, index == 0, index == 0 or 4 <= index <= 8 or index >= 16)
+                for index, key in enumerate(keys)]
+    return [Instruction(BONK_PROGRAM, accounts, data)]
 
 
 class BonkInstructionBuilder:
@@ -84,33 +90,11 @@ class BonkInstructionBuilder:
         amount_in: int,
         minimum_amount_out: int,
     ) -> List[Instruction]:
-        """Build buy instructions for Bonk"""
-
-        if amount_in == 0:
-            raise ValueError("Amount cannot be zero")
-
-        # Build instruction data
-        data = BUY_DISCRIMINATOR + struct.pack("<Q", amount_in) + struct.pack("<Q", minimum_amount_out)
-
-        # Build accounts
-        accounts = [
-            AccountMeta(pool_state, False, True),
-            AccountMeta(base_mint, False, False),
-            AccountMeta(quote_mint, False, False),
-            AccountMeta(base_vault, False, True),
-            AccountMeta(quote_vault, False, True),
-            AccountMeta(platform_config, False, False),
-            AccountMeta(platform_associated_account, False, True),
-            AccountMeta(creator_associated_account, False, True),
-            AccountMeta(global_config, False, False),
-            AccountMeta(user_base_token_account, False, True),
-            AccountMeta(user_quote_token_account, False, True),
-            AccountMeta(payer, True, True),
-            AccountMeta(bytes(32), False, False),  # token program (placeholder)
-            AccountMeta(bytes(32), False, False),  # system program (placeholder)
-        ]
-
-        return [Instruction(BONK_PROGRAM, accounts, data)]
+        """Build the official LaunchLab buy_exact_in instruction (SPL Token)."""
+        return _build(BUY_DISCRIMINATOR, payer, pool_state, base_mint, quote_mint,
+                      base_vault, quote_vault, platform_config, platform_associated_account,
+                      creator_associated_account, global_config, user_base_token_account,
+                      user_quote_token_account, amount_in, minimum_amount_out)
 
     @staticmethod
     def build_sell_instructions(
@@ -129,30 +113,8 @@ class BonkInstructionBuilder:
         amount_in: int,
         minimum_amount_out: int,
     ) -> List[Instruction]:
-        """Build sell instructions for Bonk"""
-
-        if amount_in == 0:
-            raise ValueError("Amount cannot be zero")
-
-        # Build instruction data
-        data = SELL_DISCRIMINATOR + struct.pack("<Q", amount_in) + struct.pack("<Q", minimum_amount_out)
-
-        # Build accounts
-        accounts = [
-            AccountMeta(pool_state, False, True),
-            AccountMeta(base_mint, False, False),
-            AccountMeta(quote_mint, False, False),
-            AccountMeta(base_vault, False, True),
-            AccountMeta(quote_vault, False, True),
-            AccountMeta(platform_config, False, False),
-            AccountMeta(platform_associated_account, False, True),
-            AccountMeta(creator_associated_account, False, True),
-            AccountMeta(global_config, False, False),
-            AccountMeta(user_base_token_account, False, True),
-            AccountMeta(user_quote_token_account, False, True),
-            AccountMeta(payer, True, True),
-            AccountMeta(bytes(32), False, False),  # token program (placeholder)
-            AccountMeta(bytes(32), False, False),  # system program (placeholder)
-        ]
-
-        return [Instruction(BONK_PROGRAM, accounts, data)]
+        """Build the official LaunchLab sell_exact_in instruction (SPL Token)."""
+        return _build(SELL_DISCRIMINATOR, payer, pool_state, base_mint, quote_mint,
+                      base_vault, quote_vault, platform_config, platform_associated_account,
+                      creator_associated_account, global_config, user_base_token_account,
+                      user_quote_token_account, amount_in, minimum_amount_out)

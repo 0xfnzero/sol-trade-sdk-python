@@ -42,6 +42,8 @@ def build(snapshot):
             a.pubkey,
             CachedAccount(a.owner, a.data, int(value["slot"]), int(value["write_version"])),
         )
+    # Complete fixed CPMM quote/build dependency set; discover it before trade triggers.
+    dependency_keys = [account(name).pubkey for name in names]
     # Replay defaults to the saved account slot. Live callers supply their Clock
     # slot and an explicit age budget, refreshed through the subscription.
     read_slot = int(snapshot.get("read_slot", max(int(snapshot[n]["slot"]) for n in names)))
@@ -58,7 +60,7 @@ def build(snapshot):
         base.pubkey if base_in else quote.pubkey,
         quote.pubkey if base_in else base.pubkey,
     )
-    _, result, swap = cache.snapshot().prepare_cpmm(
+    _, result, swap = cache.snapshot(dependency_keys).prepare_cpmm(
         hint,
         context,
         int(snapshot["unix_timestamp"]),

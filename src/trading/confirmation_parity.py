@@ -26,6 +26,15 @@ class ParsedTransactionError:
     instruction_index: Optional[int] = None
 
 
+def is_successful_confirmation(status: Any) -> bool:
+    """Confirmation level never overrides an on-chain execution error."""
+    return (
+        isinstance(status, dict)
+        and status.get("err") is None
+        and status.get("confirmationStatus") in ("confirmed", "finalized")
+    )
+
+
 def extract_hints_from_logs(logs: Optional[Iterable[str]]) -> str:
     """Extract the same user-facing log hints as Rust `swqos::common`."""
     if not logs:

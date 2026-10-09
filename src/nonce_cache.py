@@ -73,8 +73,13 @@ async def fetch_nonce_info(
         # - Nonce hash (32 bytes) - only if initialized
         # - Fee calculator (8 bytes) - only if initialized
 
-        if len(data) < 72:
-            logger.error(f"Invalid nonce account data length: {len(data)}")
+        # Current(1) + Initialized(1), including the 8-byte fee calculator.
+        # Legacy nonce values are not valid durable transaction blockhashes.
+        if (response.value.owner != Pubkey.default() or response.value.executable
+                or len(data) != 80
+                or int.from_bytes(data[:4], "little") != 1
+                or int.from_bytes(data[4:8], "little") != 1):
+            logger.error(f"Invalid initialized current nonce account: {nonce_account}")
             return None
 
         authority = Pubkey.from_bytes(data[8:40])

@@ -7,15 +7,14 @@ import struct
 from typing import List, Optional
 from dataclasses import dataclass
 
-# Program ID
-RAYDIUM_CPMM_PROGRAM = bytes.fromhex("675c1c5e5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2")
+from solders.pubkey import Pubkey
+from . import raydium_cpmm_builder as _native
 
-# Discriminators
-SWAP_BASE_IN_DISCRIMINATOR = bytes([248, 198, 158, 145, 225, 117, 135, 200])
-
-# Seeds
-OBSERVATION_SEED = b"observation"
-POOL_SEED = b"pool"
+# Share the official ABI and PDA implementation with the native builder.
+RAYDIUM_CPMM_PROGRAM = bytes(_native.RAYDIUM_CPMM_PROGRAM_ID)
+SWAP_BASE_IN_DISCRIMINATOR = _native.SWAP_BASE_IN_DISCRIMINATOR
+OBSERVATION_SEED = _native.OBSERVATION_STATE_SEED
+POOL_SEED = _native.POOL_SEED
 
 
 @dataclass
@@ -35,27 +34,16 @@ class Instruction:
 
 
 def get_pool_pda(amm_config: bytes, base_mint: bytes, quote_mint: bytes) -> bytes:
-    """Get pool PDA for given config and mints"""
-    import hashlib
-    seed = POOL_SEED + amm_config + base_mint + quote_mint
-    hash_result = hashlib.sha256(seed).digest()
-    return hash_result[:32]
+    """Derive the official pool PDA for mints in caller-supplied order."""
+    return bytes(_native.get_pool_pda(*map(Pubkey.from_bytes, (amm_config, base_mint, quote_mint))))
 
 
 def get_observation_state_pda(pool_state: bytes) -> bytes:
-    """Get observation state PDA for a pool"""
-    import hashlib
-    seed = OBSERVATION_SEED + pool_state
-    hash_result = hashlib.sha256(seed).digest()
-    return hash_result[:32]
+    return bytes(_native.get_observation_state_pda(Pubkey.from_bytes(pool_state)))
 
 
 def get_vault_account(pool_state: bytes, mint: bytes) -> bytes:
-    """Get vault account for a pool and mint"""
-    import hashlib
-    seed = pool_state + mint + b"vault"
-    hash_result = hashlib.sha256(seed).digest()
-    return hash_result[:32]
+    return bytes(_native.get_vault_pda(Pubkey.from_bytes(pool_state), Pubkey.from_bytes(mint)))
 
 
 class RaydiumCpmmInstructionBuilder:
@@ -93,7 +81,7 @@ class RaydiumCpmmInstructionBuilder:
         # Build accounts (13 accounts)
         accounts = [
             AccountMeta(payer, True, True),
-            AccountMeta(bytes(32), False, False),  # authority (placeholder)
+            AccountMeta(bytes(_native.AUTHORITY), False, False),
             AccountMeta(amm_config, False, False),
             AccountMeta(pool_state, False, True),
             AccountMeta(input_token_account, False, True),

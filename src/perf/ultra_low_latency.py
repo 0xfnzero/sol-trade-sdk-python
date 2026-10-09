@@ -19,6 +19,22 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_MEMORY_POOL_BUDGET_BYTES = 16 * 1024 * 1024
+
+
+def _pool_capacity(buffer_size, pool_size, memory_budget_bytes, clear_on_release=False):
+    for name, value in (("buffer_size", buffer_size), ("pool_size", pool_size),
+                        ("memory_budget_bytes", memory_budget_bytes)):
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+    # The zeroing template is part of the same buffer-byte budget. Python
+    # object/lock/deque overhead is additional and bounded by this capacity.
+    available = memory_budget_bytes - (buffer_size if clear_on_release else 0)
+    capacity = min(pool_size, available // buffer_size)
+    if capacity < 1:
+        raise ValueError("Memory pool budget must fit a buffer and its zeroing template")
+    return capacity
+
 
 @dataclass
 class UltraLowLatencyConfig:
@@ -43,6 +59,17 @@ class UltraLowLatencyConfig:
     # Latency targets
     target_latency_us: int = 100  # 100 microseconds
 
+    # Appended to preserve existing positional configuration arguments.
+    # Total buffer payload budget, including any zeroing template; object
+    # overhead is additional. Requested memory_pool_size is an upper bound.
+    memory_pool_budget_bytes: int = DEFAULT_MEMORY_POOL_BUDGET_BYTES
+    prewarm_memory_pool: bool = True
+
+    def __post_init__(self):
+        _pool_capacity(self.buffer_size, self.memory_pool_size, self.memory_pool_budget_bytes)
+        if type(self.prewarm_memory_pool) is not bool:
+            raise ValueError("prewarm_memory_pool must be boolean")
+
 
 @dataclass
 class LatencyMetrics:
@@ -63,25 +90,52 @@ class MemoryPool:
     Provides fixed-size buffers for zero-allocation hot paths.
     """
 
-    def __init__(self, buffer_size: int, pool_size: int, clear_on_release: bool = False):
+    def __init__(self, buffer_size: int, pool_size: int, clear_on_release: bool = False,
+                 *, memory_budget_bytes: int = DEFAULT_MEMORY_POOL_BUDGET_BYTES,
+                 prewarm: bool = True):
+        if type(clear_on_release) is not bool or type(prewarm) is not bool:
+            raise ValueError("clear_on_release and prewarm must be boolean")
         self.buffer_size = buffer_size
-        self.pool_size = pool_size
+        self.requested_pool_size = pool_size
+        self.pool_size = _pool_capacity(buffer_size, pool_size, memory_budget_bytes, clear_on_release)
+        self.memory_budget_bytes = memory_budget_bytes
         self.clear_on_release = clear_on_release
         self._pool: deque[bytearray] = deque()
         self._lock = threading.Lock()
         self._allocated = 0
-        self._zero_buffer = bytes(buffer_size) if clear_on_release else None
+        self._warmed = 0
+        self._leased = {}  # Preallocated identity slots; foreign/double returns never enter the pool.
+        self._zero_buffer = None
 
-        # Pre-allocate buffers
-        for _ in range(pool_size):
-            self._pool.append(bytearray(buffer_size))
+        if prewarm:
+            self.prewarm()
+
+    def prewarm(self, count: Optional[int] = None) -> None:
+        """Cold path: allocate up to a target number of buffers within the budget.
+
+        Count includes checked-out buffers; repeated calls do not refill those
+        leases. acquire() never allocates, including an exhausted or lazy pool.
+        """
+        target = self.pool_size if count is None else count
+        if type(target) is not int or not 0 <= target <= self.pool_size:
+            raise ValueError("Prewarm count must be an integer within pool capacity")
+        with self._lock:
+            if target > self._warmed and self.clear_on_release and self._zero_buffer is None:
+                self._zero_buffer = bytes(self.buffer_size)
+            while self._warmed < target:
+                buffer = bytearray(self.buffer_size)
+                self._pool.append(buffer)
+                self._leased[id(buffer)] = [buffer, False]
+                self._warmed += 1
 
     def acquire(self) -> Optional[bytearray]:
         """Acquire a buffer from the pool."""
         with self._lock:
             if self._pool:
+                buffer = self._pool.popleft()
+                self._leased[id(buffer)][1] = True
                 self._allocated += 1
-                return self._pool.popleft()
+                return buffer
         return None
 
     def release(self, buffer: bytearray) -> None:
@@ -90,8 +144,10 @@ class MemoryPool:
             return  # Don't accept wrong-sized buffers
 
         with self._lock:
-            if self._allocated <= 0:
+            lease = self._leased.get(id(buffer))
+            if lease is None or lease[0] is not buffer or not lease[1]:
                 return
+            lease[1] = False
             self._allocated -= 1
             if self._zero_buffer is not None:
                 buffer[:] = self._zero_buffer
@@ -201,7 +257,11 @@ class LatencyOptimizer:
         self._latency_history: deque[int] = deque(maxlen=10000)
 
     def initialize(self) -> None:
-        """Initialize all optimization components."""
+        """Cold path: initialize bounded pools before latency-sensitive calls.
+
+        Default prewarming retains acquire-after-initialize compatibility. Set
+        prewarm_memory_pool=False and call prewarm_buffers() explicitly to defer.
+        """
         logger.info("Initializing LatencyOptimizer...")
 
         # Initialize memory pool
@@ -209,8 +269,11 @@ class LatencyOptimizer:
             self._memory_pool = MemoryPool(
                 self.config.buffer_size,
                 self.config.memory_pool_size,
+                memory_budget_bytes=self.config.memory_pool_budget_bytes,
+                prewarm=self.config.prewarm_memory_pool,
             )
-            logger.info(f"Memory pool initialized: {self.config.memory_pool_size} buffers")
+            logger.info("Memory pool capacity: %s buffers (requested %s)",
+                        self._memory_pool.pool_size, self.config.memory_pool_size)
 
         # Set CPU affinity
         if self.config.enable_cpu_pinning and sys.platform != "win32":
@@ -218,6 +281,12 @@ class LatencyOptimizer:
 
         self._running = True
         logger.info("LatencyOptimizer initialized")
+
+    def prewarm_buffers(self, count: Optional[int] = None) -> None:
+        """Allocate pooled buffers during cold initialization, never on acquire."""
+        if self._memory_pool is None:
+            raise RuntimeError("Initialize an enabled memory pool before prewarming")
+        self._memory_pool.prewarm(count)
 
     def _set_cpu_affinity(self) -> None:
         """Set CPU affinity for current process."""
@@ -310,7 +379,11 @@ _global_optimizer: Optional[LatencyOptimizer] = None
 
 
 def get_latency_optimizer(config: Optional[UltraLowLatencyConfig] = None) -> LatencyOptimizer:
-    """Get or create global latency optimizer."""
+    """Get or create the optimizer; call once during cold initialization.
+
+    First creation prewarms at most the configured buffer-byte budget (16 MiB
+    by default), not all 10,000 requested slots. Buffer acquisition is allocation-free.
+    """
     global _global_optimizer
     if _global_optimizer is None:
         _global_optimizer = LatencyOptimizer(config)

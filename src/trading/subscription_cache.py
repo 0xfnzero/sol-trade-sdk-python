@@ -362,15 +362,32 @@ class SubscriptionAccountCache:
             ),
         )
 
-    def ready_snapshot(self, readiness):
+    def _snapshot_accounts(self, keys):
+        if keys is None:
+            return self.__accounts
+        self._assert_no_conflict()
+        selected = {}
+        for key in keys:
+            account = self.__accounts.get(key)
+            if account is None:
+                raise ValueError(f"Missing cached account: {key}")
+            selected[key] = account
+        return selected
+
+    def ready_snapshot(self, readiness, keys=None):
+        """Freeze pre-discovered dependency keys with the same continuity gate."""
+        # Exhaust dynamic iterables before reading versions or readiness state.
+        keys = None if keys is None else tuple(dict.fromkeys(keys))
         with self.__lock:
             self._assert_no_conflict()
             ready_guard = readiness.guard()
             def check():
                 self._assert_no_conflict()
                 ready_guard()
-            return AccountCacheSnapshot(self.__accounts, check)
+            return AccountCacheSnapshot(self._snapshot_accounts(keys), check)
 
-    def snapshot(self):
+    def snapshot(self, keys=None):
+        """O(selected keys), or O(all keys) when omitted; account bytes are immutable."""
+        keys = None if keys is None else tuple(dict.fromkeys(keys))
         with self.__lock:
-            return AccountCacheSnapshot(self.__accounts, self._assert_no_conflict)
+            return AccountCacheSnapshot(self._snapshot_accounts(keys), self._assert_no_conflict)

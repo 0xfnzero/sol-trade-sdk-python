@@ -230,6 +230,12 @@ def test_decoded_native_aliases_match_official_accounts():
             "pump_buy_v3", roles(a, alias, token), [7, 9]
         )
         assert metas(ix.accounts) == c["v3"]
+        assert roles(a, alias, token2022) == roles(a, alias, token)
+        assert derive_pump_swap_v2_accounts(
+            user, a, alias, token2022, token2022, user, user, a, b
+        ) == derive_pump_swap_v2_accounts(
+            user, a, alias, token2022, token, user, user, a, b
+        )
         parent, child = hop(a, alias, token), hop(b, a, token2022)
         for name, route, input_mint, output_mint in [
             ("buy", [parent, child], alias, b),

@@ -3,24 +3,22 @@ High-Performance Trading Executor for Sol Trade SDK
 Implements parallel SWQOS submission with advanced optimization.
 """
 
-from typing import List, Optional, Dict, Any, Callable
+from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import asyncio
 import time
 import threading
-from enum import Enum
 
 from ..common.types import TradeType, SwqosType, SwqosRegion, GasFeeStrategy, GasFeeStrategyType
 from ..swqos.clients import (
     SwqosClient,
     ClientFactory,
     SwqosConfig,
-    TradeError,
     is_swqos_type_blacklisted,
 )
-from ..cache.cache import LRUCache, TTLCache
-from ..pool.pool import WorkerPool, RateLimiter
+from ..cache.cache import LRUCache
+from ..pool.pool import RateLimiter
+from .executor import poll_for_confirmation_error
 
 
 # ===== Result Types =====
@@ -96,6 +94,11 @@ class TradeConfig:
 class TradeExecutor:
     """
     High-performance trade executor with parallel SWQOS submission.
+
+    Reusable asynchronous providers and their HTTP sessions belong to the
+    caller's running event loop. Use this executor on that same loop; its
+    close() cancels outstanding lanes, while the provider/session owner closes
+    shared HTTP sessions before shutting down the loop.
     
     Features:
     - Parallel submission to multiple SWQOS providers
@@ -109,14 +112,13 @@ class TradeExecutor:
         self.config = config
         self._clients: Dict[SwqosType, SwqosClient] = {}
         self._gas_strategy = config.gas_fee_strategy or GasFeeStrategy()
-        self._worker_pool = WorkerPool(workers=config.max_workers)
         self._rate_limiter = RateLimiter(
             rate=config.rate_limit_per_second,
-            burst=int(config.rate_limit_per_second * 2)
+            burst=max(1, int(config.rate_limit_per_second * 2))
         )
+        self._pending_submissions: set[asyncio.Task] = set()
         
         # Caches
-        self._blockhash_cache = TTLCache[str, str](ttl=2.0)
         self._signature_cache = LRUCache[str, TradeResult](max_size=1000)
         
         # Metrics
@@ -181,34 +183,49 @@ class TradeExecutor:
                 error="No SWQOS clients configured",
             )
 
-        # Rate limit
-        self._rate_limiter.wait()
+        clients = tuple(self._clients.values())
+        receipts: List[TradeResult] = []
+        deadline = asyncio.get_running_loop().time() + opts.timeout_ms / 1000.0
 
-        if opts.parallel_submit:
-            return await self._execute_parallel(trade_type, transaction, opts)
-        else:
-            return await self._execute_sequential(trade_type, transaction, opts)
+        async def run():
+            await self._rate_limiter.wait_async()
+            if opts.parallel_submit:
+                return await self._execute_parallel(trade_type, transaction, opts, clients, deadline, receipts)
+            return await self._execute_sequential(trade_type, transaction, opts, clients, deadline, receipts)
+
+        try:
+            return await asyncio.wait_for(run(), max(0, opts.timeout_ms / 1000.0))
+        except asyncio.TimeoutError:
+            self._record_failure()
+            result = receipts[0] if receipts else TradeResult(signature="", success=False)
+            result.success = False
+            result.error = "Execution deadline exceeded"
+            return result
 
     async def _execute_parallel(
         self,
         trade_type: TradeType,
         transaction: bytes,
         opts: ExecuteOptions,
+        clients: tuple,
+        deadline: float,
+        receipts: List[TradeResult],
     ) -> TradeResult:
         """Execute with parallel submission to all clients"""
         start_time = time.time()
         
-        # Create futures for all clients
-        loop = asyncio.get_event_loop()
+        # HTTP sessions stay on their caller-owned event loop. Keep the other
+        # lanes alive after first success so each provider can finish sending.
         futures = []
-        
-        for client in self._clients.values():
-            future = loop.run_in_executor(
-                None,
-                lambda c=client: self._submit_sync(c, trade_type, transaction, opts)
+        for client in clients:
+            task = asyncio.create_task(
+                self._submit_to_client(client, trade_type, transaction, opts, deadline, receipts)
             )
-            futures.append(future)
+            self._pending_submissions.add(task)
+            task.add_done_callback(self._pending_submissions.discard)
+            futures.append(task)
         
+        acknowledged = None
         last_error = "All parallel submissions failed"
         for future in asyncio.as_completed(futures):
             try:
@@ -216,14 +233,23 @@ class TradeExecutor:
                 if result.success:
                     self._record_success(time.time() - start_time)
                     return result
+                if result.signature:
+                    acknowledged = result
                 if result.error:
                     last_error = result.error
+            except asyncio.CancelledError:
+                for task in futures:
+                    task.cancel()
+                await asyncio.gather(*futures, return_exceptions=True)
+                raise
             except Exception as exc:
                 last_error = str(exc)
                 continue
         
         # All failed
         self._record_failure()
+        if acknowledged is not None:
+            return acknowledged
         
         return TradeResult(
             signature="",
@@ -237,14 +263,20 @@ class TradeExecutor:
         trade_type: TradeType,
         transaction: bytes,
         opts: ExecuteOptions,
+        clients: tuple,
+        deadline: float,
+        receipts: List[TradeResult],
     ) -> TradeResult:
         """Execute with sequential submission"""
         start_time = time.time()
         
         for retry in range(opts.max_retries):
-            for client in self._clients.values():
+            for client in clients:
                 try:
-                    result = await self._submit_to_client(client, trade_type, transaction, opts)
+                    result = await self._submit_to_client(client, trade_type, transaction, opts, deadline, receipts)
+                    if result.signature and not result.success:
+                        self._record_failure()
+                        return result
                     if result.success:
                         self._record_success(time.time() - start_time)
                         return result
@@ -264,63 +296,46 @@ class TradeExecutor:
             retries=opts.max_retries,
         )
 
-    def _submit_sync(
-        self,
-        client: SwqosClient,
-        trade_type: TradeType,
-        transaction: bytes,
-        opts: ExecuteOptions,
-    ) -> TradeResult:
-        """Synchronous submit wrapper"""
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(
-                self._submit_to_client(client, trade_type, transaction, opts)
-            )
-        finally:
-            loop.close()
-
     async def _submit_to_client(
         self,
         client: SwqosClient,
         trade_type: TradeType,
         transaction: bytes,
         opts: ExecuteOptions,
+        deadline: float,
+        receipts: List[TradeResult],
     ) -> TradeResult:
         """Submit transaction to a single client"""
         start_time = time.time()
-        
-        try:
-            signature = await client.send_transaction(
-                trade_type,
-                transaction,
-                opts.wait_confirmation,
-            )
-            
-            elapsed_ms = int((time.time() - start_time) * 1000)
-            
-            result = TradeResult(
-                signature=signature,
-                success=True,
-                confirmation_time_ms=elapsed_ms,
-                submitted_at=start_time,
-                confirmed_at=time.time(),
-                swqos_type=client.get_swqos_type(),
-            )
-            
-            # Cache result
-            self._signature_cache.set(signature, result)
-            
+        result = TradeResult(signature="", success=False, submitted_at=start_time,
+                             swqos_type=client.get_swqos_type())
+
+        async def submit():
+            # Submission never reads RPC. Confirmation is a separate opt-in phase.
+            result.signature = await client.send_transaction(trade_type, transaction, False)
+            receipts.append(result)
+            if opts.wait_confirmation:
+                ok, error = await poll_for_confirmation_error(
+                    self.config.rpc_url, result.signature,
+                    timeout_ms=self.config.confirmation_timeout_ms,
+                )
+                if not ok:
+                    result.error = error
+                    return result
+                result.confirmed_at = time.time()
+                result.confirmation_time_ms = int((time.time() - start_time) * 1000)
+            result.success = True
+            self._signature_cache.set(result.signature, result)
             return result
-            
-        except Exception as e:
-            return TradeResult(
-                signature="",
-                success=False,
-                error=str(e),
-                confirmation_time_ms=int((time.time() - start_time) * 1000),
-                swqos_type=client.get_swqos_type(),
-            )
+
+        try:
+            return await asyncio.wait_for(submit(), max(0, deadline - asyncio.get_running_loop().time()))
+        except asyncio.TimeoutError:
+            result.error = "Execution deadline exceeded"
+            return result
+        except Exception as exc:
+            result.error = str(exc)
+            return result
 
     # ===== Batch Execution =====
 
@@ -410,8 +425,9 @@ class TradeExecutor:
     # ===== Cleanup =====
 
     def close(self) -> None:
-        """Close all resources"""
-        self._worker_pool.shutdown()
+        """Cancel outstanding lanes; provider sessions remain caller-owned."""
+        for task in tuple(self._pending_submissions):
+            task.cancel()
 
 
 # ===== Convenience Functions =====

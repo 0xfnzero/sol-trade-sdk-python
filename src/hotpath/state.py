@@ -35,23 +35,39 @@ class HotPathConfig:
     prefetch_timeout: float = 5.0
 
 
+def _cache_anchor(fetched_at: float, fetched_monotonic: Optional[float]) -> float:
+    # Preserve initial snapshot age, then stop consulting the adjustable wall clock.
+    return (fetched_monotonic if fetched_monotonic is not None
+            else time.monotonic() - (time.time() - fetched_at))
+
+
+def _cache_age(fetched_at: float, fetched_monotonic: Optional[float]) -> float:
+    return (time.monotonic() - fetched_monotonic if fetched_monotonic is not None
+            else time.time() - fetched_at)
+
+
 @dataclass
 class PrefetchedData:
     """Container for prefetched blockchain data"""
     blockhash: Optional[str] = None
     last_valid_height: int = 0
     slot: int = 0
-    fetched_at: float = 0.0  # timestamp
+    fetched_at: float = 0.0  # wall timestamp for diagnostics/compatibility
+    _fetched_monotonic: Optional[float] = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        self._fetched_monotonic = _cache_anchor(self.fetched_at, self._fetched_monotonic)
 
     def is_fresh(self, ttl: float) -> bool:
         """Check if data is still fresh"""
         if self.fetched_at == 0.0:
             return False
-        return (time.time() - self.fetched_at) <= ttl
+        age = self.age()
+        return 0 <= age <= ttl
 
     def age(self) -> float:
         """Get age of data in seconds"""
-        return time.time() - self.fetched_at
+        return _cache_age(self.fetched_at, self._fetched_monotonic)
 
 
 @dataclass
@@ -65,9 +81,13 @@ class AccountState:
     rent_epoch: int
     slot: int
     fetched_at: float = field(default_factory=time.time)
+    _fetched_monotonic: Optional[float] = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        self._fetched_monotonic = _cache_anchor(self.fetched_at, self._fetched_monotonic)
 
     def is_fresh(self, ttl: float) -> bool:
-        return (time.time() - self.fetched_at) <= ttl
+        return 0 <= _cache_age(self.fetched_at, self._fetched_monotonic) <= ttl
 
 
 @dataclass
@@ -84,9 +104,13 @@ class PoolState:
     fee_rate: float
     fetched_at: float = field(default_factory=time.time)
     raw_data: bytes = b''
+    _fetched_monotonic: Optional[float] = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        self._fetched_monotonic = _cache_anchor(self.fetched_at, self._fetched_monotonic)
 
     def is_fresh(self, ttl: float) -> bool:
-        return (time.time() - self.fetched_at) <= ttl
+        return 0 <= _cache_age(self.fetched_at, self._fetched_monotonic) <= ttl
 
 
 class HotPathState:
@@ -119,6 +143,7 @@ class HotPathState:
         # Background task control
         self._prefetch_task: Optional[asyncio.Task] = None
         self._running = False
+        self._lifecycle_lock = asyncio.Lock()
         
         # Callbacks
         self._on_blockhash_update: Optional[Callable] = None
@@ -131,32 +156,35 @@ class HotPathState:
         }
     
     async def start(self) -> None:
-        """Start background prefetching"""
+        """Start one background prefetch loop; concurrent/repeated calls share it."""
         if not self.config.enable_prefetch:
             return
-        
-        # Initial synchronous prefetch
-        await self._prefetch_blockhash()
-        
-        # Start background loop
-        self._running = True
-        self._prefetch_task = asyncio.create_task(self._prefetch_loop())
-    
+        async with self._lifecycle_lock:
+            if self._prefetch_task is not None and not self._prefetch_task.done():
+                return
+            await self._prefetch_blockhash()
+            self._running = True
+            self._prefetch_task = asyncio.create_task(self._prefetch_loop())
+
     async def stop(self) -> None:
-        """Stop background prefetching"""
-        self._running = False
-        if self._prefetch_task:
-            self._prefetch_task.cancel()
-            try:
-                await self._prefetch_task
-            except asyncio.CancelledError:
-                pass
-    
+        """Cancel and await the owned task before allowing a restart."""
+        async with self._lifecycle_lock:
+            self._running = False
+            if self._prefetch_task is not None:
+                self._prefetch_task.cancel()
+                try:
+                    await self._prefetch_task
+                except asyncio.CancelledError:
+                    pass
+                self._prefetch_task = None
+
     async def _prefetch_loop(self) -> None:
         """Background loop to keep data fresh"""
         while self._running:
             try:
                 await asyncio.sleep(self.config.blockhash_refresh_interval)
+                if not self._running:
+                    break
                 await self._prefetch_blockhash()
             except asyncio.CancelledError:
                 break
@@ -180,6 +208,7 @@ class HotPathState:
                     last_valid_height=result['last_valid_block_height'],
                     slot=result.get('slot', 0),
                     fetched_at=time.time(),
+                    _fetched_monotonic=time.monotonic(),
                 )
             
             with self._lock:
@@ -232,6 +261,8 @@ class HotPathState:
     def update_account(self, pubkey: str, state: AccountState) -> None:
         """Update account state in cache"""
         with self._lock:
+            if state._fetched_monotonic is None:
+                state._fetched_monotonic = _cache_anchor(state.fetched_at, None)
             self._accounts[pubkey] = state
     
     def get_account(self, pubkey: str) -> Optional[AccountState]:
@@ -276,6 +307,8 @@ class HotPathState:
                         executable=account.get('executable', False),
                         rent_epoch=account.get('rent_epoch', 0),
                         slot=account.get('slot', 0),
+                        fetched_at=time.time(),
+                        _fetched_monotonic=time.monotonic(),
                     )
                     self.update_account(pubkey, state)
                     
@@ -289,6 +322,8 @@ class HotPathState:
     def update_pool(self, pool_address: str, state: PoolState) -> None:
         """Update pool state in cache"""
         with self._lock:
+            if state._fetched_monotonic is None:
+                state._fetched_monotonic = _cache_anchor(state.fetched_at, None)
             self._pools[pool_address] = state
     
     def get_pool(self, pool_address: str) -> Optional[PoolState]:
