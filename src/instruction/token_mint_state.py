@@ -43,15 +43,18 @@ def token_transfer_fee_for_epoch(data, owner, epoch):
     extensions = {}
     offset = 166
     while offset < len(d):
-        # Valid supported extension tags have a nonzero low byte. Only
-        # possible padding needs a tail scan/copy, not every extension.
-        if d[offset] == 0 and not any(d[offset:]):
+        # SPL permits one trailing realloc byte and stops at Uninitialized
+        # before reading its unused length or any later allocation bytes.
+        if offset + 2 > len(d):
+            break
+        kind = number(offset, 2)
+        if kind == 0:
             break
         if offset + 4 > len(d):
             raise ValueError("Truncated mint extension")
-        kind, length = number(offset, 2), number(offset + 2, 2)
+        length = number(offset + 2, 2)
         offset += 4
-        if not kind or kind in extensions or offset + length > len(d):
+        if kind in extensions or offset + length > len(d):
             raise ValueError("Invalid/duplicate mint extension")
         if kind != 19 and kind not in LENGTHS:
             raise ValueError("Unsupported mint extension")

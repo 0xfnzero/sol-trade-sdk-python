@@ -49,7 +49,7 @@ def test_zero_tail_padding(padding):
     assert token_transfer_fee_for_epoch(d, TOKEN, 1).basis_points == 0
 
 
-@pytest.mark.parametrize("tail", [b"\x00\x01", b"\x00\x00\x01\x00", b"\x06\x00\x01", b"\x06\x00\x02\x00\x01"])
+@pytest.mark.parametrize("tail", [b"\x00\x01", b"\x06\x00\x01", b"\x06\x00\x02\x00\x01"])
 def test_malformed_extension_tail(tail):
     with pytest.raises(ValueError):
         token_transfer_fee_for_epoch(mint([]) + tail, TOKEN, 1)
