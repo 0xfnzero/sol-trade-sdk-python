@@ -240,33 +240,35 @@ def derive_pump_multi_hop_accounts(
 
 
 def derive_pump_coin_quote_create_accounts(
-    new_mint, quote, depth, max_depth, listed_quote_mints=()
+    new_mint, quote, depth, max_depth, listed_quote_mints=(), chain=()
 ):
-    """Additional create_v2 roles for an unlisted Pump coin quote, from decoded state."""
-    quote = _normalize_hop(quote)
-    if (
-        type(depth) is not int
-        or type(max_depth) is not int
-        or not 0 <= depth < max_depth
-    ):
+    """Q then ancestors nearest first, from caller-supplied state; no RPC."""
+    if type(depth) is not int or type(max_depth) is not int or not 0 <= depth < min(max_depth, 5):
         raise ValueError("CurveDepthExceeded")
-    if depth == 0 and quote.quote_mint not in (
-        WSOL,
-        Pubkey.from_string("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
-        *listed_quote_mints,
-    ):
+    if len(chain) != depth:
+        raise ValueError("QuoteChainAccountsRequired")
+    hops = [_normalize_hop(h) for h in (quote, *chain)]
+    supported = (WSOL, Pubkey.from_string("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
+                 *(_normalize_quote(m) for m in listed_quote_mints))
+    if hops[-1].quote_mint not in supported:
         raise ValueError("QuoteBondingCurveNotEligible")
-    derive_pump_multi_hop_accounts(
-        new_mint, quote.quote_mint, quote.base_mint, new_mint, [quote]
-    )
+    # Later ancestor whitelist entries do not rewrite Q's stored depth.
+    seen = {new_mint}
+    for i, h in enumerate(hops):
+        if h.base_mint in seen:
+            raise ValueError("Invalid quote chain")
+        seen.add(h.base_mint)
+        if i and (hops[i-1].quote_mint != h.base_mint or hops[i-1].quote_token_program != h.base_token_program):
+            raise ValueError("Discontinuous quote chain")
+        if h.venue == "curve" and h.complete:
+            raise ValueError("QuoteCurveAwaitingMigration")
+        derive_pump_multi_hop_accounts(new_mint, h.quote_mint, h.base_mint, new_mint, [h if i == 0 else replace(h, mayhem=False)])
+    quote = hops[0]
     curve = _pda(PUMP, "bonding-curve", new_mint)
-    keys = [
-        quote.base_mint,
-        _ata(curve, quote.base_mint, quote.base_token_program),
-        quote.base_token_program,
-        _pda(PUMP, "quote-control"),
-        _pda(PUMP, "bonding-curve", quote.base_mint),
-    ]
-    if quote.venue == "pool":
-        keys.extend([quote.address, quote.base_vault, quote.quote_vault])
+    keys = [quote.base_mint, _ata(curve, quote.base_mint, quote.base_token_program),
+            quote.base_token_program, _pda(PUMP, "quote-control")]
+    for h in hops:
+        keys.append(_pda(PUMP, "bonding-curve", h.base_mint))
+        if h.venue == "pool":
+            keys.extend([h.address, h.base_vault, h.quote_vault])
     return [AccountMeta(key, False, i == 1) for i, key in enumerate(keys)]

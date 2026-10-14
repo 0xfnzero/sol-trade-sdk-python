@@ -23,6 +23,10 @@ ROLES = [
 ]
 
 
+QUOTE_ACCOUNT_COUNTS = frozenset({0, 3, 4} | {
+    4 + groups + 3 * pools for groups in range(1, 6) for pools in range(groups + 1)
+})
+
 def build_pump_create_v2_instruction(
     accounts,
     name,
@@ -35,7 +39,7 @@ def build_pump_create_v2_instruction(
     holder_reward=False,
     remaining=()
 ):
-    if len(remaining) not in (0, 3, 4, 5, 8) or any(
+    if len(remaining) not in QUOTE_ACCOUNT_COUNTS or any(
         a.is_signer or a.is_writable != (i == 1) for i, a in enumerate(remaining)
     ):
         raise ValueError("Invalid quote creation accounts")

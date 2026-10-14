@@ -524,15 +524,15 @@ SOYAS_ENDPOINTS: Dict[SwqosRegion, str] = {
 }
 
 SPEEDLANDING_ENDPOINTS: Dict[SwqosRegion, str] = {
-    SwqosRegion.NEW_YORK: "nyc.speedlanding.trade:17778",
+    SwqosRegion.NEW_YORK: "ny.speedlanding.trade:17778",
     SwqosRegion.FRANKFURT: "fra.speedlanding.trade:17778",
     SwqosRegion.AMSTERDAM: "ams.speedlanding.trade:17778",
-    SwqosRegion.DUBLIN: "ams.speedlanding.trade:17778",
-    SwqosRegion.SLC: "nyc.speedlanding.trade:17778",
+    SwqosRegion.DUBLIN: "lon.speedlanding.trade:17778",
+    SwqosRegion.SLC: "ny.speedlanding.trade:17778",
     SwqosRegion.TOKYO: "tyo.speedlanding.trade:17778",
     SwqosRegion.SINGAPORE: "sgp.speedlanding.trade:17778",
-    SwqosRegion.LONDON: "ams.speedlanding.trade:17778",
-    SwqosRegion.LOS_ANGELES: "nyc.speedlanding.trade:17778",
+    SwqosRegion.LONDON: "lon.speedlanding.trade:17778",
+    SwqosRegion.LOS_ANGELES: "ny.speedlanding.trade:17778",
     SwqosRegion.DEFAULT: "fra.speedlanding.trade:17778",
 }
 
@@ -2723,7 +2723,7 @@ class SpeedlandingClient(SwqosClient):
     Speedlanding SWQOS client.
 
     Transport: QUIC with self-signed Ed25519 cert, ALPN "solana-tpu".
-    Endpoint:  host:port (e.g. nyc.speedlanding.trade:17778)
+    Endpoint:  host:port (e.g. ny.speedlanding.trade:17778)
     SNI:       fixed "speed-landing" to match Rust SDK.
     Requires:  pip install aioquic cryptography
     """

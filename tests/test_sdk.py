@@ -1452,7 +1452,7 @@ class TestSwqosEndpointParity:
             await client.send_transaction(TradeType.BUY, tx)
 
     def test_speedlanding_uses_fixed_rust_sni(self):
-        client = SenderSpeedlandingClient("https://rpc.example", "nyc.speedlanding.trade:17778")
+        client = SenderSpeedlandingClient("https://rpc.example", "ny.speedlanding.trade:17778")
 
         assert client._server_name == "speed-landing"
 

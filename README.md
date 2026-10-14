@@ -60,12 +60,18 @@ Trading SDK language versions and related Rust SDKs:
 
 | Language | Repository | Description | Version |
 |----------|------------|-------------|---------|
-| **Rust** | [sol-trade-sdk](https://github.com/0xfnzero/sol-trade-sdk) | Ultra-low latency with zero-copy optimization | `v6.0.0` |
-| **Node.js** | [sol-trade-sdk-nodejs](https://github.com/0xfnzero/sol-trade-sdk-nodejs) | TypeScript/JavaScript for Node.js | `v0.1.8` |
-| **Python** | [sol-trade-sdk-python](https://github.com/0xfnzero/sol-trade-sdk-python) | Async/await native support | `v0.1.8` |
-| **Go** | [sol-trade-sdk-golang](https://github.com/0xfnzero/sol-trade-sdk-golang) | Concurrent-safe with goroutine support | `v0.1.9` |
-| **Rust** | [sol-parser-sdk](https://github.com/0xfnzero/sol-parser-sdk) | Solana DEX transaction and account event parsing | `v0.7.11` |
-| **Rust** | [sol-shred-sdk](https://github.com/0xfnzero/sol-shred-sdk) | Raw Solana shred decoding and ShredStream DEX event parsing | `v4.0.3` |
+| **Rust** | [sol-trade-sdk](https://github.com/0xfnzero/sol-trade-sdk) | Ultra-low latency with zero-copy optimization | `v6.0.1` |
+| **Node.js** | [sol-trade-sdk-nodejs](https://github.com/0xfnzero/sol-trade-sdk-nodejs) | TypeScript/JavaScript for Node.js | `v0.1.9` |
+| **Python** | [sol-trade-sdk-python](https://github.com/0xfnzero/sol-trade-sdk-python) | Async/await native support | `v0.1.9` |
+| **Go** | [sol-trade-sdk-golang](https://github.com/0xfnzero/sol-trade-sdk-golang) | Concurrent-safe with goroutine support | `v0.1.10` |
+| **Rust** | [sol-parser-sdk](https://github.com/0xfnzero/sol-parser-sdk) | Solana DEX transaction and account event parsing | `v0.7.13` |
+| **Rust** | [sol-shred-sdk](https://github.com/0xfnzero/sol-shred-sdk) | Raw Solana shred decoding and ShredStream DEX event parsing | `v4.0.4` |
+
+## v0.1.9 — Pump depth-2 and SpeedLanding regional updates
+
+Adds Pump depth-2 create_v2 account chains, including curve and migrated-pool combinations. Preserves stored-depth chains when an ancestor is later whitelisted. Synchronizes SpeedLanding regional endpoints, including London and the New York domain, and compatible client routing. Account construction adds no RPC calls.
+
+Validation includes official Pump SDK 4.1.0 instruction comparisons, signed local LiteSVM simulations and SDK regressions. Local simulation state/config is synthetic; no funded transactions were broadcast and production latency was not measured.
 
 ## v0.1.8 — Signed transaction and hot-path hardening
 
@@ -155,7 +161,7 @@ dependencies = [
 ### Use PyPI
 
 ```bash
-pip install sol-trade-sdk==0.1.8
+pip install sol-trade-sdk==0.1.9
 ```
 
 ## 🛠️ Usage Examples
@@ -281,24 +287,24 @@ Please ensure that the parameters your trading logic depends on are available in
 
 | Description | Run Command | Source Code |
 |-------------|-------------|-------------|
-| Create and configure TradingClient instance | `python examples/trading_client.py` | [examples/trading_client.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/trading_client.py) |
-| Share infrastructure across multiple wallets | `python examples/shared_infrastructure.py` | [examples/shared_infrastructure.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/shared_infrastructure.py) |
-| PumpFun token sniping trading | `python examples/pumpfun_sniper_trading.py` | [examples/pumpfun_sniper_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpfun_sniper_trading.py) |
-| PumpFun token copy trading | `python examples/pumpfun_copy_trading.py` | [examples/pumpfun_copy_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpfun_copy_trading.py) |
-| PumpSwap trading operations | `python examples/pumpswap_trading.py` | [examples/pumpswap_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpswap_trading.py) |
-| PumpSwap direct trading (via RPC) | `python examples/pumpswap_direct_trading.py` | [examples/pumpswap_direct_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpswap_direct_trading.py) |
-| Raydium CPMM trading operations | `python examples/raydium_cpmm_trading.py` | [examples/raydium_cpmm_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/raydium_cpmm_trading.py) |
-| Raydium AMM V4 trading operations | `python examples/raydium_amm_v4_trading.py` | [examples/raydium_amm_v4_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/raydium_amm_v4_trading.py) |
-| Meteora DAMM V2 trading operations | `python examples/meteora_damm_v2_trading.py` | [examples/meteora_damm_v2_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/meteora_damm_v2_trading.py) |
-| Bonk token sniping trading | `python examples/bonk_sniper_trading.py` | [examples/bonk_sniper_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/bonk_sniper_trading.py) |
-| Bonk token copy trading | `python examples/bonk_copy_trading.py` | [examples/bonk_copy_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/bonk_copy_trading.py) |
-| Custom instruction middleware example | `python examples/middleware_system.py` | [examples/middleware_system.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/middleware_system.py) |
-| Address lookup table example | `python examples/address_lookup.py` | [examples/address_lookup.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/address_lookup.py) |
-| Nonce cache (durable nonce) example | `python examples/nonce_cache.py` | [examples/nonce_cache.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/nonce_cache.py) |
-| Wrap/unwrap SOL to/from WSOL example | `python examples/wsol_wrapper.py` | [examples/wsol_wrapper.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/wsol_wrapper.py) |
-| Seed trading example | `python examples/seed_trading.py` | [examples/seed_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/seed_trading.py) |
-| Gas fee strategy example | `python examples/gas_fee_strategy.py` | [examples/gas_fee_strategy.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/gas_fee_strategy.py) |
-| Hot path trading (zero-RPC) | `python examples/hot_path_trading.py` | [examples/hot_path_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/hot_path_trading.py) |
+| Create and configure TradingClient instance | `python examples/trading_client.py` | [examples/trading_client.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/trading_client.py) | `v0.1.9` |
+| Share infrastructure across multiple wallets | `python examples/shared_infrastructure.py` | [examples/shared_infrastructure.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/shared_infrastructure.py) | `v0.1.9` |
+| PumpFun token sniping trading | `python examples/pumpfun_sniper_trading.py` | [examples/pumpfun_sniper_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpfun_sniper_trading.py) | `v0.1.9` |
+| PumpFun token copy trading | `python examples/pumpfun_copy_trading.py` | [examples/pumpfun_copy_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpfun_copy_trading.py) | `v0.1.9` |
+| PumpSwap trading operations | `python examples/pumpswap_trading.py` | [examples/pumpswap_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpswap_trading.py) | `v0.1.9` |
+| PumpSwap direct trading (via RPC) | `python examples/pumpswap_direct_trading.py` | [examples/pumpswap_direct_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpswap_direct_trading.py) | `v0.1.9` |
+| Raydium CPMM trading operations | `python examples/raydium_cpmm_trading.py` | [examples/raydium_cpmm_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/raydium_cpmm_trading.py) | `v0.1.9` |
+| Raydium AMM V4 trading operations | `python examples/raydium_amm_v4_trading.py` | [examples/raydium_amm_v4_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/raydium_amm_v4_trading.py) | `v0.1.9` |
+| Meteora DAMM V2 trading operations | `python examples/meteora_damm_v2_trading.py` | [examples/meteora_damm_v2_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/meteora_damm_v2_trading.py) | `v0.1.9` |
+| Bonk token sniping trading | `python examples/bonk_sniper_trading.py` | [examples/bonk_sniper_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/bonk_sniper_trading.py) | `v0.1.9` |
+| Bonk token copy trading | `python examples/bonk_copy_trading.py` | [examples/bonk_copy_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/bonk_copy_trading.py) | `v0.1.9` |
+| Custom instruction middleware example | `python examples/middleware_system.py` | [examples/middleware_system.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/middleware_system.py) | `v0.1.9` |
+| Address lookup table example | `python examples/address_lookup.py` | [examples/address_lookup.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/address_lookup.py) | `v0.1.9` |
+| Nonce cache (durable nonce) example | `python examples/nonce_cache.py` | [examples/nonce_cache.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/nonce_cache.py) | `v0.1.9` |
+| Wrap/unwrap SOL to/from WSOL example | `python examples/wsol_wrapper.py` | [examples/wsol_wrapper.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/wsol_wrapper.py) | `v0.1.9` |
+| Seed trading example | `python examples/seed_trading.py` | [examples/seed_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/seed_trading.py) | `v0.1.9` |
+| Gas fee strategy example | `python examples/gas_fee_strategy.py` | [examples/gas_fee_strategy.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/gas_fee_strategy.py) | `v0.1.9` |
+| Hot path trading (zero-RPC) | `python examples/hot_path_trading.py` | [examples/hot_path_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/hot_path_trading.py) | `v0.1.9` |
 
 ### ⚙️ SWQoS Service Configuration
 

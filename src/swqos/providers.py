@@ -17,12 +17,16 @@ try:
     from .clients import (
         ClientFactory as SenderClientFactory,
         SwqosConfig as SenderSwqosConfig,
+        SwqosRegion as SenderSwqosRegion,
+        SPEEDLANDING_ENDPOINTS,
     )
 except ImportError:  # pragma: no cover - legacy direct module import compatibility
     from sol_trade_sdk.common.types import TradeType
     from sol_trade_sdk.swqos.clients import (
         ClientFactory as SenderClientFactory,
         SwqosConfig as SenderSwqosConfig,
+        SwqosRegion as SenderSwqosRegion,
+        SPEEDLANDING_ENDPOINTS,
     )
 
 logger = logging.getLogger(__name__)
@@ -753,7 +757,9 @@ class SpeedlandingClient(SwqosClient):
 
     def __init__(self, config: SwqosConfig):
         super().__init__(config)
-        self.api_url = config.url or "nyc.speedlanding.trade:17778"
+        self.api_url = config.url or SPEEDLANDING_ENDPOINTS[
+            SenderSwqosRegion(config.region.value)
+        ]
 
     async def submit_transaction(
         self,
