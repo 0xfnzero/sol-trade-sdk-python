@@ -124,3 +124,6 @@ from .cached_pumpfun_config import CachedPumpFunConfiguration, cached_pumpfun_co
 __all__ += ["CachedPumpFunConfiguration", "cached_pumpfun_configuration"]
 from .cached_pumpfun import CachedPumpFunState, cached_pumpfun, quote_cached_pumpfun_exact_in
 __all__ += ["CachedPumpFunState", "cached_pumpfun", "quote_cached_pumpfun_exact_in"]
+
+from .pumpswap_preparation import (PumpSwapQuoteRequest, PumpSwapBuildOptions, SignedPumpSwapTransaction, PreparedPumpSwapTrade, PumpSwapRouteSearch, PumpSwapRouteRejection, PumpSwapRouteSelection, prepare_pumpswap_trade, prepare_best_pumpswap_trade)
+__all__ += ['PumpSwapQuoteRequest', 'PumpSwapBuildOptions', 'SignedPumpSwapTransaction', 'PreparedPumpSwapTrade', 'PumpSwapRouteSearch', 'PumpSwapRouteRejection', 'PumpSwapRouteSelection', 'prepare_pumpswap_trade', 'prepare_best_pumpswap_trade']

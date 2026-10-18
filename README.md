@@ -60,12 +60,18 @@ Trading SDK language versions and related Rust SDKs:
 
 | Language | Repository | Description | Version |
 |----------|------------|-------------|---------|
-| **Rust** | [sol-trade-sdk](https://github.com/0xfnzero/sol-trade-sdk) | Ultra-low latency with zero-copy optimization | `v6.0.1` |
-| **Node.js** | [sol-trade-sdk-nodejs](https://github.com/0xfnzero/sol-trade-sdk-nodejs) | TypeScript/JavaScript for Node.js | `v0.1.9` |
-| **Python** | [sol-trade-sdk-python](https://github.com/0xfnzero/sol-trade-sdk-python) | Async/await native support | `v0.1.9` |
-| **Go** | [sol-trade-sdk-golang](https://github.com/0xfnzero/sol-trade-sdk-golang) | Concurrent-safe with goroutine support | `v0.1.10` |
+| **Rust** | [sol-trade-sdk](https://github.com/0xfnzero/sol-trade-sdk) | Ultra-low latency with zero-copy optimization | `v6.0.2` |
+| **Node.js** | [sol-trade-sdk-nodejs](https://github.com/0xfnzero/sol-trade-sdk-nodejs) | TypeScript/JavaScript for Node.js | `v0.1.10` |
+| **Python** | [sol-trade-sdk-python](https://github.com/0xfnzero/sol-trade-sdk-python) | Async/await native support | `v0.1.10` |
+| **Go** | [sol-trade-sdk-golang](https://github.com/0xfnzero/sol-trade-sdk-golang) | Concurrent-safe with goroutine support | `v0.1.11` |
 | **Rust** | [sol-parser-sdk](https://github.com/0xfnzero/sol-parser-sdk) | Solana DEX transaction and account event parsing | `v0.7.13` |
 | **Rust** | [sol-shred-sdk](https://github.com/0xfnzero/sol-shred-sdk) | Raw Solana shred decoding and ShredStream DEX event parsing | `v4.0.4` |
+
+## v0.1.10 — PumpSwap custom quotes and creator account fixes
+
+Builds PumpSwap buys and sells with the actual quote mint/token program, validates creator vault identities, honors explicit fee recipients in mayhem mode, and removes an unnecessary global volume write lock. Adds cached quotes, conversion-route selection and complete offline signing preparation, with TTWO pool and SOL→USDC→TTWO→target buy/sell regressions.
+
+Four language implementations share a real 3007 failure fixture and compare instruction data and account privileges. Native local bank regressions use captured public programs/accounts and synthetic wallets. See [PumpSwap fixes and validation](docs/PUMPSWAP_REPORTED_FAILURE.md).
 
 ## v0.1.9 — Pump depth-2 and SpeedLanding regional updates
 
@@ -92,9 +98,9 @@ Validation includes local CPU benchmarks and offline signed-bank scenarios. Meas
 
 ## 🔖 Current Release
 
-**PyPI package:** `sol-trade-sdk==0.1.8`
+**PyPI package:** `sol-trade-sdk==0.1.10`
 
-This release refreshes PumpFun V2 and USDC quote-pool handling, keeps the default RPC submit lane active alongside SWQoS lanes, and aligns Raydium CPMM fixed-output swaps with the on-chain `swap_base_out` instruction. Trade execution requires a caller-supplied `recent_blockhash` or durable nonce; hot-path execution does not query RPC for blockhash, account, or balance data.
+This release includes PumpSwap custom quotes, creator account validation, cached routes and offline signing preparation. Execution uses caller-supplied blockhash/nonce and validated account snapshots.
 
 ## v0.1.7 — CPMM creator-fee parity
 
@@ -161,7 +167,7 @@ dependencies = [
 ### Use PyPI
 
 ```bash
-pip install sol-trade-sdk==0.1.9
+pip install sol-trade-sdk==0.1.10
 ```
 
 ## 🛠️ Usage Examples
@@ -287,24 +293,24 @@ Please ensure that the parameters your trading logic depends on are available in
 
 | Description | Run Command | Source Code |
 |-------------|-------------|-------------|
-| Create and configure TradingClient instance | `python examples/trading_client.py` | [examples/trading_client.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/trading_client.py) | `v0.1.9` |
-| Share infrastructure across multiple wallets | `python examples/shared_infrastructure.py` | [examples/shared_infrastructure.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/shared_infrastructure.py) | `v0.1.9` |
-| PumpFun token sniping trading | `python examples/pumpfun_sniper_trading.py` | [examples/pumpfun_sniper_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpfun_sniper_trading.py) | `v0.1.9` |
-| PumpFun token copy trading | `python examples/pumpfun_copy_trading.py` | [examples/pumpfun_copy_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpfun_copy_trading.py) | `v0.1.9` |
-| PumpSwap trading operations | `python examples/pumpswap_trading.py` | [examples/pumpswap_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpswap_trading.py) | `v0.1.9` |
-| PumpSwap direct trading (via RPC) | `python examples/pumpswap_direct_trading.py` | [examples/pumpswap_direct_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpswap_direct_trading.py) | `v0.1.9` |
-| Raydium CPMM trading operations | `python examples/raydium_cpmm_trading.py` | [examples/raydium_cpmm_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/raydium_cpmm_trading.py) | `v0.1.9` |
-| Raydium AMM V4 trading operations | `python examples/raydium_amm_v4_trading.py` | [examples/raydium_amm_v4_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/raydium_amm_v4_trading.py) | `v0.1.9` |
-| Meteora DAMM V2 trading operations | `python examples/meteora_damm_v2_trading.py` | [examples/meteora_damm_v2_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/meteora_damm_v2_trading.py) | `v0.1.9` |
-| Bonk token sniping trading | `python examples/bonk_sniper_trading.py` | [examples/bonk_sniper_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/bonk_sniper_trading.py) | `v0.1.9` |
-| Bonk token copy trading | `python examples/bonk_copy_trading.py` | [examples/bonk_copy_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/bonk_copy_trading.py) | `v0.1.9` |
-| Custom instruction middleware example | `python examples/middleware_system.py` | [examples/middleware_system.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/middleware_system.py) | `v0.1.9` |
-| Address lookup table example | `python examples/address_lookup.py` | [examples/address_lookup.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/address_lookup.py) | `v0.1.9` |
-| Nonce cache (durable nonce) example | `python examples/nonce_cache.py` | [examples/nonce_cache.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/nonce_cache.py) | `v0.1.9` |
-| Wrap/unwrap SOL to/from WSOL example | `python examples/wsol_wrapper.py` | [examples/wsol_wrapper.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/wsol_wrapper.py) | `v0.1.9` |
-| Seed trading example | `python examples/seed_trading.py` | [examples/seed_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/seed_trading.py) | `v0.1.9` |
-| Gas fee strategy example | `python examples/gas_fee_strategy.py` | [examples/gas_fee_strategy.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/gas_fee_strategy.py) | `v0.1.9` |
-| Hot path trading (zero-RPC) | `python examples/hot_path_trading.py` | [examples/hot_path_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/hot_path_trading.py) | `v0.1.9` |
+| Create and configure TradingClient instance | `python examples/trading_client.py` | [examples/trading_client.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/trading_client.py) | `v0.1.10` |
+| Share infrastructure across multiple wallets | `python examples/shared_infrastructure.py` | [examples/shared_infrastructure.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/shared_infrastructure.py) | `v0.1.10` |
+| PumpFun token sniping trading | `python examples/pumpfun_sniper_trading.py` | [examples/pumpfun_sniper_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpfun_sniper_trading.py) | `v0.1.10` |
+| PumpFun token copy trading | `python examples/pumpfun_copy_trading.py` | [examples/pumpfun_copy_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpfun_copy_trading.py) | `v0.1.10` |
+| PumpSwap trading operations | `python examples/pumpswap_trading.py` | [examples/pumpswap_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpswap_trading.py) | `v0.1.10` |
+| PumpSwap direct trading (via RPC) | `python examples/pumpswap_direct_trading.py` | [examples/pumpswap_direct_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/pumpswap_direct_trading.py) | `v0.1.10` |
+| Raydium CPMM trading operations | `python examples/raydium_cpmm_trading.py` | [examples/raydium_cpmm_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/raydium_cpmm_trading.py) | `v0.1.10` |
+| Raydium AMM V4 trading operations | `python examples/raydium_amm_v4_trading.py` | [examples/raydium_amm_v4_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/raydium_amm_v4_trading.py) | `v0.1.10` |
+| Meteora DAMM V2 trading operations | `python examples/meteora_damm_v2_trading.py` | [examples/meteora_damm_v2_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/meteora_damm_v2_trading.py) | `v0.1.10` |
+| Bonk token sniping trading | `python examples/bonk_sniper_trading.py` | [examples/bonk_sniper_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/bonk_sniper_trading.py) | `v0.1.10` |
+| Bonk token copy trading | `python examples/bonk_copy_trading.py` | [examples/bonk_copy_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/bonk_copy_trading.py) | `v0.1.10` |
+| Custom instruction middleware example | `python examples/middleware_system.py` | [examples/middleware_system.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/middleware_system.py) | `v0.1.10` |
+| Address lookup table example | `python examples/address_lookup.py` | [examples/address_lookup.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/address_lookup.py) | `v0.1.10` |
+| Nonce cache (durable nonce) example | `python examples/nonce_cache.py` | [examples/nonce_cache.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/nonce_cache.py) | `v0.1.10` |
+| Wrap/unwrap SOL to/from WSOL example | `python examples/wsol_wrapper.py` | [examples/wsol_wrapper.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/wsol_wrapper.py) | `v0.1.10` |
+| Seed trading example | `python examples/seed_trading.py` | [examples/seed_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/seed_trading.py) | `v0.1.10` |
+| Gas fee strategy example | `python examples/gas_fee_strategy.py` | [examples/gas_fee_strategy.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/gas_fee_strategy.py) | `v0.1.10` |
+| Hot path trading (zero-RPC) | `python examples/hot_path_trading.py` | [examples/hot_path_trading.py](https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/examples/hot_path_trading.py) | `v0.1.10` |
 
 ### ⚙️ SWQoS Service Configuration
 
@@ -454,3 +460,105 @@ Full cross-language API parity is still in progress. See the [API migration guid
 
 
 DAMM v2 单跳缓存准备与显式模拟见 [cached_damm_v2](examples/cached_damm_v2.py)。当前要求调用方显式最低输出，预计到账未知；SOL 与已有 WSOL 使用不同账户结算。PumpFun 当前配置读取尚不代表完整费用报价或 cached factory。
+
+### PumpSwap custom quote tokens and offline routes
+
+See [reported 3007 failure and synchronized fixes](docs/PUMPSWAP_REPORTED_FAILURE.md)
+for creator validation, explicit fee recipients and readonly volume accounts.
+
+Direct PumpSwap builders support arbitrary pool quote mints, including ordinary
+Token-2022 mints. `BuildBuyParams` / `BuildSellParams` accept optional
+`input_mint`, `output_mint`, `input_token_program`, and `output_token_program`.
+The actual mint direction selects `buy_exact_quote_in` or `sell`; mismatched
+funding assets require an explicit conversion route. Amounts use raw mint units.
+`PumpSwapParams.validate_accounts()` checks complete execution accounts and the
+creator vault authority/ATA against the actual quote mint/program, without RPC.
+Incomplete log events must first be enriched from verified subscription state.
+
+`AccountCacheSnapshot.prepare_pumpswap_trade(...)` prepares an explicit complete
+route. `prepare_best_pumpswap_trade(snapshot, search, request, context, is_buy)`
+uses `PumpSwapRouteSearch` to order caller-supplied conversion pools and select
+the highest protected final output. Buy and sell are quoted independently;
+each next hop spends only the preceding protected minimum. Ties prefer fewer
+hops, then pool pubkey bytes. Reversed duplicate hints collapse; conflicting
+identities fail. Defaults are two conversion hops and 128 visited search nodes;
+limits are 32 candidate hints, three conversion hops, and 4,096 nodes. Every
+partial/dead-end path consumes budget; exhaustion fails the entire search.
+Rejected stale/unsupported paths are returned with reasons. No market discovery
+or RPC occurs on this path.
+
+The prepared value binds the payer, endpoints, amount, slippage, and context.
+`validate_freshness(current_context)` rejects future preparation slots, epoch
+changes, and age beyond the smaller original/current allowance. This does not
+refresh source accounts or prices: reprepare from coherent current subscription
+data before trading. Cached PumpSwap preparation rejects active transfer fees,
+unsupported extensions, and cashback pools with no verified cashback rate.
+
+`prepared.build_transaction(signer, current_context, PumpSwapBuildOptions(...))`
+builds and signs locally with explicit `v0` or `v1`, retaining caller blockhash
+or a complete durable nonce pair, tip, compute settings and V0 ALTs.
+`create_associated_accounts=False` assumes the route ATAs already exist; native
+SOL still uses its separate temporary account. V0 enforces
+1,232 signed bytes; V1 enforces 4,096 bytes and rejects ALTs. It never switches
+versions or submits. Optional protocol/full transaction middleware must remain
+offline if a fully offline build is required. Nonce authority/state and
+blockhash validity remain caller responsibilities. Native SOL endpoints use
+`So11111111111111111111111111111111111111111`; pool legs use WSOL. Supply a unique
+`temporary_wsol_seed` and current `rent_lamports` from cold initialization for
+native settlement. The temporary account is closed while existing WSOL balances
+are preserved; plain WSOL endpoints spend/receive existing WSOL.
+
+Run native examples and repeatable signed-wire tests from this checkout:
+
+```bash
+python -m examples.pumpswap_cached_prepare buy 10000
+python -m examples.pumpswap_cached_prepare sell 1000000000
+python -m examples.pumpswap_cached_prepare buy 1000000 tests/fixtures/pumpswap_ttwo_route_accounts.json v1
+python -m examples.pumpswap_cached_prepare sell 1000000000 tests/fixtures/pumpswap_ttwo_route_accounts.json v1
+python -m pytest -q tests/test_pumpswap_preparation.py
+```
+
+These examples use captured historical TTWO accounts, ephemeral signers and
+synthetic blockhashes. Tests verify actual Ed25519 signatures, decode V0/V1
+wire, and cover native settlement, nonce, tips, synthetic ALT compilation,
+freshness and bounded route ranking. Synthetic ALTs cannot be used on chain.
+This is offline preparation/signing validation, not a new bank/mainnet simulation
+or a production latency measurement. A three-hop V0 route without ALTs can fail
+the packet limit; choose V1 explicitly or provide actual on-chain ALTs.
+
+### Offline deployed-program execution (Python)
+
+```bash
+python -m examples.pumpswap_bank_replay
+python -m pytest -q tests/test_pumpswap_bank_replay.py
+```
+
+This native Python example uses `solders.litesvm` (install `solders>=0.26`)
+to execute newly prepared, Ed25519-signed V0 buy/sell transactions with static
+accounts and a local ALT. It repeats fresh-bank executions, checks exact pinned
+token deltas, protected output, simulation/commit agreement, slippage failures,
+rollback, transaction fees, and invalid-signature rejection. Replay performs no
+RPC calls or broadcasts. Resources and SHA-256 manifests are under
+`examples/pumpswap_bank/`; the snapshot contains the captured account lamports
+and bytes, including Token2022 extensions.
+
+Programs were captured October 8–9, 2026; pool/account snapshots October 18.
+This is a mixed historical fixture, not an atomic mainnet fork. Wallet funding,
+local ALT, and user/fee token accounts are synthetic; token account extensions
+are preserved from their respective captured vaults. ATA creation is disabled
+in this replay to isolate swap execution. The deployed-program bank test covers
+the direct TTWO PumpSwap leg and the three-leg AMMv4 → DLMM → PumpSwap
+buy/reverse sell route with V0+ALT. Impossible final-leg output also verifies
+rollback of earlier successful program calls. `config.json` controls fresh-bank
+repetitions and local CPU benchmark iterations (zero disables benchmarking);
+preparation and build/sign percentiles exclude fixture I/O and SBF execution.
+V1, nonce and middleware additionally have signing/decoding tests. These tests
+do not establish production latency or the latest deployed-program behavior.
+
+For repeatable CPU measurements, run `python -m examples.hot_path_benchmark`.
+`examples/hot_path_benchmark.json` fixes the iteration count; the workload warms
+up before measuring cached preparation and V0 build/sign separately. Fixture I/O,
+RPC, and local-bank execution are outside timed loops. Pure PDA results and
+validated fee configurations use bounded caches; account freshness/continuity
+checks still run for every preparation. These local timings do not measure
+production network latency.

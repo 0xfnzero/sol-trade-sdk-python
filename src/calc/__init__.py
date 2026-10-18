@@ -123,6 +123,13 @@ def calculate_with_slippage_sell(amount: int, slippage_bps: int) -> int:
     return amount - amount * bps // 10000
 
 
+def pumpswap_minimum_output(amount: int, slippage_bps: int) -> int:
+    """Official PumpSwap minimum: floor final output, in raw integer units."""
+    _u64(amount, "amount")
+    bps = min(_u64(slippage_bps, "slippage_bps"), MAX_SLIPPAGE_BASIS_POINTS)
+    return amount * (10000 - bps) // 10000
+
+
 # ===== PumpFun Calculations =====
 
 def get_buy_token_amount_from_sol_amount(
@@ -466,7 +473,7 @@ def sell_base_input_internal_with_fees(
         raise ValueError("Insufficient real quote reserves to cover the sell output")
     
     final_quote = quote_amount_out - total_fees
-    min_quote = calculate_with_slippage_sell(final_quote, slippage_basis_points)
+    min_quote = pumpswap_minimum_output(final_quote, slippage_basis_points)
 
     return SellBaseInputResult(
         ui_quote=final_quote,
@@ -543,7 +550,7 @@ def sell_quote_input_internal_with_fees(
         raise ValueError("Invalid reserves, depleted pool, or insufficient amount after fees")
     
     base_amount_in = _u64(ceil_div(numerator, denominator), "base amount")
-    min_quote = calculate_with_slippage_sell(quote, slippage_basis_points)
+    min_quote = pumpswap_minimum_output(quote, slippage_basis_points)
 
     return SellQuoteInputResult(
         internal_raw_quote=raw_quote,

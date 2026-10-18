@@ -8,6 +8,7 @@ from solders.pubkey import Pubkey
 from solders.instruction import Instruction, AccountMeta
 from solders.system_program import ID as SYSTEM_PROGRAM_ID
 import struct
+from functools import lru_cache
 
 # ============================================
 # Common Program IDs
@@ -38,6 +39,7 @@ DEFAULT_SLIPPAGE: int = 500  # 5% in basis points
 # Utility Functions
 # ============================================
 
+@lru_cache(maxsize=4096)
 def get_associated_token_address(
     owner: Pubkey,
     mint: Pubkey,

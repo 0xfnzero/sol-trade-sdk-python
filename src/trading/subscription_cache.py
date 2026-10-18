@@ -87,6 +87,14 @@ class PoolTradeHint:
 
 
 class AccountCacheSnapshot:
+    def prepare_pumpswap_trade(self, hints, input_mint, output_mint, request, context, is_buy):
+        from .pumpswap_preparation import prepare_pumpswap_trade
+        return prepare_pumpswap_trade(self, hints, input_mint, output_mint, request, context, is_buy)
+
+    def prepare_best_pumpswap_trade(self, search, request, context, is_buy):
+        from .pumpswap_preparation import prepare_best_pumpswap_trade
+        return prepare_best_pumpswap_trade(self, search, request, context, is_buy)
+
     def damm_v2(self,hint,context,unix_timestamp):
         from .cached_damm_v2 import cached_damm_v2
         return cached_damm_v2(self,hint,context,unix_timestamp)

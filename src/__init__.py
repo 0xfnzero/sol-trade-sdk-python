@@ -2269,3 +2269,6 @@ __all__ += ['derive_pump_v3_accounts','derive_pump_swap_v2_accounts']
 
 from .instruction.pump_compact_accounts import derive_pump_coin_quote_create_accounts
 __all__ += ['derive_pump_coin_quote_create_accounts']
+
+from .trading.pumpswap_preparation import (PumpSwapQuoteRequest, PumpSwapBuildOptions, SignedPumpSwapTransaction, PreparedPumpSwapTrade, PumpSwapRouteSearch, PumpSwapRouteRejection, PumpSwapRouteSelection, prepare_pumpswap_trade, prepare_best_pumpswap_trade)
+__all__ += ['PumpSwapQuoteRequest', 'PumpSwapBuildOptions', 'SignedPumpSwapTransaction', 'PreparedPumpSwapTrade', 'PumpSwapRouteSearch', 'PumpSwapRouteRejection', 'PumpSwapRouteSelection', 'prepare_pumpswap_trade', 'prepare_best_pumpswap_trade']

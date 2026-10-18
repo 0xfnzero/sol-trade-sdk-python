@@ -47,6 +47,8 @@ def params(**overrides) -> PumpSwapParams:
         fee_basis_points=PumpSwapFeeBasisPoints(20, 5, 75),
     )
     data.update(overrides)
+    data["coin_creator_vault_authority"] = get_coin_creator_vault_authority(data["coin_creator"])
+    data["coin_creator_vault_ata"] = get_coin_creator_vault_ata(data["coin_creator"], data["quote_mint"], data["quote_token_program"])
     return PumpSwapParams(**data)
 
 
@@ -91,10 +93,10 @@ def test_pumpswap_fixed_output_buy_uses_buy_discriminator():
     assert data[:8] == BUY_DISCRIMINATOR
     assert len(data) == 25
     assert int.from_bytes(data[8:16], "little") == 123
-    assert data[24] == 0
+    assert data[24] == 1
 
 
-def test_pumpswap_reverse_sell_uses_buy_two_arg_data():
+def test_pumpswap_reverse_sell_uses_exact_quote_input():
     payer = Pubkey.new_unique()
     quote_mint = Pubkey.new_unique()
     ixs = build_sell_instructions(
@@ -113,8 +115,8 @@ def test_pumpswap_reverse_sell_uses_buy_two_arg_data():
 
     ix = ixs[-2]
     data = bytes(ix.data)
-    assert data[:8] == BUY_DISCRIMINATOR
-    assert len(data) == 24
+    assert data[:8] == BUY_EXACT_QUOTE_IN_DISCRIMINATOR
+    assert len(data) == 25
 
     close_ix = ixs[-1]
     assert close_ix.accounts[0].pubkey == get_associated_token_address(payer, quote_mint, TOKEN_PROGRAM)

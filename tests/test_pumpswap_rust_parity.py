@@ -13,11 +13,18 @@ def test_pinned_rust_pumpswap(c):
     for i,fn in enumerate(funcs):
         if c['results'][i] is None:
             with pytest.raises(ValueError): fn(*args,fees)
-        else: assert [str(v) for v in astuple(fn(*args,fees))]==c['results'][i]
+        else:
+            expected = list(c['results'][i])
+            # Keep the original pinned quote/fee oracle. Its old minimum rounded
+            # up; the current official SDK floors the final protected output.
+            if i in (2, 3):
+                amount = int(expected[0]) if i == 2 else args[0]
+                expected[1 if i == 2 else 2] = str(amount * (10000-min(args[1],9999))//10000)
+            assert [str(v) for v in astuple(fn(*args,fees))]==expected
         compatibility = getattr(dict_calc,fn.__name__)
         if c['results'][i] is None:
             with pytest.raises(ValueError): compatibility(*args,fees)
-        else: assert [str(v) for v in compatibility(*args,fees).values()]==c['results'][i]
+        else: assert [str(v) for v in compatibility(*args,fees).values()]==expected
 
 def test_common_boundaries():
     maximum=(1<<64)-1

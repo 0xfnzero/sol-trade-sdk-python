@@ -39,12 +39,13 @@ def test_prepare_independent_pumpswap_directions(c):
         leg=hint if buy else PoolTradeHint(hint.pool,hint.output_mint,hint.input_mint)
         _,q,ix=snapshot.prepare_pumpswap(leg,context,payer,10000,100)
         out=int(c['expected_buy_quote' if buy else 'expected_sell_quote'])
-        assert (q.amount_out,q.minimum_amount_out)==(out,out-out//100)
+        assert (q.amount_out,q.minimum_amount_out)==(out,out*9900//10000)
         assert int.from_bytes(ix.data[8:16],'little')==10000
         assert int.from_bytes(ix.data[16:24],'little')==q.minimum_amount_out
         assert bytes(ix.accounts[9].pubkey)==bytes([8])*32
         assert bytes(ix.accounts[-2].pubkey)==bytes([10])*32
         assert len(ix.accounts)==(26 if buy else 24)
+        if buy: assert not ix.accounts[19].is_writable
         request=CachedTradeRequest(dex_type='PumpSwap',trade_type='Buy' if buy else 'Sell',snapshot=snapshot,hints=(leg,),context=context,unix_timestamp=1,payer=payer,amount=10000,recent_blockhash='11111111111111111111111111111111',slippage_bps=100)
         prepared=TradeExecutorFactory.create_cached_executor("PumpSwap").prepare(request)
         assert bytes(prepared.route.swap_instructions[0].data)==bytes(ix.data)
@@ -63,11 +64,17 @@ def test_current_mayhem_recipient():
     assert bytes(ix.accounts[9].pubkey)==bytes([9])*32
 
 @pytest.mark.parametrize('direction',['buy','sell'])
-def test_verified_mainnet_wire_without_rpc(direction,monkeypatch):
+def test_captured_mainnet_state_current_wire_without_rpc(direction,monkeypatch):
     import hashlib,requests
     from examples.cached_trade import build
     monkeypatch.setattr(requests,'post',lambda *a,**k:pytest.fail('RPC in hot path'))
     v=json.loads((Path(__file__).parents[1]/'examples/fixtures'/('pumpswap_'+direction+'_mainnet_20261004.json')).read_text())
     route,wire=build(v)
-    assert str(route.minimum_net_amount_out)==v['expected']['minimum_amount_out']
-    assert hashlib.sha256(wire).hexdigest()==v['expected']['wire_sha256']
+    # Historic expected wire used the old rounded-up minimum and track_volume=0.
+    # Preserve that simulation capture; current construction floors the minimum
+    # and uses track_volume=1 with readonly global volume (asserted above).
+    # These current wire checks are offline, not resimulated.
+    expected_minimum=int(v['expected']['legs'][0]['amount_out'])*(10000-v['slippage_bps'])//10000
+    assert route.minimum_net_amount_out==expected_minimum
+    current_hashes = {'buy': '7eef1cfe9c2b2f958bb0f290a1e35a90acdf84283cec137bddc43d5b0263c027', 'sell': 'abb7e8eff2d17f35b8fef75dc7cf585fb07db6427c7941bf992f02ba02512117'}
+    assert hashlib.sha256(wire).hexdigest()==current_hashes[direction]

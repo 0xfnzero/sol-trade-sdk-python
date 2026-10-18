@@ -278,6 +278,9 @@ class PumpSwapExecutor(TradeExecutor):
             create_output_mint_ata=bool(params.get("create_output_mint_ata", True)),
             use_exact_quote_amount=bool(params.get("use_exact_quote_amount", True)),
             fixed_output_amount=params.get("fixed_output_amount"),
+            **{name: _to_pubkey(params[name]) for name in
+               ("input_mint", "output_mint", "input_token_program", "output_token_program")
+               if params.get(name) is not None},
         )
         instructions = psb_buy(builder_params)
 
@@ -337,6 +340,9 @@ class PumpSwapExecutor(TradeExecutor):
             close_output_mint_ata=bool(params.get("close_output_mint_ata", False)),
             close_input_mint_ata=bool(params.get("close_input_mint_ata", False)),
             fixed_output_amount=params.get("fixed_output_amount"),
+            **{name: _to_pubkey(params[name]) for name in
+               ("input_mint", "output_mint", "input_token_program", "output_token_program")
+               if params.get(name) is not None},
         )
         instructions = psb_sell(builder_params)
 

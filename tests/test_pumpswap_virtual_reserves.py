@@ -75,7 +75,7 @@ def test_dict_quotes_match_rust_integer_vectors():
         fees,
     ) == {
         "ui_quote": 16_112_095,
-        "min_quote": 15_910_694,
+        "min_quote": 15_910_693,
         "internal_quote_amount_out": 16_201_203,
     }
     assert dict_calc.sell_quote_input_internal_with_fees(
@@ -128,7 +128,7 @@ def test_typed_quotes_match_rust_integer_vectors():
         fees,
     )) == {
         "ui_quote": 16_112_095,
-        "min_quote": 15_910_694,
+        "min_quote": 15_910_693,
         "internal_quote_amount_out": 16_201_203,
     }
     assert asdict(typed_calc.sell_quote_input_internal_with_fees(
