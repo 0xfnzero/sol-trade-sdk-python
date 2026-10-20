@@ -27,6 +27,7 @@ from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Commitment, Confirmed
 
 from .security.validators import validate_amount, validate_slippage
+from .stock_catalog import screened_stock_catalog, preferred_stock_pool, stock_conversion_legs
 
 # ============== Enums ==============
 
@@ -2236,8 +2237,8 @@ __all__ += ["CachedAmmV4State", "AmmV4Quote", "cached_amm_v4", "quote_cached_amm
 from .trading.subscription_readiness import SubscriptionReadiness, CacheNotReadyError
 __all__ += ["SubscriptionReadiness", "CacheNotReadyError"]
 
-from .trading.route_candidates import candidate_routes
-__all__ += ["candidate_routes"]
+from .trading.route_candidates import candidate_routes, CandidateRouteGraph
+__all__ += ["candidate_routes", "CandidateRouteGraph", "screened_stock_catalog", "preferred_stock_pool", "stock_conversion_legs"]
 
 from .instruction.cpmm_creator_fee import (CpmmAmmConfig, CpmmCreatorFeeShare, CpmmCollectionPool, decode_cpmm_amm_config, decode_cpmm_creator_fee_share, decode_cpmm_collection_pool, get_creator_fee_share_pda, resolve_creator_fee_share_rate, fetch_creator_fee_share_rate, split_creator_fee, estimate_creator_fee_payout, collect_creator_fee, collect_creator_fee_permissionless, prepare_cpmm_creator_fee_collection)
 __all__ += ['CpmmAmmConfig', 'CpmmCreatorFeeShare', 'CpmmCollectionPool', 'decode_cpmm_amm_config', 'decode_cpmm_creator_fee_share', 'decode_cpmm_collection_pool', 'get_creator_fee_share_pda', 'resolve_creator_fee_share_rate', 'fetch_creator_fee_share_rate', 'split_creator_fee', 'estimate_creator_fee_payout', 'collect_creator_fee', 'collect_creator_fee_permissionless', 'prepare_cpmm_creator_fee_collection']

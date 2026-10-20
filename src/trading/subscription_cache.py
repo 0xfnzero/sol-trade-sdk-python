@@ -99,9 +99,14 @@ class AccountCacheSnapshot:
         from .cached_damm_v2 import cached_damm_v2
         return cached_damm_v2(self,hint,context,unix_timestamp)
 
-    def __init__(self, accounts, continuity_guard=None):
+    def __init__(self, accounts, continuity_guard=None, observed_through=None):
         self.__accounts = dict(accounts)
         self.__continuity_guard = continuity_guard
+        self.__observed_through = observed_through
+
+    def _stale(self, account_slot, context):
+        observed = account_slot if self.__observed_through is None else self.__observed_through
+        return account_slot > context.slot or observed > context.slot or context.slot-max(observed, account_slot) > context.maximum_slot_age
 
     def assert_usable(self):
         if self.__continuity_guard is not None: self.__continuity_guard()
@@ -111,7 +116,7 @@ class AccountCacheSnapshot:
         self.assert_usable()
         a = self.__accounts.get(key)
         if a is None: raise ValueError(f"Missing cached account: {key}")
-        if a.slot > context.slot or context.slot-a.slot > context.maximum_slot_age: raise ValueError("Cached account is future or stale")
+        if self._stale(a.slot, context): raise ValueError("Cached account is future or stale")
         return a
 
     def get_optional(self, key, context, expected_owner=None):
@@ -119,7 +124,7 @@ class AccountCacheSnapshot:
         self.assert_usable()
         a=self.__accounts.get(key)
         if a is None:raise ValueError(f'Missing cached account: {key}')
-        if a.slot>context.slot or context.slot-a.slot>context.maximum_slot_age:raise ValueError('Cached account is future or stale')
+        if self._stale(a.slot, context):raise ValueError('Cached account is future or stale')
         if not a.data:return None
         if expected_owner is not None and a.owner!=expected_owner:raise ValueError('Cached account owner mismatch')
         return a
@@ -131,7 +136,7 @@ class AccountCacheSnapshot:
             raise ValueError(f"Missing cached account: {key}")
         if expected_owner is not None and a.owner != expected_owner:
             raise ValueError("Cached account owner mismatch")
-        if a.slot > context.slot or context.slot - a.slot > context.maximum_slot_age:
+        if self._stale(a.slot, context):
             raise ValueError("Cached account is future or stale")
         if not a.data:
             raise ValueError("Cached account is closed")
@@ -393,6 +398,18 @@ class SubscriptionAccountCache:
                 self._assert_no_conflict()
                 ready_guard()
             return AccountCacheSnapshot(self._snapshot_accounts(keys), check)
+
+    def observed_snapshot(self, readiness, slot, keys=None):
+        """Attest a coherent baseline and continuous observation; never a replay heartbeat."""
+        unsigned(slot)
+        keys = None if keys is None else tuple(dict.fromkeys(keys))
+        with self.__lock:
+            self._assert_no_conflict()
+            ready = readiness.guard()
+            def check():
+                self._assert_no_conflict()
+                ready()
+            return AccountCacheSnapshot(self._snapshot_accounts(keys), check, slot)
 
     def snapshot(self, keys=None):
         """O(selected keys), or O(all keys) when omitted; account bytes are immutable."""

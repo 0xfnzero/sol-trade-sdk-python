@@ -127,3 +127,5 @@ __all__ += ["CachedPumpFunState", "cached_pumpfun", "quote_cached_pumpfun_exact_
 
 from .pumpswap_preparation import (PumpSwapQuoteRequest, PumpSwapBuildOptions, SignedPumpSwapTransaction, PreparedPumpSwapTrade, PumpSwapRouteSearch, PumpSwapRouteRejection, PumpSwapRouteSelection, prepare_pumpswap_trade, prepare_best_pumpswap_trade)
 __all__ += ['PumpSwapQuoteRequest', 'PumpSwapBuildOptions', 'SignedPumpSwapTransaction', 'PreparedPumpSwapTrade', 'PumpSwapRouteSearch', 'PumpSwapRouteRejection', 'PumpSwapRouteSelection', 'prepare_pumpswap_trade', 'prepare_best_pumpswap_trade']
+from .route_candidates import CandidateRouteGraph
+__all__ += ["CandidateRouteGraph"]
