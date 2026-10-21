@@ -7,16 +7,16 @@ from examples.pumpswap_global_routing import replay_global_routing
 def test_defaults_merge_atomically():
     c = PumpSwapRoutingConfig()
     pools = c.conversion_pools
-    assert len(pools) == 64
+    assert len(pools) == 59
     c.extend_pools(pools + tuple(PoolTradeHint(h.pool,h.output_mint,h.input_mint) for h in pools))
-    assert len(c.conversion_pools) == 64
+    assert len(c.conversion_pools) == 59
     h = pools[0]
     extra = PoolTradeHint(Pubkey.new_unique(), h.input_mint,h.output_mint)
     with pytest.raises(ValueError,match='Conflicting'):
         c.extend_pools((extra,PoolTradeHint(h.pool,h.input_mint,extra.pool)))
-    assert len(c.conversion_pools) == 64
+    assert len(c.conversion_pools) == 59
     c.extend_pools((extra,))
-    assert len(c.conversion_pools) == 65
+    assert len(c.conversion_pools) == 60
     assert PumpSwapRoutingConfig([]).conversion_pools == ()
 
 
