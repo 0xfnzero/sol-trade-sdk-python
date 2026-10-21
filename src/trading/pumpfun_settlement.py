@@ -24,6 +24,23 @@ def _validate_settlement_instructions(route,payer):
 
 def _validate_native_anchor(leg,payer,buy):
     ix=leg.instruction;keys=ix.accounts
+    legacy=bytes([56,252,116,8,158,223,205,95] if buy else [51,230,133,164,1,127,131,173])
+    if ix.data[:8]==legacy:
+        if (len(ix.data)!=(25 if buy else 24) or (buy and ix.data[24]>1) or len(keys)<16
+            or struct.unpack_from('<QQ',ix.data,8)!=(leg.amount_in,leg.minimum_net_amount_out)
+            or keys[6].pubkey!=payer or not keys[6].is_signer or not keys[6].is_writable
+            or keys[3].pubkey!=leg.hint.pool or keys[2].pubkey!=(leg.hint.output_mint if buy else leg.hint.input_mint)):
+            raise ValueError("PumpFun V1 settlement does not match quote")
+        return
+    v3=bytes([225,247,80,30,213,179,132,136] if buy else [28,146,222,119,38,196,105,213])
+    if ix.data[:8]==v3:
+        if (len(ix.data)!=(25 if buy else 24) or (buy and ix.data[24]!=0) or len(keys)!=17
+            or struct.unpack_from('<QQ',ix.data,8)!=(leg.amount_in,leg.minimum_net_amount_out)
+            or keys[8].pubkey!=payer or not keys[8].is_signer or not keys[8].is_writable
+            or keys[5].pubkey!=leg.hint.pool or keys[2].pubkey!=WSOL_TOKEN_ACCOUNT
+            or keys[1].pubkey!=(leg.hint.output_mint if buy else leg.hint.input_mint)):
+            raise ValueError("PumpFun V3 settlement does not match quote")
+        return
     discriminator=bytes.fromhex('c2ab1c46684d5b2f' if buy else '5df6823ce7e940b2')
     if (len(ix.data)!=24 or ix.data[:8]!=discriminator or len(keys)!=(27 if buy else 26)
         or struct.unpack_from('<QQ',ix.data,8)!=(leg.amount_in,leg.minimum_net_amount_out)

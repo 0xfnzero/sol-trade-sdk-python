@@ -2,8 +2,18 @@ import pytest
 from solders.pubkey import Pubkey
 from sol_trade_sdk.trading.route_candidates import candidate_routes, iterate_candidate_routes
 from sol_trade_sdk import PoolTradeHint
+from sol_trade_sdk.trading.pumpswap_routing import PumpSwapRoutingConfig
+from sol_trade_sdk.trading.pumpswap_preparation import _build_pumpswap_topology
 key=lambda n: Pubkey.from_bytes(bytes([n])*32)
 edge=lambda n,a,b: PoolTradeHint(key(n),key(a),key(b))
+def test_preserve_version_in_forward_reverse_and_conversion_topology():
+    hint = PoolTradeHint(key(10),key(1),key(2),"v2")
+    for a,b in [(key(1),key(2)),(key(2),key(1))]:
+        assert candidate_routes([hint],a,b)[0][0].pumpfun_version == "v2"
+    config = PumpSwapRoutingConfig([hint])
+    assert config.conversion_pools[0].pumpfun_version == "v2"
+    _, adjacent = _build_pumpswap_topology(config.conversion_pools)
+    assert adjacent[key(2)][0].pumpfun_version == "v2"
 def test_shortest_reversible_deterministic_paths():
     pools=[edge(10,1,2),edge(11,2,3),edge(12,1,3)]
     paths=candidate_routes(pools,key(3),key(1))

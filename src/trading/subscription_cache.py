@@ -64,6 +64,7 @@ class PoolTradeHint:
     pool: Pubkey
     input_mint: Pubkey
     output_mint: Pubkey
+    pumpfun_version: str | None = None
 
     def __post_init__(self):
         if (
@@ -283,12 +284,12 @@ class AccountCacheSnapshot:
         )
 
     def prepare_route(
-        self, hints, context, unix_timestamp, payer, amount, slippage_bps=100, maximum_arrays=8, allow_pumpfun_native_settlement=False
+        self, hints, context, unix_timestamp, payer, amount, slippage_bps=100, maximum_arrays=8, allow_pumpfun_native_settlement=False, bridge_limits=None
     ):
         from .cached_route import prepare_cached_route
 
         return prepare_cached_route(
-            self, hints, context, unix_timestamp, payer, amount, slippage_bps, maximum_arrays, allow_pumpfun_native_settlement
+            self, hints, context, unix_timestamp, payer, amount, slippage_bps, maximum_arrays, allow_pumpfun_native_settlement, bridge_limits
         )
 
     def prepare_dlmm(

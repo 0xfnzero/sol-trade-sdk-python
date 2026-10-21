@@ -36,7 +36,7 @@ class CachedClmmQuote:
     sqrt_price_limit: int
 
 
-def prepare_cached_clmm(
+def _calculate_cached_clmm(
     snapshot,
     hint,
     context,
@@ -44,7 +44,7 @@ def prepare_cached_clmm(
     payer,
     amount,
     slippage_bps=0,
-    maximum_arrays=8,
+    maximum_arrays=8, _quote_only=False
 ):
     unsigned(amount)
     unsigned(unix_timestamp)
@@ -172,6 +172,8 @@ def prepare_cached_clmm(
             quote = CachedClmmQuote(
                 amount, net, minimum, minimum, context.slot, context.epoch, limit
             )
+            if _quote_only:
+                return quote
             a = RaydiumClmmSwapV2Accounts(
                 payer,
                 key(9),
@@ -198,3 +200,28 @@ def prepare_cached_clmm(
         if len(arrays) >= maximum_arrays:
             raise ValueError("CLMM quote exceeds array budget")
     raise ValueError("Insufficient CLMM liquidity in supplied snapshot")
+
+
+def prepare_cached_clmm(
+    snapshot,
+    hint,
+    context,
+    unix_timestamp,
+    payer,
+    amount,
+    slippage_bps=0,
+    maximum_arrays=8,
+):
+    return _calculate_cached_clmm(snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps, maximum_arrays)
+
+def quote_cached_clmm(
+    snapshot,
+    hint,
+    context,
+    unix_timestamp,
+    payer,
+    amount,
+    slippage_bps=0,
+    maximum_arrays=8,
+):
+    return _calculate_cached_clmm(snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps, maximum_arrays, _quote_only=True)

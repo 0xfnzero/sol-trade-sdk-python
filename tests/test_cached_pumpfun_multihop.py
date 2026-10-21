@@ -8,6 +8,34 @@ from examples.cached_trade import prepare
 from src.trading.pumpfun_settlement import settle_pumpfun_native_quote
 ROOT=Path(__file__).parents[1]/'examples/fixtures'
 
+@pytest.mark.parametrize('direction',['buy','sell'])
+def test_instruction_versions_keep_protected_hops(direction,monkeypatch):
+    import socket
+    from sol_trade_sdk import TradeConfig, PumpFunVersion
+    monkeypatch.setattr(socket.socket,'connect',lambda *a:pytest.fail('network in preparation'))
+    assert TradeConfig.builder('http://localhost').build().pumpfun_version == PumpFunVersion.V3
+    v=json.loads((ROOT/f'pumpfun_whirlpool_usdc_{direction}_20261005.json').read_text())
+    discriminators=([bytes(x) for x in ([56,252,116,8,158,223,205,95],[194,171,28,70,104,77,91,47],[225,247,80,30,213,179,132,136])]
+        if direction=='buy' else [bytes(x) for x in ([51,230,133,164,1,127,131,173],[93,246,130,60,231,233,64,178],[28,146,222,119,38,196,105,213])])
+    outputs=[]
+    for version,disc in zip(('v1','v2','v3'),discriminators):
+        p=prepare(dict(v,pumpfun_version=version))
+        anchor=p.route.legs[-1 if direction=='buy' else 0]
+        assert anchor.instruction.data[:8]==disc
+        assert int.from_bytes(anchor.instruction.data[8:16],'little')==anchor.amount_in
+        assert int.from_bytes(anchor.instruction.data[16:24],'little')==anchor.minimum_net_amount_out
+        if version=='v3':assert len(anchor.instruction.accounts)==17
+        outputs.append(p.route.minimum_net_amount_out)
+    assert len(set(outputs))==1
+    candidates = [dict(h,pumpfun_version="v2") for h in v["legs"]]
+    for reverse in (False,True):
+        ordered = [dict(h,input_mint=h["output_mint"],output_mint=h["input_mint"]) for h in candidates] if reverse else candidates
+        p = prepare(dict(v,legs=[],candidates=ordered,input_mint=v["legs"][0]["input_mint"],
+            output_mint=v["legs"][-1]["output_mint"],pumpfun_version="v3"))
+        anchor = p.route.legs[-1 if direction=="buy" else 0]
+        assert anchor.hint.pumpfun_version == "v2"
+        assert len(anchor.instruction.accounts) == (27 if direction=="buy" else 26)
+
 @pytest.mark.parametrize('protocol',['whirlpool','dlmm','clmm'])
 @pytest.mark.parametrize('direction',['buy','sell'])
 def test_concentrated_native_quote_simulation_and_missing_array(protocol,direction,monkeypatch):

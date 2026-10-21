@@ -54,8 +54,8 @@ def decode_dlmm_bins(data, pool, index):
     return result
 
 
-def prepare_cached_dlmm(
-    snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps=0, maximum_arrays=8
+def _calculate_cached_dlmm(
+    snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps=0, maximum_arrays=8, _quote_only=False
 ):
     unsigned(amount)
     unsigned(unix_timestamp, (1 << 63) - 1)
@@ -144,6 +144,8 @@ def prepare_cached_dlmm(
             quote = CachedDlmmQuote(
                 amount, net, minimum, minimum, context.slot, context.epoch, r.bins_crossed
             )
+            if _quote_only:
+                return quote
             a = MeteoraDlmmSwap2Accounts(
                 hint.pool,
                 key(152),
@@ -165,3 +167,14 @@ def prepare_cached_dlmm(
         if len(arrays) >= maximum_arrays:
             raise ValueError("DLMM quote exceeds array budget")
     raise ValueError("Insufficient DLMM liquidity in supplied snapshot")
+
+
+def prepare_cached_dlmm(
+    snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps=0, maximum_arrays=8
+):
+    return _calculate_cached_dlmm(snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps, maximum_arrays)
+
+def quote_cached_dlmm(
+    snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps=0, maximum_arrays=8
+):
+    return _calculate_cached_dlmm(snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps, maximum_arrays, _quote_only=True)

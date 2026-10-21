@@ -84,7 +84,8 @@ class PumpSwapQuote:
     minimum_amount_out: int
 
 
-def prepare_cached_pumpswap(snapshot,hint,context,payer,amount,slippage_bps=0):
+def _calculate_cached_pumpswap(snapshot,hint,context,payer,amount,slippage_bps=0, _quote_only=False
+):
     from solders.instruction import Instruction, AccountMeta
     from ..calc import buy_quote_input_internal_with_fees,sell_base_input_internal_with_fees,_u64
     _u64(amount,'amount')
@@ -102,6 +103,9 @@ def prepare_cached_pumpswap(snapshot,hint,context,payer,amount,slippage_bps=0):
     out=buy_quote_input_internal_with_fees(*args).base if quote_in else sell_base_input_internal_with_fees(*args).ui_quote
     minimum=ix.minimum_output_with_slippage(out,slippage_bps)
     if not minimum: raise ValueError('PumpSwap quote has zero protected output')
+    if _quote_only:
+        snapshot.assert_usable()
+        return PumpSwapQuote(amount,out,minimum)
     def choose(keys,label):
         for k in keys:
             if k!=Pubkey.default(): return k
@@ -120,3 +124,10 @@ def prepare_cached_pumpswap(snapshot,hint,context,payer,amount,slippage_bps=0):
     instruction=Instruction(ix.PUMPSWAP_PROGRAM,data,accounts)
     snapshot.assert_usable()
     return state,PumpSwapQuote(amount,out,minimum),instruction
+
+
+def prepare_cached_pumpswap(snapshot,hint,context,payer,amount,slippage_bps=0):
+    return _calculate_cached_pumpswap(snapshot, hint, context, payer, amount, slippage_bps)
+
+def quote_cached_pumpswap(snapshot,hint,context,payer,amount,slippage_bps=0):
+    return _calculate_cached_pumpswap(snapshot, hint, context, payer, amount, slippage_bps, _quote_only=True)

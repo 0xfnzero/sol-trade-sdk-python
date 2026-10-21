@@ -83,8 +83,8 @@ def decode_whirlpool_ticks(data, pool, start, spacing):
     return ticks
 
 
-def prepare_cached_whirlpool(
-    snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps=0, maximum_arrays=6
+def _calculate_cached_whirlpool(
+    snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps=0, maximum_arrays=6, _quote_only=False
 ):
     unsigned(amount)
     unsigned(unix_timestamp)
@@ -181,6 +181,8 @@ def prepare_cached_whirlpool(
             result.minimum_fee_rate,
             result.maximum_fee_rate,
         )
+        if _quote_only:
+            return quote
         while len(arrays) < 3:
             arrays.append(arrays[-1])
         a = WhirlpoolSwapV2Accounts(
@@ -198,3 +200,14 @@ def prepare_cached_whirlpool(
         )
         return a, quote, build_whirlpool_swap_v2(a, SwapV2Args(amount, minimum), down)
     raise ValueError("Whirlpool quote exceeds loaded array budget")
+
+
+def prepare_cached_whirlpool(
+    snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps=0, maximum_arrays=6
+):
+    return _calculate_cached_whirlpool(snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps, maximum_arrays)
+
+def quote_cached_whirlpool(
+    snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps=0, maximum_arrays=6
+):
+    return _calculate_cached_whirlpool(snapshot, hint, context, unix_timestamp, payer, amount, slippage_bps, maximum_arrays, _quote_only=True)

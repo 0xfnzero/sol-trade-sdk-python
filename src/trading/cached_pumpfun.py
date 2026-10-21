@@ -131,7 +131,6 @@ def _prepare_cached_pumpfun_route_leg(snapshot,hint,context,payer,amount,slippag
     s=cached_pumpfun(snapshot,hint,context)
     if s.quote==WSOL and not allow_native:raise ValueError('PumpFun native quote requires cached trade settlement')
     buy=hint.input_mint==s.quote;q=quote_cached_pumpfun_exact_in(s,amount,buy,slippage_bps)
-    if s.quote_token_program!=token:raise ValueError('PumpFun V2 quote token program is unsupported')
     if str(s.mint).endswith('pump') and s.token_program!=token2022:raise ValueError('PumpFun mint suffix and token program mismatch')
     raw=snapshot.get(hint.pool,context,PUMPFUN_PROGRAM_ID).data
     if len(raw)>=125 and raw[124]!=0:
@@ -148,6 +147,24 @@ def _prepare_cached_pumpfun_route_leg(snapshot,hint,context,payer,amount,slippag
         raise ValueError('Missing PumpFun current fee recipient')
     recipient=first(483 if s.curve.is_mayhem_mode else 41,1);buyback=first(741,8)
     p=ix.PumpFunParams(bonding_curve_account=hint.pool,virtual_token_reserves=s.curve.virtual_token_reserves,virtual_sol_reserves=s.curve.virtual_sol_reserves,real_token_reserves=s.curve.real_token_reserves,creator=creator,is_mayhem_mode=s.curve.is_mayhem_mode,is_cashback_coin=s.curve.is_cashback_coin,creator_vault=vault,fee_sharing_creator_vault_if_active=active,token_program=s.token_program,fee_recipient=recipient,quote_mint=s.quote,curve_quote_mint=s.quote)
+    version=ix.PumpFunVersion(hint.pumpfun_version or ix.PumpFunVersion.V3)
+    if version == ix.PumpFunVersion.V3:
+        p.quote_token_program=s.quote_token_program
+        p.minimum_output_amount=q.minimum_net_amount_out
+        p.base_transfer_fee_bps=p.quote_transfer_fee_bps=0
+        p.buyback_recipient=buyback
+        swap=ix.build_v3_instructions(payer,s.mint,amount,p,buy)[0]
+        snapshot.assert_usable()
+        return s,q,swap
+    if version == ix.PumpFunVersion.LEGACY:
+        if s.quote != WSOL:raise ValueError("PumpFun V1 requires native SOL")
+        p.version=version
+        swaps=ix.build_buy_instructions(payer,s.mint,amount,p,create_output_ata=False) if buy else ix.build_sell_instructions(payer,s.mint,amount,p)
+        swap=swaps[0];data=bytearray(swap.data);struct.pack_into('<QQ',data,8,amount,q.minimum_net_amount_out)
+        snapshot.assert_usable()
+        return s,q,Instruction(PUMPFUN_PROGRAM_ID,bytes(data),swap.accounts)
+    if version != ix.PumpFunVersion.V2:raise ValueError("Unknown PumpFun version")
+    if s.quote_token_program!=token:raise ValueError("PumpFun V2 quote token program is unsupported")
     swaps=ix.build_buy_v2_instructions(payer,s.mint,s.quote,amount,p,create_output_ata=False,create_input_ata=False,use_exact_sol_amount=True) if buy else ix.build_sell_v2_instructions(payer,s.mint,s.quote,amount,p,create_output_ata=False,fixed_output_amount=q.minimum_net_amount_out)
     if len(swaps)!=1 or len(swaps[0].accounts)!=(27 if buy else 26):raise ValueError('Unexpected PumpFun V2 layout')
     swap=swaps[0];keys=list(swap.accounts)

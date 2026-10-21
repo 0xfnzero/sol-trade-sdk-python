@@ -25,7 +25,7 @@ def fixture(v):
     g=bytearray(1054);g[:8]=bytes([167,232,232,177,200,108,114,127]);g[8]=1;g[1045]=1;struct.pack_into('<Q',g,1046,100)
     m=bytearray(82);m[45]=1;struct.pack_into('<Q',m,36,int(v['supply']));qm=bytearray(82);qm[45]=1
     accounts={pool:CachedAccount(PUMPFUN_PROGRAM_ID,bytes(c),100,0),GLOBAL_ACCOUNT:CachedAccount(PUMPFUN_PROGRAM_ID,bytes(g),100,0),FEE_CONFIG:CachedAccount(FEE_PROGRAM,fee_config(),100,0),MINT:CachedAccount(TOKEN,bytes(m),100,0),quote:CachedAccount(TOKEN,bytes(qm),100,0)}
-    h=PoolTradeHint(pool,quote if v['buy'] else MINT,MINT if v['buy'] else quote)
+    h=PoolTradeHint(pool,quote if v['buy'] else MINT,MINT if v['buy'] else quote,'v2')
     return accounts,h
 
 @pytest.mark.parametrize('v',ORACLE['vectors'])

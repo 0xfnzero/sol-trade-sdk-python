@@ -12,7 +12,7 @@ class CandidateRouteGraph:
     def __init__(self, candidates):
         by_pool = {}
         for h in candidates:
-            PoolTradeHint(h.pool, h.input_mint, h.output_mint)
+            PoolTradeHint(h.pool, h.input_mint, h.output_mint, h.pumpfun_version)
             old = by_pool.get(h.pool)
             if old and {old.input_mint, old.output_mint} != {
                 h.input_mint,
@@ -26,7 +26,7 @@ class CandidateRouteGraph:
             (
                 edge
                 for h in by_pool.values()
-                for edge in (h, PoolTradeHint(h.pool, h.output_mint, h.input_mint))
+                for edge in (h, PoolTradeHint(h.pool, h.output_mint, h.input_mint, h.pumpfun_version))
             ),
             key=lambda h: (str(h.pool), str(h.output_mint)),
         )

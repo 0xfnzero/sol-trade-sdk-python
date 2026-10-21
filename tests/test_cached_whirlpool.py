@@ -125,3 +125,19 @@ def test_invalid(kind):
     v["accounts"] = kept
     with pytest.raises(ValueError):
         prepare(v, age=age, budget=budget)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_quote_only_matches_preparation_without_builders(monkeypatch, reverse):
+    from sol_trade_sdk.trading import cached_whirlpool as module
+    from sol_trade_sdk.trading.subscription_cache import AccountCacheSnapshot
+    expected = prepare(V, reverse)[1]
+    def forbidden(*args, **kwargs):
+        raise AssertionError("quote constructed an instruction or ATA")
+    for key in tuple(vars(module)):
+        if key.startswith('build_') or key == 'get_associated_token_address':
+            monkeypatch.setattr(module, key, forbidden)
+    def only_quote(snapshot, *args, **kwargs):
+        return None, module.quote_cached_whirlpool(snapshot, *args, **kwargs), None
+    monkeypatch.setattr(AccountCacheSnapshot, 'prepare_whirlpool', only_quote)
+    assert prepare(V, reverse)[1] == expected

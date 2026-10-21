@@ -8,6 +8,7 @@ PumpFun, PumpSwap, Bonk, Raydium CPMM, Raydium AMM V4, and Meteora DAMM V2.
 from __future__ import annotations
 
 from enum import Enum
+from .common.pumpfun_version import PumpFunVersion
 from typing import Optional, List, Dict, Any, Union, Protocol, runtime_checkable
 from dataclasses import dataclass, field, replace
 import asyncio
@@ -356,6 +357,7 @@ def _pumpfun_quote_mint_for_layout(quote_mint: Pubkey) -> Pubkey:
 class PumpFunParams:
     """PumpFun protocol parameters"""
 
+
     bonding_curve: BondingCurveAccount = field(
         default_factory=lambda: BondingCurveAccount(
             discriminator=0,
@@ -379,6 +381,12 @@ class PumpFunParams:
     quote_mint: Pubkey = field(default_factory=Pubkey.default)
     observed_trade_creator: Optional[Pubkey] = None
     fee_sharing_creator_vault_if_active: Optional[Pubkey] = None
+    version: Optional[PumpFunVersion] = None
+    quote_token_program: Optional[Pubkey] = None
+    minimum_output_amount: Optional[int] = None
+    base_transfer_fee_bps: Optional[int] = None
+    quote_transfer_fee_bps: Optional[int] = None
+    buyback_recipient: Optional[Pubkey] = None
 
     @classmethod
     def immediate_sell(
@@ -1084,6 +1092,7 @@ class TradeConfig:
     swqos_cores_from_end: bool = False
     max_swqos_submit_concurrency: Optional[int] = None
     middleware_manager: Optional[Any] = None
+    pumpfun_version: PumpFunVersion = PumpFunVersion.V3
 
     def __post_init__(self) -> None:
         self.swqos_configs = _normalize_swqos_configs(self.rpc_url, self.swqos_configs)
@@ -1115,6 +1124,7 @@ class TradeConfigBuilder:
 
     def __init__(self, rpc_url: str):
         self._rpc_url = rpc_url
+        self._pumpfun_version = PumpFunVersion.V3
         self._swqos_configs: List[SwqosConfig] = []
         self._commitment: Commitment = Confirmed
         self._log_enabled: bool = True
@@ -1176,6 +1186,10 @@ class TradeConfigBuilder:
         self._max_swqos_submit_concurrency = limit
         return self
 
+    def pumpfun_version(self, version: PumpFunVersion) -> "TradeConfigBuilder":
+        self._pumpfun_version = PumpFunVersion(version)
+        return self
+
     def middleware_manager(self, manager: Any) -> "TradeConfigBuilder":
         """Set a Rust-style middleware manager."""
         self._middleware_manager = manager
@@ -1185,6 +1199,7 @@ class TradeConfigBuilder:
         """Build and return the TradeConfig."""
         return TradeConfig(
             rpc_url=self._rpc_url,
+            pumpfun_version=self._pumpfun_version,
             swqos_configs=self._swqos_configs,
             commitment=self._commitment,
             log_enabled=self._log_enabled,
@@ -1312,12 +1327,12 @@ class TradingClient:
     def prepare_cached_trade(self, request):
         from .trading.cached_trade import prepare_cached_trade
 
-        return prepare_cached_trade(request)
+        return prepare_cached_trade(replace(request, trade_config=request.trade_config or self.config))
 
     async def execute_cached_trade(self, request, signers, submit):
         from .trading.cached_trade import CachedTradeExecutor
 
-        return await CachedTradeExecutor(request.dex_type).execute(request, signers, submit)
+        return await CachedTradeExecutor(request.dex_type).execute(replace(request, trade_config=request.trade_config or self.config), signers, submit)
 
     def __init__(self, payer: Keypair, config: TradeConfig):
         """
@@ -1535,6 +1550,8 @@ class TradingClient:
             )
 
         protocol_params = params.extension_params
+        if params.dex_type == DexType.PUMPFUN and isinstance(protocol_params, PumpFunParams) and protocol_params.version is None:
+            protocol_params = replace(protocol_params, version=self.config.pumpfun_version)
 
         # Build instructions
         builder = self._create_instruction_builder(params.dex_type)
@@ -1619,6 +1636,8 @@ class TradingClient:
             )
 
         protocol_params = params.extension_params
+        if params.dex_type == DexType.PUMPFUN and isinstance(protocol_params, PumpFunParams) and protocol_params.version is None:
+            protocol_params = replace(protocol_params, version=self.config.pumpfun_version)
 
         builder = self._create_instruction_builder(params.dex_type)
         sell_kwargs = dict(
@@ -2103,6 +2122,7 @@ __all__ = [
     "TradeRiskGate",
     # Protocol Params
     "PumpFunParams",
+    "PumpFunVersion",
     "PumpSwapFeeBasisPoints",
     "PumpSwapParams",
     "BonkParams",
@@ -2273,3 +2293,6 @@ __all__ += ['derive_pump_coin_quote_create_accounts']
 
 from .trading.pumpswap_preparation import (PumpSwapQuoteRequest, PumpSwapBuildOptions, SignedPumpSwapTransaction, PreparedPumpSwapTrade, PumpSwapRouteSearch, PumpSwapRouteRejection, PumpSwapRouteSelection, prepare_pumpswap_trade, prepare_best_pumpswap_trade)
 __all__ += ['PumpSwapQuoteRequest', 'PumpSwapBuildOptions', 'SignedPumpSwapTransaction', 'PreparedPumpSwapTrade', 'PumpSwapRouteSearch', 'PumpSwapRouteRejection', 'PumpSwapRouteSelection', 'prepare_pumpswap_trade', 'prepare_best_pumpswap_trade']
+
+from .trading.pumpswap_routing import PumpSwapRoutingConfig
+__all__ += ['PumpSwapRoutingConfig']

@@ -176,7 +176,7 @@ def test_search_exhaustion_invalid_conflicting_and_stale_candidates():
     # A root and two complete paths require 3 nodes; no partial result on budget 2.
     with pytest.raises(ValueError,match='budget exhausted'):
         prepare_best_pumpswap_trade(snapshot,replace(search,maximum_search_nodes=2),request,ctx,True)
-    for kwargs in ({'maximum_conversion_hops':4},{'maximum_search_nodes':0},{'conversion_pools':search.conversion_pools*17}):
+    for kwargs in ({'maximum_conversion_hops':4},{'maximum_search_nodes':0},{'conversion_pools':search.conversion_pools*65}):
         with pytest.raises(ValueError,match='limits'):
             prepare_best_pumpswap_trade(snapshot,replace(search,**kwargs),request,ctx,True)
     bad = replace(search.conversion_pools[0],output_mint=Pubkey.new_unique())

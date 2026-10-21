@@ -56,6 +56,8 @@ class CachedTradeRequest:
     input_mint: Any = None
     output_mint: Any = None
     fixed_output_amount: int | None = None
+    pumpfun_version: str | None = None
+    trade_config: Any = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,10 @@ def value(v):
 
 
 def prepare_cached_trade(r):
+    version = r.pumpfun_version or getattr(r.trade_config, "pumpfun_version", None)
+    if version is not None:
+        apply = lambda h: replace(h, pumpfun_version=h.pumpfun_version or version)
+        r = replace(r, hints=tuple(map(apply,r.hints)), candidates=tuple(map(apply,r.candidates)))
     if type(r.slippage_bps) is not int or not 0 <= r.slippage_bps < 10000:
         raise ValueError("Invalid cached trade slippage: expected integer basis points in [0, 10000)")
     direction = value(r.trade_type)

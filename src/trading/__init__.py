@@ -129,3 +129,6 @@ from .pumpswap_preparation import (PumpSwapQuoteRequest, PumpSwapBuildOptions, S
 __all__ += ['PumpSwapQuoteRequest', 'PumpSwapBuildOptions', 'SignedPumpSwapTransaction', 'PreparedPumpSwapTrade', 'PumpSwapRouteSearch', 'PumpSwapRouteRejection', 'PumpSwapRouteSelection', 'prepare_pumpswap_trade', 'prepare_best_pumpswap_trade']
 from .route_candidates import CandidateRouteGraph
 __all__ += ["CandidateRouteGraph"]
+
+from .pumpswap_routing import PumpSwapRoutingConfig
+__all__ += ['PumpSwapRoutingConfig']

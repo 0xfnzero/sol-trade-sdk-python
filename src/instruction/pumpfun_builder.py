@@ -5,6 +5,7 @@ Production-grade implementation with all constants, discriminators, and PDA deri
 
 from typing import List, Optional, Tuple
 from dataclasses import dataclass
+from ..common.pumpfun_version import PumpFunVersion
 from solders.pubkey import Pubkey
 from solders.instruction import Instruction, AccountMeta
 import struct
@@ -331,6 +332,12 @@ class PumpFunParams:
     fee_recipient: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
     quote_mint: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
     curve_quote_mint: Pubkey = Pubkey.from_string("11111111111111111111111111111111")
+    version: Optional[PumpFunVersion] = None
+    quote_token_program: Optional[Pubkey] = None
+    minimum_output_amount: Optional[int] = None
+    base_transfer_fee_bps: Optional[int] = None
+    quote_transfer_fee_bps: Optional[int] = None
+    buyback_recipient: Optional[Pubkey] = None
 
 
 # ============================================
@@ -402,6 +409,22 @@ def build_buy_instructions(
     Returns:
         List of instructions for the buy operation
     """
+    if params.version is not None:
+        version = PumpFunVersion(params.version)
+        if version == PumpFunVersion.V3:
+            return build_v3_instructions(payer, output_mint, input_amount, params, True,
+                slippage_bps, fixed_output_amount, create_output_ata, create_input_ata, False, input_mint,
+                use_exact_sol_amount=use_exact_sol_amount)
+        if version == PumpFunVersion.V2:
+            return build_buy_v2_instructions(payer=payer, output_mint=output_mint, input_mint=input_mint,
+                input_amount=input_amount, params=params, slippage_bps=slippage_bps,
+                create_output_ata=create_output_ata, create_input_ata=create_input_ata,
+                close_input_ata=close_input_ata, fixed_output_amount=fixed_output_amount,
+                use_exact_sol_amount=use_exact_sol_amount)
+        if not _is_sol_quote_mint(_effective_quote_mint(params)):
+            raise ValueError("PumpFun V1 requires a native SOL curve")
+        if input_mint not in (Pubkey.default(), SOL_TOKEN_ACCOUNT):
+            raise ValueError("PumpFun V1 buys settle wallet SOL; use cached trade preparation for token settlement")
     if input_mint!=Pubkey.default() and not _uses_v2_layout(params,input_mint) and not _is_sol_quote_mint(input_mint):
         raise ValueError("PumpFun native input_mint does not match quote_mint")
     if _uses_v2_layout(params, input_mint):
@@ -555,6 +578,20 @@ def build_sell_instructions(
     Returns:
         List of instructions for the sell operation
     """
+    if params.version is not None:
+        version = PumpFunVersion(params.version)
+        if version == PumpFunVersion.V3:
+            return build_v3_instructions(payer, input_mint, input_amount, params, False,
+                slippage_bps, fixed_output_amount, create_output_ata, False, close_input_ata, output_mint)
+        if version == PumpFunVersion.V2:
+            return build_sell_v2_instructions(payer=payer, input_mint=input_mint, output_mint=output_mint,
+                input_amount=input_amount, params=params, slippage_bps=slippage_bps,
+                create_output_ata=create_output_ata, close_input_ata=close_input_ata,
+                fixed_output_amount=fixed_output_amount)
+        if not _is_sol_quote_mint(_effective_quote_mint(params)):
+            raise ValueError("PumpFun V1 requires a native SOL curve")
+        if output_mint not in (Pubkey.default(), SOL_TOKEN_ACCOUNT):
+            raise ValueError("PumpFun V1 sells settle wallet SOL; use cached trade preparation for token settlement")
     if output_mint!=Pubkey.default() and not _uses_v2_layout(params,output_mint) and not _is_sol_quote_mint(output_mint):
         raise ValueError("PumpFun native output_mint does not match quote_mint")
     if _uses_v2_layout(params, output_mint):
@@ -915,6 +952,70 @@ def build_sell_v2_instructions(
 # ============================================
 # Claim Cashback Instruction
 # ============================================
+
+def build_v3_instructions(payer, mint, amount, params, buy, slippage_bps=1000,
+                          fixed_output_amount=None, create_output_ata=False,
+                          create_input_ata=False, close_input_ata=False, settlement=None,
+                          use_exact_sol_amount=True):
+    """Build V3 from explicit state without RPC. Native curves settle wallet SOL."""
+    from .pump_compact_accounts import derive_pump_v3_accounts
+    from .pump_upgrade import (build_pump_buy_v3_instruction,
+        build_pump_buy_exact_quote_in_v3_instruction, build_pump_sell_v3_instruction)
+    quote = _effective_quote_mint(params)
+    native = _is_sol_quote_mint(quote)
+    if settlement is not None and settlement != (SOL_TOKEN_ACCOUNT if native else quote):
+        raise ValueError("PumpFun V3 quote endpoint mismatch; native curves settle wallet SOL, not WSOL tokens")
+    if params.bonding_curve_account != get_bonding_curve_pda(mint) or params.complete or params.is_cashback_coin:
+        raise ValueError("PumpFun V3 requires a matching active non-cashback curve")
+    quote_program = TOKEN_PROGRAM if native else params.quote_token_program
+    if params.token_program not in (TOKEN_PROGRAM, TOKEN_PROGRAM_2022) or quote_program not in (TOKEN_PROGRAM, TOKEN_PROGRAM_2022):
+        raise ValueError("PumpFun V3 requires actual mint token programs")
+    if not native and (params.base_transfer_fee_bps != 0 or params.quote_transfer_fee_bps != 0 or params.minimum_output_amount is None):
+        raise ValueError("Token-quoted V3 requires a minimum output and verified zero transfer fees")
+    if (params.base_transfer_fee_bps or 0) != 0 or (params.quote_transfer_fee_bps or 0) != 0:
+        raise ValueError("PumpFun V3 transfer-fee mints are unsupported")
+    if type(amount) is not int or not 0 < amount < 2**64 or not 0 <= slippage_bps <= 9999:
+        raise ValueError("Invalid PumpFun amount or slippage")
+    creator = _effective_creator_for_trade(params)
+    if buy and not use_exact_sol_amount and fixed_output_amount is None:
+        if not native:
+            raise ValueError("Token-quoted V3 maximum-input buys require an explicit fixed output")
+        fixed_output_amount = get_buy_token_amount_from_sol_amount(params.virtual_token_reserves,
+            params.virtual_sol_reserves, params.real_token_reserves, creator, amount)
+        if fixed_output_amount >= params.real_token_reserves:
+            raise ValueError("Graduating V3 buy requires an explicit output limit")
+        amount = calculate_with_slippage_buy(amount, slippage_bps)
+        if amount >= 2**64:
+            raise ValueError("PumpFun V3 maximum input exceeds u64")
+    exact_out = buy and fixed_output_amount is not None
+    minimum = fixed_output_amount if fixed_output_amount is not None else params.minimum_output_amount
+    if minimum is None:
+        if buy:
+            estimated = get_buy_token_amount_from_sol_amount(params.virtual_token_reserves,
+                params.virtual_sol_reserves, params.real_token_reserves, creator, amount)
+            if estimated >= params.real_token_reserves:
+                raise ValueError("Graduating V3 buy requires an explicit minimum output")
+        else:
+            estimated = get_sell_sol_amount_from_token_amount(params.virtual_token_reserves,
+                params.virtual_sol_reserves, creator, amount)
+        minimum = calculate_with_slippage_sell(estimated, slippage_bps)
+    if type(minimum) is not int or not 0 < minimum < 2**64:
+        raise ValueError("PumpFun V3 requires a nonzero u64 minimum")
+    accounts = derive_pump_v3_accounts(payer, mint, quote, params.token_program, quote_program,
+        params.buyback_recipient or get_buyback_fee_recipient_random())
+    instructions = []
+    if buy and create_output_ata:
+        instructions.append(create_associated_token_account_idempotent_instruction(payer,payer,mint,params.token_program))
+    if not native and (create_input_ata if buy else create_output_ata):
+        instructions.append(create_associated_token_account_idempotent_instruction(payer,payer,quote,quote_program))
+    instructions.append(build_pump_buy_v3_instruction(accounts,minimum,amount,False) if exact_out
+        else build_pump_buy_exact_quote_in_v3_instruction(accounts,amount,minimum,False) if buy
+        else build_pump_sell_v3_instruction(accounts,amount,minimum))
+    if not buy and (close_input_ata or params.close_token_account_when_sell):
+        instructions.append(close_token_account_instruction(params.token_program,
+            get_associated_token_address(payer,mint,params.token_program),payer,payer))
+    return instructions
+
 
 def claim_cashback_pumpfun_instruction(payer: Pubkey) -> Instruction:
     """

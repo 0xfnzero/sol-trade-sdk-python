@@ -203,6 +203,12 @@ class PumpFunInstructionBuilder(InstructionBuilder):
         bc = protocol_params.bonding_curve
         assoc = protocol_params.associated_bonding_curve
         return PfbParams(
+            version=protocol_params.version,
+            quote_token_program=protocol_params.quote_token_program,
+            minimum_output_amount=protocol_params.minimum_output_amount,
+            base_transfer_fee_bps=protocol_params.base_transfer_fee_bps,
+            quote_transfer_fee_bps=protocol_params.quote_transfer_fee_bps,
+            buyback_recipient=protocol_params.buyback_recipient,
             bonding_curve_account=bc.account if bc.account != Pubkey.default() else None,
             virtual_token_reserves=bc.virtual_token_reserves,
             virtual_sol_reserves=bc.virtual_sol_reserves,

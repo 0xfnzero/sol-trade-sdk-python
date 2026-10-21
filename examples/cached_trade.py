@@ -1,4 +1,4 @@
-"""Offline independent stock/meme multi-hop route from gRPC snapshots. Usage: cached_trade.py snapshots.json [--simulate].
+"""Offline stock/meme route: cached_trade.py snapshots.json [--pumpfun-version v1|v2|v3] [--simulate].
 
 Requires legs[{pool,input_mint,output_mint}],payer,amount,epoch,unix_timestamp,read_slot,
 recent_blockhash, accounts[{pubkey,owner,data(base64),slot,write_version}].
@@ -31,7 +31,8 @@ def prepare(v):
     snapshot = cache.snapshot()
     ctx = CacheReadContext(int(v["read_slot"]), int(v["epoch"]), int(v.get("maximum_slot_age", 32)))
     hints = [
-        PoolTradeHint(*(Pubkey.from_string(h[k]) for k in ("pool", "input_mint", "output_mint")))
+        PoolTradeHint(*(Pubkey.from_string(h[k]) for k in ("pool", "input_mint", "output_mint")),
+                      pumpfun_version=h.get("pumpfun_version"))
         for h in v.get("legs", [])
     ]
     payer = Pubkey.from_string(v["payer"])
@@ -40,10 +41,12 @@ def prepare(v):
 
     request = CachedTradeRequest(
         dex_type=v["dex_type"],
+        pumpfun_version=v.get("pumpfun_version"),
         trade_type=v["trade_type"],
         snapshot=snapshot,
         hints=tuple(hints),
-        candidates=tuple(PoolTradeHint(*(Pubkey.from_string(h[k]) for k in ("pool","input_mint","output_mint"))) for h in v.get("candidates",[])),
+        candidates=tuple(PoolTradeHint(*(Pubkey.from_string(h[k]) for k in ("pool","input_mint","output_mint")),
+                                      pumpfun_version=h.get("pumpfun_version")) for h in v.get("candidates",[])),
         input_mint=Pubkey.from_string(v["input_mint"]) if v.get("input_mint") else None,
         output_mint=Pubkey.from_string(v["output_mint"]) if v.get("output_mint") else None,
         context=ctx,
@@ -74,11 +77,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("snapshots", type=Path)
     ap.add_argument("--simulate", action="store_true")
+    ap.add_argument("--pumpfun-version", choices=("v1", "v2", "v3"), help="Override snapshot instruction version; V1 requires native SOL quote")
     ap.add_argument("--simulation-out", type=Path, help="Save original wire and RPC response for parser")
     args = ap.parse_args()
     if args.simulation_out and not args.simulate:
         ap.error("--simulation-out requires --simulate")
     value = json.loads(args.snapshots.read_text())
+    if args.pumpfun_version:
+        value["pumpfun_version"] = args.pumpfun_version
     prepared = prepare(value)
     route = prepared.route
     raw = prepared.compiled.message + bytes(64 * prepared.compiled.required_signatures)

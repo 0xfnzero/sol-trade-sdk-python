@@ -1,3 +1,10 @@
+from .cached_clmm import quote_cached_clmm
+from .cached_dlmm import quote_cached_dlmm
+from .cached_whirlpool import quote_cached_whirlpool
+from .cached_pumpswap import quote_cached_pumpswap
+from .cached_amm_v4 import cached_amm_v4, quote_cached_amm_v4_exact_in
+from ..instruction.cached_cpmm import quote_cached_cpmm_exact_in
+from .cached_pumpfun import cached_pumpfun, quote_cached_pumpfun_exact_in
 from ..instruction.pumpswap_builder import PUMPSWAP_PROGRAM as PUMPSWAP
 from ..instruction.pumpfun_builder import PUMPFUN_PROGRAM_ID as PUMPFUN
 from .cached_pumpfun import _prepare_cached_pumpfun_route_leg
@@ -51,6 +58,7 @@ def prepare_cached_route(
     slippage_bps=100,
     maximum_arrays=8,
     allow_pumpfun_native_settlement=False,
+    bridge_limits=None,
 ):
     hints = tuple(hints)
     unsigned(amount)
@@ -74,9 +82,14 @@ def prepare_cached_route(
     for previous, current in zip(hints, hints[1:]):
         if previous.output_mint != current.input_mint:
             raise ValueError("Disconnected route")
+    if bridge_limits and any(type(v) is not int or not 0 <= v < 10000 for v in bridge_limits[1:]):
+        raise ValueError("Invalid bridge limits")
+    target_slippage = slippage_bps
     legs = []
     spend = amount
     for h in hints:
+        bridge = bridge_limits is not None and h.pool != bridge_limits[0]
+        slippage_bps = bridge_limits[1] if bridge else target_slippage
         program = snapshot.get(h.pool, context).owner
         if program == PUMPFUN:
             state,q,ix=_prepare_cached_pumpfun_route_leg(snapshot,h,context,payer,spend,slippage_bps,allow_pumpfun_native_settlement)
@@ -129,6 +142,12 @@ def prepare_cached_route(
             raise ValueError("Pool protocol has no native cached quote implementation")
         if not 0 < used <= spend or not minimum:
             raise ValueError("Route has zero output or overconsumes input")
+        if bridge:
+            probe_amount = max(1, spend // 100)
+            probe_used, reference = _quote_route_leg(snapshot, h, context, unix_timestamp, payer, probe_amount, maximum_arrays)
+            if (not reference or used != spend or probe_used != probe_amount or
+                estimated * probe_amount * 10000 < reference * spend * (10000 - bridge_limits[2])):
+                raise ValueError("Bridge price impact exceeds limit or probe is unusable")
         legs.append(CachedRouteLeg(h, used, estimated, minimum, ix))
         spend = minimum
     setup = tuple(
@@ -144,3 +163,33 @@ def prepare_cached_route(
     return PreparedCachedRoute(
         tuple(legs), setup, tuple(l.instruction for l in legs), spend, residuals
     )
+
+
+def _quote_route_leg(snapshot, hint, context, unix_timestamp, payer, amount, maximum_arrays):
+    """Same cached calculators as preparation, without instruction construction."""
+    program = snapshot.get(hint.pool, context).owner
+    calculators = {CLMM: quote_cached_clmm, DLMM: quote_cached_dlmm, WHIRLPOOL: quote_cached_whirlpool}
+    if program in calculators:
+        q = calculators[program](snapshot, hint, context, unix_timestamp, payer, amount, 0, maximum_arrays)
+        return q.amount_in, q.estimated_net_amount_out
+    if program == PUMPSWAP:
+        q = quote_cached_pumpswap(snapshot, hint, context, payer, amount)
+    elif program == AMM_V4:
+        state = cached_amm_v4(snapshot, hint, context, unix_timestamp)
+        q = quote_cached_amm_v4_exact_in(state, amount, hint.input_mint == state.coin_mint)
+    elif program == CPMM:
+        state = snapshot.cpmm(hint, context, unix_timestamp)
+        q = quote_cached_cpmm_exact_in(state, amount, hint.input_mint == state.base_mint)
+    elif program == PUMPFUN:
+        state = cached_pumpfun(snapshot, hint, context)
+        if str(state.quote) == 'So11111111111111111111111111111111111111112':
+            raise ValueError('PumpFun native quote requires cached trade settlement')
+        q = quote_cached_pumpfun_exact_in(state, amount, hint.input_mint == state.quote)
+        return q.amount_in, q.estimated_net_amount_out
+    elif program == LAUNCHLAB:
+        accounts, state = snapshot.launchlab_curve(hint, context)
+        q = quote_launchlab_exact_in(state, amount, hint.input_mint == accounts.quote_mint, 0)
+        return q.amount_in, q.minimum_amount_out
+    else:
+        raise ValueError('Pool protocol has no native cached quote implementation')
+    return q.amount_in, q.amount_out

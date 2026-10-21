@@ -195,7 +195,7 @@ class PreparedPumpSwapTrade:
         return SignedPumpSwapTransaction(wire, message, signature, tuple(instructions), required, options.version)
 
 
-def prepare_pumpswap_trade(snapshot, hints, input_mint, output_mint, request, context, is_buy):
+def prepare_pumpswap_trade(snapshot, hints, input_mint, output_mint, request, context, is_buy, bridge_limits=None):
     snapshot.assert_usable()
     if type(is_buy) is not bool:
         raise ValueError("PumpSwap direction must be boolean")
@@ -205,7 +205,8 @@ def prepare_pumpswap_trade(snapshot, hints, input_mint, output_mint, request, co
     if not any(snapshot.get(h.pool, context).owner == ps.PUMPSWAP_PROGRAM for h in hints):
         raise ValueError("PumpSwap route requires a PumpSwap pool")
     route = snapshot.prepare_route(hints, context, request.unix_timestamp, request.payer,
-                                   request.amount_in, request.slippage_bps, request.maximum_arrays)
+                                   request.amount_in, request.slippage_bps, request.maximum_arrays,
+                                   False, bridge_limits)
     return PreparedPumpSwapTrade(route, input_mint, output_mint, request, context, is_buy, snapshot.assert_usable)
 
 
@@ -216,7 +217,9 @@ class PumpSwapRouteSearch:
     asset_mint: Pubkey
     conversion_pools: tuple = ()
     maximum_conversion_hops: int = 2
-    maximum_search_nodes: int = 128
+    maximum_search_nodes: int = 512
+    bridge_slippage_bps: int = 100
+    maximum_bridge_price_impact_bps: int = 100
 
 
 @dataclass(frozen=True)
@@ -232,11 +235,14 @@ class PumpSwapRouteSelection:
     rejected_routes: tuple
 
 
-def prepare_best_pumpswap_trade(snapshot, search, request, context, is_buy):
-    if (len(search.conversion_pools) > 32 or type(search.maximum_conversion_hops) is not int
+def prepare_best_pumpswap_trade(snapshot, search, request, context, is_buy, *, _topology=None):
+    if any(type(v) is not int or not 0 <= v < 10000 for v in
+           (search.bridge_slippage_bps, search.maximum_bridge_price_impact_bps)):
+        raise ValueError("Invalid bridge limits")
+    if (len(search.conversion_pools) > 128 or type(search.maximum_conversion_hops) is not int
         or not 0 <= search.maximum_conversion_hops <= 3 or type(search.maximum_search_nodes) is not int
         or not 1 <= search.maximum_search_nodes <= 4096):
-        raise ValueError("Invalid PumpSwap route search limits (32 candidates, 3 hops, 4096 nodes maximum)")
+        raise ValueError("Invalid PumpSwap route search limits (128 candidates, 3 hops, 4096 nodes maximum)")
     token, asset = canonical(search.token_mint), canonical(search.asset_mint)
     if token == asset:
         raise ValueError("PumpSwap token and payment asset must differ")
@@ -249,18 +255,9 @@ def prepare_best_pumpswap_trade(snapshot, search, request, context, is_buy):
     other = pool.quote_mint if token == pool.base_mint else pool.base_mint
     anchor = PoolTradeHint(search.pool, other if is_buy else token, token if is_buy else other)
     snapshot.pumpswap(anchor, context)
-    candidates = {}
-    for hint in search.conversion_pools:
-        if hint.pool == search.pool:
-            raise ValueError("Conversion candidates must not reuse selected PumpSwap pool")
-        a, b = canonical(hint.input_mint), canonical(hint.output_mint)
-        if a == b or Pubkey.default() in (a, b, hint.pool):
-            raise ValueError("Invalid conversion pool identity")
-        pair = tuple(sorted((a, b), key=bytes))
-        if hint.pool in candidates and candidates[hint.pool] != pair:
-            raise ValueError("Conflicting conversion mint pairs for pool")
-        candidates[hint.pool] = pair
-    candidates = sorted(candidates.items(), key=lambda item: bytes(item[0]))
+    candidates, adjacency = _topology if _topology is not None else _build_pumpswap_topology(search.conversion_pools)
+    if search.pool in candidates:
+        raise ValueError("Conversion candidates must not reuse selected PumpSwap pool")
     start, target = (asset, other) if is_buy else (other, asset)
     paths, remaining = [], search.maximum_search_nodes
     def walk(mint, path, visited):
@@ -273,13 +270,11 @@ def prepare_best_pumpswap_trade(snapshot, search, request, context, is_buy):
             return
         if len(path) == search.maximum_conversion_hops:
             return
-        for address, pair in candidates:
-            if mint not in pair:
-                continue
-            out = pair[1] if mint == pair[0] else pair[0]
+        for hint in adjacency.get(mint, ()):
+            out = hint.output_mint if mint == hint.input_mint else hint.input_mint
             if out == token or out in visited:
                 continue
-            walk(out, path + (PoolTradeHint(address, mint, out),), visited | {out})
+            walk(out, path + (replace(hint, input_mint=mint, output_mint=out),), visited | {out})
     walk(start, (), {start})
     if not paths:
         raise ValueError("No conversion path within supplied candidates and hop limit")
@@ -288,7 +283,8 @@ def prepare_best_pumpswap_trade(snapshot, search, request, context, is_buy):
         path = path + (anchor,) if is_buy else (anchor,) + path
         source, target = (search.asset_mint, search.token_mint) if is_buy else (search.token_mint, search.asset_mint)
         try:
-            trade = prepare_pumpswap_trade(snapshot, path, source, target, request, context, is_buy)
+            trade = prepare_pumpswap_trade(snapshot, path, source, target, request, context, is_buy,
+                (search.pool, search.bridge_slippage_bps, search.maximum_bridge_price_impact_bps))
         except CacheNotReadyError:
             raise
         except ValueError as error:
@@ -300,3 +296,20 @@ def prepare_best_pumpswap_trade(snapshot, search, request, context, is_buy):
     if best is None:
         raise ValueError("No executable PumpSwap route: " + rejections[0].reason)
     return PumpSwapRouteSelection(best, len(paths), tuple(rejections))
+
+
+def _build_pumpswap_topology(pools):
+    candidates = {}
+    for hint in pools:
+        a, b = canonical(hint.input_mint), canonical(hint.output_mint)
+        if a == b or Pubkey.default() in (a, b, hint.pool):
+            raise ValueError("Invalid conversion pool identity")
+        old = candidates.get(hint.pool)
+        if old and {old.input_mint, old.output_mint} != {a, b}:
+            raise ValueError("Conflicting conversion mint pairs for pool")
+        candidates[hint.pool] = replace(hint, input_mint=a, output_mint=b)
+    adjacency = {}
+    for address, hint in sorted(candidates.items(), key=lambda item: bytes(item[0])):
+        for mint in (hint.input_mint, hint.output_mint):
+            adjacency.setdefault(mint, []).append(hint)
+    return candidates, {mint: tuple(edges) for mint, edges in adjacency.items()}
