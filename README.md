@@ -1,19 +1,37 @@
 <div align="center">
-    <h1>Sol Trade SDK — Python</h1>
-    <p>Solana DEX trading for Python</p>
-    <a href="https://pypi.org/project/sol-trade-sdk/"><img src="https://img.shields.io/pypi/v/sol-trade-sdk.svg" alt="sol-trade-sdk"></a>
-    <a href="#license"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+    <h1>🚀 Sol Trade SDK for Python</h1>
+    <h3><em>A comprehensive Python SDK for seamless Solana DEX trading</em></h3>
 </div>
 
 <p align="center">
-    <a href="README.md">English</a> · <a href="README_CN.md">中文</a> ·
-    <a href="examples/README.md">Examples</a> ·
-    <a href="docs/USAGE.md">Documentation</a> ·
-    <a href="RELEASE_NOTES.md">Release and migration</a> ·
-    <a href="#sdk-versions-and-related-sdks">Related SDKs</a>
+    <strong>A high-performance Python SDK for low-latency Solana DEX trading bots. Built for speed and efficiency, it enables seamless, high-throughput interaction with PumpFun, Pump AMM (PumpSwap), Bonk, Meteora DAMM v2, Raydium AMM v4, and Raydium CPMM for latency-critical trading strategies.</strong>
 </p>
 
-Build, sign and submit transactions across configured channels, with cached routing for DEXes including PumpFun, PumpSwap, Raydium and Meteora. See the usage guide for language-specific APIs and support boundaries.
+<p align="center">
+    <a href="https://pypi.org/project/sol-trade-sdk">
+        <img src="https://img.shields.io/pypi/v/sol-trade-sdk.svg" alt="PyPI">
+    </a>
+    <a href="https://pypi.org/project/sol-trade-sdk">
+        <img src="https://img.shields.io/pypi/pyversions/sol-trade-sdk.svg" alt="Python Versions">
+    </a>
+    <a href="#license">
+        <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
+    </a>
+</p>
+
+<p align="center">
+    <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python">
+    <img src="https://img.shields.io/badge/Solana-9945FF?style=for-the-badge&logo=solana&logoColor=white" alt="Solana">
+    <img src="https://img.shields.io/badge/DEX-4B8BBE?style=for-the-badge&logo=bitcoin&logoColor=white" alt="DEX Trading">
+</p>
+
+<p align="center">
+    <a href="https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/README_CN.md">中文</a> |
+    <a href="https://github.com/0xfnzero/sol-trade-sdk-python/blob/main/README.md">English</a> |
+    <a href="https://fnzero.dev/">Website</a> |
+    <a href="https://t.me/fnzero_group">Telegram</a> |
+    <a href="https://discord.gg/vuazbGkqQE">Discord</a>
+</p>
 
 Current version: **9.0.1**. Read the [migration notes](RELEASE_NOTES.md) before upgrading; see the [changelog](CHANGELOG.md) for historical changes.
 
