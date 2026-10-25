@@ -17,6 +17,12 @@ def test_instruction_versions_keep_protected_hops(direction,monkeypatch):
     v=json.loads((ROOT/f'pumpfun_whirlpool_usdc_{direction}_20261005.json').read_text())
     discriminators=([bytes(x) for x in ([56,252,116,8,158,223,205,95],[194,171,28,70,104,77,91,47],[225,247,80,30,213,179,132,136])]
         if direction=='buy' else [bytes(x) for x in ([51,230,133,164,1,127,131,173],[93,246,130,60,231,233,64,178],[28,146,222,119,38,196,105,213])])
+    protected = prepare(v)
+    options = {"minimum_output_amount":"1", "buyback_recipient":v["payer"]}
+    fallback = prepare(dict(v, pump_route=options))
+    assert fallback.compiled.message == protected.compiled.message
+    with pytest.raises(ValueError): prepare(dict(v, pump_route=dict(options,execution="official")))
+    with pytest.raises(ValueError,match="final output"): prepare(dict(v, pump_route=dict(options,minimum_output_amount=str((1<<64)-1))))
     outputs=[]
     for version,disc in zip(('v1','v2','v3'),discriminators):
         p=prepare(dict(v,pumpfun_version=version))
@@ -99,3 +105,30 @@ def test_non_native_anchor_cannot_enable_other_native_curve():
         if a['pubkey'] in (extra['pool'],extra['output_mint']):v['accounts'].append(dict(a,slot=v['read_slot']))
     v['amount']='100000000'
     with pytest.raises(ValueError,match='requires cached trade settlement'):prepare(v)
+
+
+@pytest.mark.parametrize("direction", ["Buy", "Sell"])
+def test_official_aggregate_from_frozen_curves(direction, monkeypatch):
+    import socket
+    monkeypatch.setattr(socket.socket, "connect", lambda *a: pytest.fail("network in preparation"))
+    # Synthetic chain from existing captures; these are not mainnet route quotes.
+    v=json.loads((ROOT/"pumpfun_usdc_buy_20261004.json").read_text())
+    extra=json.loads((ROOT/"pumpfun_current_0_sol_buy_20261004.json").read_text())
+    currency=v["legs"][0]["input_mint"]; middle=extra["legs"][0]["output_mint"]; target=v["legs"][1]["output_mint"]
+    def curve(a, quote):
+        d=bytearray(base64.b64decode(a["data"])); d[83:115]=bytes(Pubkey.from_string(quote))
+        return dict(a, data=base64.b64encode(d).decode(), slot=v["read_slot"])
+    v["accounts"]=[curve(a,middle) if a["pubkey"]==v["legs"][1]["pool"] else a for a in v["accounts"]]
+    v["accounts"] += [dict(a,slot=v["read_slot"]) if a["pubkey"]==middle else curve(a,currency) for a in extra["accounts"] if a["pubkey"] in (middle,extra["legs"][0]["pool"])]
+    v["legs"]=[dict(pool=extra["legs"][0]["pool"],input_mint=currency,output_mint=middle),dict(pool=v["legs"][1]["pool"],input_mint=middle,output_mint=target)]
+    if direction=="Sell": v["legs"]=[dict(h,input_mint=h["output_mint"],output_mint=h["input_mint"]) for h in reversed(v["legs"])]
+    v["trade_type"]=direction
+    options=dict(minimum_output_amount="7",buyback_recipient=v["payer"])
+    p=prepare(dict(v,pump_route=options)); strict=prepare(dict(v,pump_route=dict(options,execution="official")))
+    assert p.compiled.message==strict.compiled.message
+    assert p.route.execution=="official" and not p.route.legs
+    assert len(p.route.swap_instructions)==1 and len(p.route.setup_instructions)==3
+    assert p.route.minimum_net_amount_out==7
+    ix=p.route.swap_instructions[0]
+    assert int.from_bytes(ix.data[8:16],"little")==int(v["amount"])
+    assert int.from_bytes(ix.data[16:24],"little")==7 and len(ix.accounts)==26

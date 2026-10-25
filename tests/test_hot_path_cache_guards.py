@@ -36,8 +36,10 @@ def test_warm_fee_cache_does_not_leak_mutable_selected_fees():
     for key, offset, value in ((hint.pool,261,55), (ps.PUMPSWAP_GLOBAL_ACCOUNT,940,1)):
         a = modified[key]
         data = bytearray(a.data)
-        if len(data) < offset+8:
-            data.extend(bytes(offset+8-len(data)))
+        # The current pool fee layout includes can_edit_creator_fee and is_holder_reward.
+        minimum = max(offset+8, 271) if key == hint.pool else offset+8
+        if len(data) < minimum:
+            data.extend(bytes(minimum-len(data)))
         data[offset:offset+8] = value.to_bytes(8,'little')
         modified[key] = replace(a,data=bytes(data))
     assert AccountCacheSnapshot(modified).pumpswap(hint, context).fee_basis_points.coin_creator_fee_basis_points == 55

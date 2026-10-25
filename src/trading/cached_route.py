@@ -46,6 +46,8 @@ class PreparedCachedRoute:
     minimum_net_amount_out: int
     # Mint and estimated credit not spent by the next fixed-input leg.
     estimated_intermediate_residuals: tuple
+    # Official routes have an aggregate limit and no invented per-hop quotes.
+    execution: str = "sequential"
 
 
 def prepare_cached_route(

@@ -894,7 +894,9 @@ def decode_pool(data: bytes) -> PumpSwapPool | None:
     Returns:
         PumpSwapPool if successful, None if data is invalid
     """
-    if len(data) < POOL_SIZE and len(data) != LEGACY_POOL_SIZE:
+    if len(data) < 263 and len(data) not in (LEGACY_POOL_SIZE, POOL_SIZE, 262):
+        return None
+    if data[235] > 1 or data[236] > 1 or (len(data) >= 262 and data[261] > 1) or (len(data) >= 263 and data[262] > 1):
         return None
     
     try:

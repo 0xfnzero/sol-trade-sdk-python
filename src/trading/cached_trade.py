@@ -3,7 +3,10 @@ from .route_candidates import iterate_candidate_routes
 """High-level native cache -> independent buy/sell -> V1. No implicit RPC."""
 
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..instruction.pump_route import PumpRouteOptions
 import base58
 import struct
 from solders.pubkey import Pubkey
@@ -58,6 +61,7 @@ class CachedTradeRequest:
     fixed_output_amount: int | None = None
     pumpfun_version: str | None = None
     trade_config: Any = None
+    pump_route: "PumpRouteOptions | None" = None
 
 
 @dataclass(frozen=True)
@@ -114,7 +118,17 @@ def prepare_cached_trade(r):
         state=cached_pumpfun(r.snapshot,anchor,r.context)
         state_native=str(state.quote)=='So11111111111111111111111111111111111111112'
         if state.mint!=(anchor.output_mint if direction=='Buy' else anchor.input_mint):raise ValueError('PumpFun anchor direction does not match independent trade type')
-    if dex == "MeteoraDammV2":
+    from .pump_route import prepare_official_pump_route
+    from ..instruction.pump_route import PumpRouteExecution
+    official = prepare_official_pump_route(r.snapshot, r.hints, r.context, r.payer, r.amount, r.pump_route,
+        r.native_input or r.native_output) if dex in ("PumpFun", "PumpSwap") else None
+    if official is None and r.pump_route and r.pump_route.execution == PumpRouteExecution.OFFICIAL:
+        raise ValueError("Requested route does not support official Pump execution")
+    if official is not None:
+        if r.fixed_output_amount is not None:
+            raise ValueError("Official Pump routes require exact-input sizing")
+        route, state_native = official, False
+    elif dex == "MeteoraDammV2":
         from .cached_damm_v2 import prepare_explicit_damm_v2_route
         route = prepare_explicit_damm_v2_route(r.snapshot, r.hints, r.context, r.unix_timestamp,
                                              r.payer, r.amount, r.fixed_output_amount, direction)
@@ -131,6 +145,8 @@ def prepare_cached_trade(r):
             r.maximum_arrays,
             state_native,
         )
+    if r.pump_route and r.pump_route.execution != PumpRouteExecution.SEQUENTIAL and r.pump_route.minimum_output_amount is not None and route.minimum_net_amount_out < r.pump_route.minimum_output_amount:
+        raise ValueError("Sequential route cannot guarantee the requested final output; refresh its quotes")
     if type(r.native_input) is not bool or type(r.native_output) is not bool:
         raise ValueError("Native endpoint flags must be boolean")
     instructions = route.setup_instructions + route.swap_instructions

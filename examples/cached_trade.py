@@ -39,8 +39,16 @@ def prepare(v):
     from sol_trade_sdk import CachedTradeRequest
     from sol_trade_sdk.trading.factory import TradeExecutorFactory
 
+    from sol_trade_sdk import PumpRouteOptions, PumpRouteExecution
+    route_options = v.get("pump_route", {})
+    pump_route = PumpRouteOptions(
+        PumpRouteExecution(route_options.get("execution", "auto")),
+        int(route_options["minimum_output_amount"]) if "minimum_output_amount" in route_options else None,
+        Pubkey.from_string(route_options["buyback_recipient"]) if "buyback_recipient" in route_options else None,
+    )
     request = CachedTradeRequest(
         dex_type=v["dex_type"],
+        pump_route=pump_route,
         pumpfun_version=v.get("pumpfun_version"),
         trade_type=v["trade_type"],
         snapshot=snapshot,
@@ -91,6 +99,7 @@ def main():
     print(
         json.dumps(
             dict(
+                execution=route.execution,
                 minimum_amount_out=str(route.minimum_net_amount_out),
                 estimated_native_residual_lamports=str(prepared.estimated_native_residual_lamports),
                 legs=[

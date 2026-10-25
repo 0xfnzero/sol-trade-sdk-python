@@ -2296,3 +2296,6 @@ __all__ += ['PumpSwapQuoteRequest', 'PumpSwapBuildOptions', 'SignedPumpSwapTrans
 
 from .trading.pumpswap_routing import PumpSwapRoutingConfig
 __all__ += ['PumpSwapRoutingConfig']
+
+from .instruction.pump_route import PumpRouteExecution, PumpRouteOptions, select_pump_route
+__all__ += ['PumpRouteExecution', 'PumpRouteOptions', 'select_pump_route']

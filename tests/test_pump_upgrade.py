@@ -133,6 +133,18 @@ def test_nested_curve_route_validation():
         )
 
     hops = [hop(a, WSOL), hop(b, a)]
+    from src.instruction.pump_route import PumpRouteOptions, PumpRouteExecution as E, select_pump_route
+    options = PumpRouteOptions(minimum_output_amount=9, buyback_recipient=user)
+    ix = select_pump_route(options, user, WSOL, b, 7, hops)
+    assert ix.data == bytes([43,100,73,19,233,246,111,148]) + (7).to_bytes(8,'little') + (9).to_bytes(8,'little')
+    assert len(ix.accounts) == 26
+    assert select_pump_route(PumpRouteOptions(), user, WSOL, b, 7, hops) is None
+    assert select_pump_route(PumpRouteOptions(E.SEQUENTIAL,9,user), user, WSOL, b, 7, hops) is None
+    assert select_pump_route(options, user, WSOL, b, 7) is None
+    with pytest.raises(ValueError): select_pump_route(PumpRouteOptions(E.OFFICIAL,9,user), user, WSOL, b, 7)
+    with pytest.raises(ValueError): select_pump_route(PumpRouteOptions(minimum_output_amount=0), user, WSOL, b, 7, hops)
+    assert select_pump_route(options, user, b, WSOL, 7, list(reversed(hops))) is not None
+
     assert len(derive_pump_coin_quote_create_accounts(b, hops[0], 0, 1)) == 5
     with pytest.raises(ValueError):
         derive_pump_coin_quote_create_accounts(b, hops[0], 1, 1)

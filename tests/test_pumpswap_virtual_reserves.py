@@ -205,3 +205,18 @@ def test_negative_virtual_reserves_all_quote_modes(api, mode):
         10_000, 125, 1_000_000, 500_000, 0, fees)
     with pytest.raises(ValueError, match="Invalid effective quote reserves"):
         quote(10_000, 125, 1_000_000, 1_000_000, -1_000_000, fees)
+
+
+def test_current_pool_fees_and_partial_layouts():
+    current = bytearray(_pool_payload(-500) + bytes(10))
+    current[253:261] = (200).to_bytes(8, "little")
+    current[261:263] = bytes([1, 1])
+    pool = decode_pool(bytes(current))
+    assert pool.virtual_quote_reserves == -500
+    assert (pool.creator_fee_bps, pool.can_edit_creator_fee, pool.is_holder_reward) == (200, True, True)
+    assert decode_pool(bytes(current[:262])).creator_fee_bps == 200
+    assert decode_pool(bytes(current[:253])).creator_fee_bps == 0
+    for size in range(254,262):
+        assert decode_pool(bytes(current[:size])) is None
+    current[261] = 2
+    assert decode_pool(bytes(current)) is None
