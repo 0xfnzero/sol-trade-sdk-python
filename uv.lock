@@ -1544,7 +1544,7 @@ wheels = [
 
 [[package]]
 name = "sol-trade-sdk"
-version = "0.1.7"
+version = "11.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -1568,6 +1568,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "solders" },
 ]
 quic = [
     { name = "aioquic" },
@@ -1594,6 +1595,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "solana", specifier = ">=0.30.0" },
     { name = "solders", specifier = ">=0.18.0" },
+    { name = "solders", marker = "extra == 'dev'", specifier = ">=0.26.0" },
     { name = "typing-extensions", specifier = ">=4.0.0" },
 ]
 provides-extras = ["quic", "dev"]
